@@ -181,15 +181,17 @@ class ThetaDataBacktestingPandas(PandasData):
                 if ts_unit == "day":
                     start_date = dt_index.min().date()
                     end_date = dt_index.max().date()
-                    base_tz = getattr(dt_index, "tz", None)
                     start_dt = datetime.combine(start_date, datetime.min.time())
                     end_dt = datetime.combine(end_date, datetime.max.time())
-                    if base_tz is not None:
+                    base_tz = getattr(dt_index, "tz", None) or pytz.UTC
+                    # IMPORTANT: for pytz timezones, use `localize()` (not `replace(tzinfo=...)`)
+                    # to avoid "LMT" offsets like -04:56 which break coverage comparisons.
+                    if hasattr(base_tz, "localize"):
+                        start_dt = base_tz.localize(start_dt)
+                        end_dt = base_tz.localize(end_dt)
+                    else:
                         start_dt = start_dt.replace(tzinfo=base_tz)
                         end_dt = end_dt.replace(tzinfo=base_tz)
-                    else:
-                        start_dt = start_dt.replace(tzinfo=pytz.UTC)
-                        end_dt = end_dt.replace(tzinfo=pytz.UTC)
                     start = start_dt
                     end = end_dt
                 else:
@@ -219,6 +221,7 @@ class ThetaDataBacktestingPandas(PandasData):
         }
         metadata["empty_fetch"] = frame is None or frame.empty
         metadata["has_quotes"] = bool(has_quotes)
+        metadata["has_ohlc"] = self._frame_has_ohlc_columns(frame)
 
         if frame is not None and not frame.empty and "missing" in frame.columns:
             placeholder_flags = frame["missing"].fillna(False).astype(bool)
@@ -232,6 +235,12 @@ class ThetaDataBacktestingPandas(PandasData):
             if not metadata["empty_fetch"]:
                 metadata["empty_fetch"] = False
 
+        # Preserve runtime cache flags that should not be reset by metadata refreshes
+        # (e.g., day-mode metadata rebuilds during _update_pandas_data).
+        for flag_key in ("prefetch_complete", "ffilled", "sidecar_loaded"):
+            if flag_key in previous_meta:
+                metadata[flag_key] = previous_meta.get(flag_key)
+
         if getattr(asset, "asset_type", None) == Asset.AssetType.OPTION:
             metadata["expiration"] = asset.expiration
 
@@ -243,7 +252,7 @@ class ThetaDataBacktestingPandas(PandasData):
         self._dataset_metadata[key] = metadata
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "[THETA][DEBUG][METADATA][WRITE] key=%s ts=%s start=%s end=%s data_start=%s data_end=%s rows=%s placeholders=%s has_quotes=%s",
+                "[THETA][DEBUG][METADATA][WRITE] key=%s ts=%s start=%s end=%s data_start=%s data_end=%s rows=%s placeholders=%s has_quotes=%s has_ohlc=%s",
                 key,
                 ts_unit,
                 metadata.get("start"),
@@ -253,6 +262,7 @@ class ThetaDataBacktestingPandas(PandasData):
                 metadata.get("rows"),
                 metadata.get("placeholders"),
                 metadata.get("has_quotes"),
+                metadata.get("has_ohlc"),
             )
 
     def _frame_has_quote_columns(self, frame: Optional[pd.DataFrame]) -> bool:
@@ -260,6 +270,33 @@ class ThetaDataBacktestingPandas(PandasData):
             return False
         quote_markers = {"bid", "ask", "bid_size", "ask_size", "last_trade_time", "last_bid_time", "last_ask_time"}
         return any(col in frame.columns for col in quote_markers)
+
+    def _frame_has_ohlc_columns(self, frame: Optional[pd.DataFrame]) -> bool:
+        if frame is None or frame.empty:
+            return False
+        required = {"open", "high", "low", "close"}
+        if not required.issubset(set(frame.columns)):
+            return False
+
+        # Some internal repair paths can create OHLC columns filled with nulls; treat that as "no OHLC".
+        try:
+            for col in required:
+                series = frame.get(col)
+                if series is None:
+                    continue
+                if pd.to_numeric(series, errors="coerce").notna().any():
+                    return True
+        except Exception:
+            for col in required:
+                series = frame.get(col)
+                if series is None:
+                    continue
+                try:
+                    if series.notna().any():
+                        return True
+                except Exception:
+                    continue
+        return False
 
     def _finalize_day_frame(
         self,
@@ -524,7 +561,16 @@ class ThetaDataBacktestingPandas(PandasData):
         )
         return meta
 
-    def _update_pandas_data(self, asset, quote, length, timestep, start_dt=None, require_quote_data: bool = False):
+    def _update_pandas_data(
+        self,
+        asset,
+        quote,
+        length,
+        timestep,
+        start_dt=None,
+        require_quote_data: bool = False,
+        require_ohlc_data: bool = True,
+    ):
         """
         Get asset data and update the self.pandas_data dictionary.
 
@@ -713,20 +759,21 @@ class ThetaDataBacktestingPandas(PandasData):
             has_quotes = self._frame_has_quote_columns(existing_data.df)
             self._record_metadata(canonical_key, existing_data.df, existing_data.timestep, asset_separated, has_quotes=has_quotes)
             existing_meta = self._dataset_metadata.get(canonical_key)
-            try:
-                df_idx = pd.to_datetime(existing_data.df.index)
-                logger.debug(
-                    "[THETA][DEBUG][DAY_METADATA_REBUILD] asset=%s/%s df_min=%s df_max=%s rows=%s rebuilt_start=%s rebuilt_end=%s",
-                    asset_separated,
-                    quote_asset,
-                    df_idx.min(),
-                    df_idx.max(),
-                    len(df_idx),
-                    existing_meta.get("start") if existing_meta else None,
-                    existing_meta.get("end") if existing_meta else None,
-                )
-            except Exception:
-                logger.debug("[THETA][DEBUG][DAY_METADATA_REBUILD] failed to log dataframe bounds", exc_info=True)
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    df_idx = pd.to_datetime(existing_data.df.index)
+                    logger.debug(
+                        "[THETA][DEBUG][DAY_METADATA_REBUILD] asset=%s/%s df_min=%s df_max=%s rows=%s rebuilt_start=%s rebuilt_end=%s",
+                        asset_separated,
+                        quote_asset,
+                        df_idx.min(),
+                        df_idx.max(),
+                        len(df_idx),
+                        existing_meta.get("start") if existing_meta else None,
+                        existing_meta.get("end") if existing_meta else None,
+                    )
+                except Exception:
+                    logger.debug("[THETA][DEBUG][DAY_METADATA_REBUILD] failed to log dataframe bounds", exc_info=True)
 
         # Fast-path reuse: if we already have a dataframe that covers the needed window, skip all fetch/ffill work.
         # IMPORTANT: Only reuse if the cached data's timestep matches what we're requesting.
@@ -740,47 +787,93 @@ class ThetaDataBacktestingPandas(PandasData):
         is_option = getattr(asset_separated, 'asset_type', None) == 'option'
 
         if existing_data is not None and existing_data.timestep == ts_unit:
-            df_idx = existing_data.df.index
-            if len(df_idx):
-                idx = pd.to_datetime(df_idx)
-                if idx.tz is None:
-                    idx = idx.tz_localize(pytz.UTC)
-                else:
-                    idx = idx.tz_convert(pytz.UTC)
-                coverage_start = idx.min()
-                coverage_end = idx.max()
-                # Use date-level comparison for both day and minute data, but ensure both
-                # timestamps are in the same timezone before extracting date. Otherwise
-                # UTC midnight (Nov 3 00:00 UTC = Nov 2 19:00 EST) would incorrectly match
-                # a local date requirement of Nov 3.
-                if coverage_end is not None and end_requirement is not None:
-                    # Convert both to the same timezone (use end_requirement's timezone)
-                    target_tz = end_requirement.tzinfo
-                    if target_tz is not None and coverage_end.tzinfo is not None:
-                        coverage_end_local = coverage_end.astimezone(target_tz)
-                    else:
-                        coverage_end_local = coverage_end
-                    coverage_end_cmp = coverage_end_local.date()
-                    end_requirement_cmp = end_requirement.date()
-                else:
-                    coverage_end_cmp = coverage_end.date() if coverage_end is not None else None
-                    end_requirement_cmp = end_requirement.date() if end_requirement is not None else None
-                end_ok = coverage_end_cmp is not None and end_requirement_cmp is not None and coverage_end_cmp >= end_requirement_cmp
+            # Fast-reuse must respect the *type* of data requested: quote-only caches should not
+            # satisfy OHLC-only requests (trade-only APIs like get_last_price / get_historical_prices).
+            cached_meta = self._dataset_metadata.get(canonical_key) or {}
+            cached_has_quotes = bool(cached_meta.get("has_quotes")) or self._frame_has_quote_columns(existing_data.df)
+            meta_has_ohlc = cached_meta.get("has_ohlc")
+            if meta_has_ohlc is None:
+                cached_has_ohlc = self._frame_has_ohlc_columns(existing_data.df)
+            elif bool(meta_has_ohlc):
+                cached_has_ohlc = self._frame_has_ohlc_columns(existing_data.df)
+            else:
+                cached_has_ohlc = False
+            reuse_ok = True
+            if require_quote_data and not cached_has_quotes:
+                reuse_ok = False
+            if require_ohlc_data and not cached_has_ohlc:
+                reuse_ok = False
 
-                if (
-                    coverage_start is not None
-                    and requested_start is not None
-                    and coverage_start <= requested_start + effective_start_buffer
-                    and end_ok
-                ):
-                    # CRITICAL FIX (2025-12-07): For options, verify the cached data is for
-                    # the EXACT same strike/expiration. Options are unique instruments and
-                    # data for one strike cannot be reused for another.
-                    if is_option:
-                        # Get the asset that was used to cache this data
-                        cached_asset = None
-                        if isinstance(dataset_key, tuple) and len(dataset_key) >= 1:
-                            cached_asset = dataset_key[0]
+            # PERF: avoid per-call pandas index conversions. Prefer cached metadata or Data's
+            # datetime_start/end (constant-time) rather than `pd.to_datetime(df.index)` each bar.
+            coverage_start = cached_meta.get("data_start") or cached_meta.get("start")
+            coverage_end = cached_meta.get("data_end") or cached_meta.get("end")
+
+            if coverage_start is None or coverage_end is None:
+                try:
+                    if coverage_start is None:
+                        coverage_start = self._normalize_default_timezone(getattr(existing_data, "datetime_start", None))
+                    if coverage_end is None:
+                        coverage_end = self._normalize_default_timezone(getattr(existing_data, "datetime_end", None))
+                except Exception:
+                    pass
+
+            if coverage_start is None or coverage_end is None:
+                df_idx = existing_data.df.index
+                if len(df_idx):
+                    idx = pd.to_datetime(df_idx)
+                    if len(idx):
+                        coverage_start = self._normalize_default_timezone(idx.min())
+                        coverage_end = self._normalize_default_timezone(idx.max())
+
+            if coverage_start is not None and coverage_end is not None:
+                # If this dataset lacked sidecar metadata (common for older caches), persist the
+                # computed bounds once so subsequent reuse checks are O(1).
+                if not cached_meta.get("data_start") or not cached_meta.get("data_end"):
+                    meta = dict(cached_meta)
+                    meta.setdefault("timestep", ts_unit)
+                    meta.setdefault("has_quotes", cached_has_quotes)
+                    meta.setdefault("has_ohlc", cached_has_ohlc)
+                    meta["data_start"] = meta.get("data_start") or coverage_start
+                    meta["data_end"] = meta.get("data_end") or coverage_end
+                    meta["data_rows"] = meta.get("data_rows") or len(existing_data.df)
+                    meta["start"] = meta.get("start") or coverage_start
+                    meta["end"] = meta.get("end") or coverage_end
+                    meta["rows"] = meta.get("rows") or len(existing_data.df)
+                    self._dataset_metadata[canonical_key] = meta
+                    cached_meta = meta
+
+            if coverage_end is not None and end_requirement is not None:
+                try:
+                    coverage_end_cmp = coverage_end.date()
+                    end_requirement_cmp = end_requirement.date()
+                except Exception:
+                    coverage_end_cmp = coverage_end
+                    end_requirement_cmp = end_requirement
+            else:
+                coverage_end_cmp = coverage_end.date() if coverage_end is not None else None
+                end_requirement_cmp = end_requirement.date() if end_requirement is not None else None
+
+            end_ok = (
+                coverage_end_cmp is not None
+                and end_requirement_cmp is not None
+                and coverage_end_cmp >= end_requirement_cmp
+            )
+
+            if reuse_ok and (
+                coverage_start is not None
+                and requested_start is not None
+                and coverage_start <= requested_start + effective_start_buffer
+                and end_ok
+            ):
+                # CRITICAL FIX (2025-12-07): For options, verify the cached data is for
+                # the EXACT same strike/expiration. Options are unique instruments and
+                # data for one strike cannot be reused for another.
+                if is_option:
+                    # Get the asset that was used to cache this data
+                    cached_asset = None
+                    if isinstance(dataset_key, tuple) and len(dataset_key) >= 1:
+                        cached_asset = dataset_key[0]
 
                         # Verify strike and expiration match exactly
                         if cached_asset is None or not isinstance(cached_asset, Asset):
@@ -846,6 +939,7 @@ class ThetaDataBacktestingPandas(PandasData):
         existing_start = None
         existing_end = None
         existing_has_quotes = bool(existing_meta.get("has_quotes")) if existing_meta else False
+        existing_has_ohlc = bool(existing_meta.get("has_ohlc", True)) if existing_meta else True
 
         if existing_data is not None and existing_meta and existing_meta.get("timestep") == ts_unit:
             existing_start = existing_meta.get("start")
@@ -968,6 +1062,8 @@ class ThetaDataBacktestingPandas(PandasData):
                 start_ok
                 and existing_rows >= requested_length
                 and end_ok
+                and (not require_quote_data or existing_has_quotes)
+                and (not require_ohlc_data or existing_has_ohlc)
             )
 
             # DEBUG-LOG: Final cache decision
@@ -985,6 +1081,12 @@ class ThetaDataBacktestingPandas(PandasData):
             )
 
             if cache_covers:
+                # Mark as forward-filled/complete for reuse semantics. Tests and downstream cache
+                # logic expect these flags to stay truthy once a dataset is considered usable.
+                if existing_meta is not None:
+                    if not existing_meta.get("ffilled"):
+                        existing_meta["ffilled"] = True
+                    existing_meta["prefetch_complete"] = True
                 if (
                     expiration_dt is not None
                     and end_requirement is not None
@@ -1099,7 +1201,12 @@ class ThetaDataBacktestingPandas(PandasData):
                     and (coverage_start - start_for_fetch) < effective_start_buffer
                 )
                 if start_buffer_ok and not end_missing:
-                    return None
+                    if require_quote_data and not existing_has_quotes:
+                        pass
+                    elif require_ohlc_data and not existing_has_ohlc:
+                        pass
+                    else:
+                        return None
 
             # When daily bars are requested we should never "downgrade" to minute/hour requests.
             # Doing so forces the helper to download massive minute ranges and resample, which is
@@ -1131,8 +1238,9 @@ class ThetaDataBacktestingPandas(PandasData):
             end_requirement,
         )
         df_quote = None
-        quotes_enabled = require_quote_data or existing_has_quotes
-        wants_quotes = bool(getattr(self, "_use_quote_data", False)) and ts_unit in {"minute", "hour", "second"} and quotes_enabled
+        wants_ohlc = bool(require_ohlc_data)
+        use_quotes_flag = bool(getattr(self, "_use_quote_data", False)) or bool(require_quote_data)
+        wants_quotes = bool(use_quotes_flag) and ts_unit in {"minute", "hour", "second"} and bool(require_quote_data)
 
         def _fetch_ohlc():
             return thetadata_helper.get_price_data(
@@ -1168,47 +1276,76 @@ class ThetaDataBacktestingPandas(PandasData):
                 preserve_full_history=True,
             )
 
-        if wants_quotes:
-            # Performance: OHLC + QUOTE requests are independent network calls. Fetch them concurrently
-            # for first-touch cache misses (common for 0DTE option strategies), then merge.
-            from concurrent.futures import ThreadPoolExecutor
+        df_ohlc = None
+        if wants_ohlc:
+            if wants_quotes:
+                # Performance: OHLC + QUOTE requests are independent network calls. Fetch them concurrently
+                # for first-touch cache misses (common for 0DTE option strategies), then merge.
+                from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_ohlc = executor.submit(_fetch_ohlc)
-                future_quote = executor.submit(_fetch_quote)
-                df_ohlc = future_ohlc.result()
-                df_quote = future_quote.result()
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_ohlc = executor.submit(_fetch_ohlc)
+                    future_quote = executor.submit(_fetch_quote)
+                    df_ohlc = future_ohlc.result()
+                    df_quote = future_quote.result()
+            else:
+                df_ohlc = _fetch_ohlc()
+
+            if df_ohlc is None or df_ohlc.empty:
+                expired_reason = (
+                    expiration_dt is not None
+                    and end_requirement is not None
+                    and expiration_dt == end_requirement
+                )
+                if expired_reason:
+                    logger.debug(
+                        "[THETA][DEBUG][THETADATA-PANDAS] No new OHLC rows for %s/%s (%s); option expired on %s. Keeping cached data.",
+                        asset_separated,
+                        quote_asset,
+                        ts_unit,
+                        asset_separated.expiration,
+                    )
+                    if existing_meta is not None:
+                        existing_meta["expiration_notice"] = True
+                    return None
+                raise ValueError(
+                    f"No OHLC data returned for {asset_separated} / {quote_asset} ({ts_unit}) "
+                    f"start={start_datetime} end={end_requirement}; refusing to proceed with empty dataset."
+                )
+
+            df = df_ohlc
         else:
-            df_ohlc = _fetch_ohlc()
-
-        if df_ohlc is None or df_ohlc.empty:
-            expired_reason = (
-                expiration_dt is not None
-                and end_requirement is not None
-                and expiration_dt == end_requirement
-            )
-            if expired_reason:
-                logger.debug(
-                    "[THETA][DEBUG][THETADATA-PANDAS] No new OHLC rows for %s/%s (%s); option expired on %s. Keeping cached data.",
+            # Quote-only fetch (used for option MTM / quote checks). Missing quotes are not fatal:
+            # the caller can fall back to OHLC (last trade) or forward-fill MTM as needed.
+            if wants_quotes:
+                try:
+                    df_quote = _fetch_quote()
+                except Exception:
+                    logger.exception(
+                        "ThetaData quote download failed for %s / %s (%s)",
+                        asset_separated,
+                        quote_asset,
+                        ts_unit,
+                    )
+                    return None
+            if df_quote is None or getattr(df_quote, "empty", True):
+                logger.warning(
+                    "No QUOTE data returned for %s / %s (%s); continuing without updating cache.",
                     asset_separated,
                     quote_asset,
                     ts_unit,
-                    asset_separated.expiration,
                 )
-                if existing_meta is not None:
-                    existing_meta["expiration_notice"] = True
                 return None
-            raise ValueError(
-                f"No OHLC data returned for {asset_separated} / {quote_asset} ({ts_unit}) "
-                f"start={start_datetime} end={end_requirement}; refusing to proceed with empty dataset."
-            )
+            df = df_quote
 
-        df = df_ohlc
-        quotes_attached = False
+        quotes_attached = bool((not wants_ohlc) and wants_quotes)
+        quotes_ffilled = False
+        quotes_ffill_rows = None
+        quotes_ffill_remaining = None
 
         # Quote data (bid/ask) is only available for intraday data (minute, hour, second)
         # For daily+ data, only use OHLC
-        if wants_quotes:
+        if wants_ohlc and wants_quotes:
             if df_quote is None:
                 # Sequential fallback: should be rare, but keeps behavior robust if executor path didn't run.
                 try:
@@ -1226,20 +1363,30 @@ class ThetaDataBacktestingPandas(PandasData):
             if df_quote is None or df_quote.empty:
                 logger.warning(f"No QUOTE data returned for {asset_separated} / {quote_asset} ({ts_unit}); continuing without quotes.")
             else:
-                # Combine the ohlc and quote data using outer join to preserve all data
-                # Use forward fill for missing quote values (ThetaData's recommended approach)
                 timestamp_columns = ['last_trade_time', 'last_bid_time', 'last_ask_time']
-                df = pd.concat([df_ohlc, df_quote], axis=1, join='outer')
-                df = self._combine_duplicate_columns(df, timestamp_columns)
                 quotes_attached = True
 
-                # Theta includes duplicate metadata columns (symbol/strike/right/expiration); merge them once.
+                quote_columns = ['bid', 'ask', 'bid_size', 'ask_size', 'bid_condition', 'ask_condition', 'bid_exchange', 'ask_exchange']
+                # PERFORMANCE: Theta quote responses include a lot of redundant metadata columns
+                # (symbol/strike/right/expiration/etc) that already exist in the OHLC frame.
+                # Concatenating them creates many duplicate column names and forces expensive
+                # de-dup logic (transpose-heavy bfill/ffill). Keep only the actionable quote
+                # fields + timestamp metadata before merging.
+                quote_keep = [col for col in quote_columns + timestamp_columns if col in df_quote.columns]
+                df_quote_reduced = df_quote.loc[:, quote_keep]
+                overlapping = [col for col in df_quote_reduced.columns if col in df_ohlc.columns]
+                if overlapping:
+                    df_quote_reduced = df_quote_reduced.drop(columns=overlapping)
+
+                # Combine the ohlc and quote data using outer join to preserve all data.
+                df = pd.concat([df_ohlc, df_quote_reduced], axis=1, join='outer')
+
+                # Safety net: if duplicates remain (unexpected), combine them once.
                 duplicate_names = df.columns[df.columns.duplicated()].unique().tolist()
                 if duplicate_names:
                     df = self._combine_duplicate_columns(df, duplicate_names)
 
                 # Forward fill missing quote values and timestamp metadata
-                quote_columns = ['bid', 'ask', 'bid_size', 'ask_size', 'bid_condition', 'ask_condition', 'bid_exchange', 'ask_exchange']
                 forward_fill_columns = [
                     col
                     for col in quote_columns + timestamp_columns
@@ -1461,8 +1608,23 @@ class ThetaDataBacktestingPandas(PandasData):
             if merged_df is None or merged_df.empty:
                 merged_df = existing_data.df.copy()
             else:
-                merged_df = pd.concat([existing_data.df, merged_df]).sort_index()
-                merged_df = merged_df[~merged_df.index.duplicated(keep="last")]
+                # PERF/ROBUSTNESS: Avoid concat-with-all-NA warnings and preserve existing columns when
+                # the newly fetched frame is quote-only (no OHLC). The previous concat+dedupe behavior
+                # could drop existing OHLC values if the "new" row had NaNs for those columns.
+                existing_df = existing_data.df
+                new_df = merged_df
+                if existing_df.index.has_duplicates:
+                    existing_df = existing_df.loc[~existing_df.index.duplicated(keep="last")]
+                if new_df.index.has_duplicates:
+                    new_df = new_df.loc[~new_df.index.duplicated(keep="last")]
+
+                union_cols = existing_df.columns.union(new_df.columns)
+                existing_aligned = existing_df.reindex(columns=union_cols)
+                new_aligned = new_df.reindex(columns=union_cols)
+
+                # New data should override existing values, but only where it is non-null.
+                # (combine_first preserves existing values when the new frame has NaNs for a column.)
+                merged_df = new_aligned.combine_first(existing_aligned).sort_index()
 
         merged_df = _prep_frame(merged_df)
         (
@@ -1740,7 +1902,13 @@ class ThetaDataBacktestingPandas(PandasData):
                 continue
             selection = df.loc[:, column]
             if isinstance(selection, pd.DataFrame):
-                combined = selection.bfill(axis=1).ffill(axis=1).iloc[:, 0]
+                # PERFORMANCE: `bfill/ffill(axis=1)` triggers a transpose on every call which is
+                # extremely expensive for wide, high-row-count frames (options minute data).
+                # A simple left-to-right `combine_first` achieves the same "first non-null wins"
+                # semantics without transposing.
+                combined = selection.iloc[:, 0]
+                for idx in range(1, selection.shape[1]):
+                    combined = combined.combine_first(selection.iloc[:, idx])
                 df = df.drop(columns=column)
                 df[column] = combined
         return df
@@ -1975,6 +2143,19 @@ class ThetaDataBacktestingPandas(PandasData):
                 asset,
             )
 
+        # PERF: cache last trade results within the same backtest datetime.
+        # Backtest internals and user strategies may ask for the same asset's last price multiple
+        # times per bar (e.g., option selection + fills + risk checks). In backtesting, the
+        # last-trade at a given dt is immutable.
+        last_price_cache_dt = getattr(self, "_last_price_cache_dt", None)
+        if last_price_cache_dt != dt:
+            self._last_price_cache_dt = dt
+            self._last_price_cache = {}
+        cache_key = (asset, quote, exchange, timestep)
+        cached = getattr(self, "_last_price_cache", {}).get(cache_key, None)
+        if cache_key in getattr(self, "_last_price_cache", {}):
+            return cached
+
         # Trade-only: do not require quote columns. Quotes are used explicitly via get_quote()/snapshots
         # for mark-to-market and fills, never via get_last_price().
         self._update_pandas_data(asset, quote, sample_length, timestep, dt, require_quote_data=False)
@@ -2104,6 +2285,11 @@ class ThetaDataBacktestingPandas(PandasData):
             float(frame_last_close) if frame_last_close is not None else None,
         )
 
+        try:
+            self._last_price_cache[cache_key] = value
+        except Exception:
+            pass
+
         return value
 
     def get_price_snapshot(self, asset, quote=None, timestep="minute", **kwargs) -> Optional[Dict[str, object]]:
@@ -2127,8 +2313,27 @@ class ThetaDataBacktestingPandas(PandasData):
                 "[THETA][DEBUG][TIMESTEP_ALIGN] get_price_snapshot aligned from minute to day for asset=%s",
                 asset,
             )
+
+        # PERF: cache snapshots within the same backtest datetime.
+        # Portfolio valuation (and other internals) may request snapshots repeatedly within a bar.
+        snapshot_cache_dt = getattr(self, "_price_snapshot_cache_dt", None)
+        if snapshot_cache_dt != dt:
+            self._price_snapshot_cache_dt = dt
+            self._price_snapshot_cache = {}
+        snapshot_cache_key = (asset, quote, timestep)
+        snapshot_cache = getattr(self, "_price_snapshot_cache", {})
+        if snapshot_cache_key in snapshot_cache:
+            return snapshot_cache.get(snapshot_cache_key)
+
         asset_for_check = asset[0] if isinstance(asset, tuple) else asset
         require_quote_data = getattr(asset_for_check, "asset_type", None) == "option"
+        require_ohlc_data = True
+        try:
+            _, ts_unit = self.convert_timestep_str_to_timedelta(timestep)
+            if require_quote_data and ts_unit in {"minute", "hour", "second"}:
+                require_ohlc_data = False
+        except Exception:
+            require_ohlc_data = True
         self._update_pandas_data(
             asset,
             quote,
@@ -2136,6 +2341,7 @@ class ThetaDataBacktestingPandas(PandasData):
             timestep,
             dt,
             require_quote_data=require_quote_data,
+            require_ohlc_data=require_ohlc_data,
         )
         _, ts_unit = self.get_start_datetime_and_ts_unit(
             sample_length, timestep, dt, start_buffer=START_BUFFER
@@ -2166,6 +2372,10 @@ class ThetaDataBacktestingPandas(PandasData):
                 quote or Asset("USD", "forex"),
                 snapshot,
             )
+            try:
+                self._price_snapshot_cache[snapshot_cache_key] = snapshot
+            except Exception:
+                pass
             return snapshot
         except ValueError as e:
             # Handle case where requested date is after available data (e.g., end of backtest)
@@ -2176,6 +2386,10 @@ class ThetaDataBacktestingPandas(PandasData):
                     asset,
                     quote or Asset("USD", "forex"),
                 )
+                try:
+                    self._price_snapshot_cache[snapshot_cache_key] = None
+                except Exception:
+                    pass
                 return None
             raise
 
@@ -2333,28 +2547,150 @@ class ThetaDataBacktestingPandas(PandasData):
                 getattr(asset, "symbol", asset) if not isinstance(asset, str) else asset,
             )
 
-        # Log quote request details for debugging (options vs other assets)
-        if hasattr(asset, 'asset_type') and asset.asset_type == Asset.AssetType.OPTION:
-            logger.debug(
-                "[THETA][QUOTE] Option request: symbol=%s expiration=%s strike=%s right=%s dt=%s timestep=%s",
-                asset.symbol,
-                asset.expiration,
-                asset.strike,
-                asset.right,
-                dt.isoformat() if hasattr(dt, 'isoformat') else dt,
-                timestep
-            )
-        else:
-            logger.debug(
-                "[THETA][QUOTE] Asset request: symbol=%s dt=%s timestep=%s",
-                getattr(asset, "symbol", asset) if not isinstance(asset, str) else asset,
-                dt.isoformat() if hasattr(dt, 'isoformat') else dt,
-                timestep
+        # PERF: cache Quote objects within the same backtest datetime.
+        # Many strategies call get_quote() multiple times per asset per bar (MTM, risk checks,
+        # limit price estimation, etc.). In backtesting, the quote for a given dt is immutable.
+        quote_cache_dt = getattr(self, "_quote_cache_dt", None)
+        if quote_cache_dt != dt:
+            self._quote_cache_dt = dt
+            self._quote_cache = {}
+        cache_key = (asset, quote, exchange, timestep)
+        cached = getattr(self, "_quote_cache", {}).get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Log quote request details for debugging (options vs other assets).
+        # Guard to avoid allocating strings/dicts when debug logging is disabled.
+        if logger.isEnabledFor(logging.DEBUG):
+            if hasattr(asset, "asset_type") and asset.asset_type == Asset.AssetType.OPTION:
+                logger.debug(
+                    "[THETA][QUOTE] Option request: symbol=%s expiration=%s strike=%s right=%s dt=%s timestep=%s",
+                    asset.symbol,
+                    asset.expiration,
+                    asset.strike,
+                    asset.right,
+                    dt.isoformat() if hasattr(dt, "isoformat") else dt,
+                    timestep,
+                )
+            else:
+                logger.debug(
+                    "[THETA][QUOTE] Asset request: symbol=%s dt=%s timestep=%s",
+                    getattr(asset, "symbol", asset) if not isinstance(asset, str) else asset,
+                    dt.isoformat() if hasattr(dt, "isoformat") else dt,
+                    timestep,
+                )
+
+        # PERFORMANCE: `get_quote()` is called extremely frequently for option-heavy strategies
+        # (e.g., intraday straddle MTM checks). `_update_pandas_data()` is correct but expensive,
+        # even when the in-memory cache already fully covers the current date.
+        #
+        # Fast-path: if we already have quote columns in the cached dataframe and the current dt
+        # is within the cached range, skip the refresh work and just read from the cache.
+        should_refresh = True
+        fast_data = None
+        try:
+            quote_asset = quote if quote is not None else Asset("USD", "forex")
+            _, ts_unit = self.convert_timestep_str_to_timedelta(timestep)
+            if (
+                getattr(asset, "asset_type", None) == Asset.AssetType.OPTION
+                and ts_unit in {"minute", "hour", "second"}
+            ):
+                canonical_key, legacy_key = self._build_dataset_keys(asset, quote_asset, ts_unit)
+                candidate_data = self.pandas_data.get(canonical_key)
+                if candidate_data is None:
+                    candidate_data = self.pandas_data.get(legacy_key)
+
+                if candidate_data is not None and getattr(candidate_data, "timestep", None) == ts_unit:
+                    candidate_df = getattr(candidate_data, "df", None)
+                    if candidate_df is not None and not candidate_df.empty and self._frame_has_quote_columns(candidate_df):
+                        data_end = getattr(candidate_data, "datetime_end", None)
+                        if data_end is not None and dt <= data_end:
+                            should_refresh = False
+                            fast_data = candidate_data
+        except Exception:
+            should_refresh = True
+
+        if should_refresh:
+            require_ohlc_data = True
+            try:
+                _, ts_unit = self.convert_timestep_str_to_timedelta(timestep)
+                if (
+                    getattr(asset, "asset_type", None) == Asset.AssetType.OPTION
+                    and ts_unit in {"minute", "hour", "second"}
+                ):
+                    require_ohlc_data = False
+            except Exception:
+                require_ohlc_data = True
+
+            self._update_pandas_data(
+                asset,
+                quote,
+                1,
+                timestep,
+                dt,
+                require_quote_data=True,
+                require_ohlc_data=require_ohlc_data,
             )
 
-        self._update_pandas_data(asset, quote, 1, timestep, dt, require_quote_data=True)
+        quote_obj = None
+        # Fast-path: build a Quote directly from the cached Data object without calling
+        # Data.get_quote() (which is wrapped in `check_data` and allocates dicts per call).
+        if fast_data is not None:
+            try:
+                from lumibot.entities import Quote
 
-        quote_obj = super().get_quote(asset=asset, quote=quote, exchange=exchange)
+                iter_count = fast_data.get_iter_count(dt)
+
+                def _get(column: str):
+                    if column not in fast_data.datalines:
+                        return None
+                    value = fast_data.datalines[column].dataline[iter_count]
+                    if value is None:
+                        return None
+                    try:
+                        if pd.isna(value):
+                            return None
+                    except Exception:
+                        pass
+                    return value
+
+                close = _get("close")
+                bid = _get("bid")
+                ask = _get("ask")
+                bid_size = _get("bid_size")
+                ask_size = _get("ask_size")
+                volume = _get("volume")
+
+                # Match PandasData.get_quote(): treat non-positive bid/ask as missing.
+                for side_key, side_val in (("bid", bid), ("ask", ask)):
+                    if side_val is None:
+                        continue
+                    try:
+                        numeric_val = float(side_val)
+                    except (TypeError, ValueError):
+                        continue
+                    if numeric_val <= 0:
+                        if side_key == "bid":
+                            bid = None
+                        else:
+                            ask = None
+
+                quote_obj = Quote(
+                    asset=asset,
+                    price=close,
+                    bid=bid,
+                    ask=ask,
+                    volume=volume,
+                    timestamp=dt,
+                    bid_size=bid_size,
+                    ask_size=ask_size,
+                    raw_data=None,
+                )
+            except Exception:
+                quote_obj = None
+
+        if quote_obj is None:
+            quote_obj = super().get_quote(asset=asset, quote=quote, exchange=exchange)
 
         # ThetaData quote history for options can omit trade-derived fields (e.g., close/last), while still providing
         # actionable NBBO. Avoid forcing an OHLC download just to fill Quote.price: prefer quote-derived marks when
@@ -2379,23 +2715,34 @@ class ThetaDataBacktestingPandas(PandasData):
 
                 if bid is not None and ask is not None and bid > 0 and ask > 0:
                     quote_obj.price = (bid + ask) / 2.0
+                elif bid is not None and bid > 0:
+                    quote_obj.price = bid
+                elif ask is not None and ask > 0:
+                    quote_obj.price = ask
                 else:
                     last_trade = self.get_last_price(asset, timestep=timestep, quote=quote, exchange=exchange)
                     if last_trade is not None:
                         quote_obj.price = float(last_trade)
 
         # [INSTRUMENTATION] Final quote result with all details
-        logger.debug(
-            "[THETA][DEBUG][QUOTE][THETA][DEBUG][PANDAS][RESULT] asset=%s quote=%s current_dt=%s bid=%s ask=%s mid=%s last=%s source=%s",
-            getattr(asset, "symbol", asset) if not isinstance(asset, str) else asset,
-            getattr(quote, "symbol", quote),
-            dt,
-            getattr(quote_obj, "bid", None) if quote_obj else None,
-            getattr(quote_obj, "ask", None) if quote_obj else None,
-            getattr(quote_obj, "mid_price", None) if quote_obj else None,
-            getattr(quote_obj, "last_price", None) if quote_obj else None,
-            getattr(quote_obj, "source", None) if quote_obj else None,
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[THETA][DEBUG][QUOTE][THETA][DEBUG][PANDAS][RESULT] asset=%s quote=%s current_dt=%s bid=%s ask=%s mid=%s last=%s source=%s",
+                getattr(asset, "symbol", asset) if not isinstance(asset, str) else asset,
+                getattr(quote, "symbol", quote),
+                dt,
+                getattr(quote_obj, "bid", None) if quote_obj else None,
+                getattr(quote_obj, "ask", None) if quote_obj else None,
+                getattr(quote_obj, "mid_price", None) if quote_obj else None,
+                getattr(quote_obj, "last_price", None) if quote_obj else None,
+                getattr(quote_obj, "source", None) if quote_obj else None,
+            )
+
+        if quote_obj is not None:
+            try:
+                self._quote_cache[cache_key] = quote_obj
+            except Exception:
+                pass
 
         return quote_obj
 
