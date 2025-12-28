@@ -112,6 +112,39 @@ class OptionsHelper:
 
         return math.isfinite(price) and price > 0 and not evaluation.spread_too_wide
 
+    @staticmethod
+    def _float_positive(value: Any) -> Optional[float]:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric) or numeric <= 0:
+            return None
+        return numeric
+
+    def _get_option_mark_from_quote(
+        self,
+        option_asset: Asset,
+    ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """Return (mark_price, bid, ask) derived from quotes; never calls get_last_price()."""
+        try:
+            quote = self.strategy.get_quote(option_asset)
+        except Exception:
+            return None, None, None
+
+        bid = self._float_positive(getattr(quote, "bid", None))
+        ask = self._float_positive(getattr(quote, "ask", None))
+
+        if bid is not None and ask is not None:
+            return (bid + ask) / 2.0, bid, ask
+        if bid is not None:
+            return bid, bid, None
+        if ask is not None:
+            return ask, None, ask
+
+        price = self._float_positive(getattr(quote, "price", None))
+        return price, bid, ask
+
     # ============================================================
     # Basic Utility Functions
     # ============================================================
@@ -274,10 +307,12 @@ class OptionsHelper:
 
                     # Verify this option has price data
                     try:
-                        quote = self.strategy.get_quote(option)
-                        has_valid_quote = quote and (quote.bid is not None or quote.ask is not None)
-                        if has_valid_quote:
-                            self.strategy.log_message(f"Found valid option: {option.symbol} {option.right} {option.strike} exp {option.expiration}", color="green")
+                        mark_price, bid, ask = self._get_option_mark_from_quote(option)
+                        if mark_price is not None:
+                            self.strategy.log_message(
+                                f"Found valid option: {option.symbol} {option.right} {option.strike} exp {option.expiration} (bid={bid}, ask={ask})",
+                                color="green",
+                            )
                             return option
                     except Exception as e:
                         self.strategy.log_message(f"Error getting quote for {option.symbol}: {e}", color="yellow")
@@ -313,6 +348,12 @@ class OptionsHelper:
                     underlying_asset=underlying_asset,
                 )
 
+                try:
+                    mark_price, _, _ = self._get_option_mark_from_quote(option)
+                    if mark_price is not None:
+                        return option
+                except Exception:
+                    pass
                 try:
                     price = self.strategy.get_last_price(option)
                     if price is not None:
@@ -370,10 +411,20 @@ class OptionsHelper:
                 right=right,
                 underlying_asset=underlying_asset,
             )
-            if self.strategy.get_last_price(option) is None:
+            option_price, _, _ = self._get_option_mark_from_quote(option)
+            if option_price is None:
+                try:
+                    option_price = self._float_positive(self.strategy.get_last_price(option))
+                except Exception:
+                    option_price = None
+            if option_price is None:
                 self.strategy.log_message(f"No price for option at strike {strike}. Skipping.", color="yellow")
                 continue
-            greeks = self.strategy.get_greeks(option, underlying_price=underlying_price)
+
+            greeks = self.strategy.get_greeks(option, underlying_price=underlying_price, asset_price=option_price)
+            if greeks is None:
+                self.strategy.log_message(f"Could not calculate Greeks for {option.symbol} at strike {strike}", color="yellow")
+                continue
             delta = greeks.get("delta")
             strike_deltas[strike] = delta
             self.strategy.log_message(f"Strike {strike}: delta = {delta}", color="blue")
@@ -425,29 +476,18 @@ class OptionsHelper:
                 return None
             return numeric
 
-        option_price = _coerce_price(self.strategy.get_last_price(option))
-        used_quote_price = False
+        option_price, _, _ = self._get_option_mark_from_quote(option)
         if option_price is None:
-            quote = None
             try:
-                quote = self.strategy.get_quote(option)
+                option_price = _coerce_price(self.strategy.get_last_price(option))
             except Exception:
-                quote = None
-
-            bid = _coerce_price(getattr(quote, "bid", None)) if quote else None
-            ask = _coerce_price(getattr(quote, "ask", None)) if quote else None
-            if bid is not None and ask is not None:
-                option_price = (bid + ask) / 2
-                used_quote_price = True
+                option_price = None
 
         if option_price is None:
             self.strategy.log_message(f"No price for option {option.symbol} at strike {strike}", color="yellow")
             return None
 
-        greeks_kwargs = {"underlying_price": underlying_price}
-        if used_quote_price:
-            greeks_kwargs["asset_price"] = option_price
-        greeks = self.strategy.get_greeks(option, **greeks_kwargs)
+        greeks = self.strategy.get_greeks(option, underlying_price=underlying_price, asset_price=option_price)
         # Handle None from get_greeks - can happen when option price or underlying price unavailable
         if greeks is None:
             self.strategy.log_message(
@@ -698,9 +738,11 @@ class OptionsHelper:
                 color="red",
             )
 
-        if quote and quote.bid is not None and quote.ask is not None:
-            bid = self._coerce_price(quote.bid, "bid", data_quality_flags, sanitization_notes)
-            ask = self._coerce_price(quote.ask, "ask", data_quality_flags, sanitization_notes)
+        if quote is not None:
+            if getattr(quote, "bid", None) is not None:
+                bid = self._coerce_price(getattr(quote, "bid", None), "bid", data_quality_flags, sanitization_notes)
+            if getattr(quote, "ask", None) is not None:
+                ask = self._coerce_price(getattr(quote, "ask", None), "ask", data_quality_flags, sanitization_notes)
             has_bid_ask = bid is not None and ask is not None
 
         if has_bid_ask and bid is not None and ask is not None:
@@ -715,13 +757,19 @@ class OptionsHelper:
                     spread_too_wide = spread_pct > max_spread_pct
         else:
             missing_bid_ask = True
+            # One-sided quotes can still be useful as execution anchors and should not force an
+            # expensive last-trade fetch.
+            if ask is not None:
+                buy_price = ask
+            if bid is not None:
+                sell_price = bid
 
         # Last price as secondary signal / fallback anchor.
         #
         # PERFORMANCE: Do not fetch trade-derived OHLC/last when bid/ask is already actionable.
         # ThetaData can provide NBBO without trades, and calling get_last_price() can trigger
         # expensive historical OHLC downloads (especially in backtests).
-        if not has_bid_ask:
+        if allow_fallback and buy_price is None and sell_price is None:
             try:
                 last_price = self.strategy.get_last_price(option_asset)
             except Exception as exc:
@@ -737,7 +785,7 @@ class OptionsHelper:
                 if last_price is None:
                     missing_last_price = True
 
-        if not has_bid_ask and allow_fallback and last_price is not None:
+        if allow_fallback and last_price is not None and buy_price is None and sell_price is None:
             buy_price = last_price
             sell_price = last_price
             used_last_price_fallback = True
@@ -842,13 +890,21 @@ class OptionsHelper:
             A dictionary containing symbol, strike, expiration, right, side, and last price.
         """
         asset = order.asset
+        mark_price = None
+        bid = None
+        ask = None
+        if getattr(asset, "asset_type", None) == Asset.AssetType.OPTION:
+            mark_price, bid, ask = self._get_option_mark_from_quote(asset)
         details = {
             "symbol": asset.symbol,
             "strike": getattr(asset, "strike", None),
             "expiration": getattr(asset, "expiration", None),
             "right": getattr(asset, "right", None),
             "side": order.side,
-            "last_price": self.strategy.get_last_price(asset)
+            "last_price": self.strategy.get_last_price(asset) if mark_price is None else None,
+            "bid": bid,
+            "ask": ask,
+            "mark_price": mark_price,
         }
         self.strategy.log_message(f"Order details: {details}", color="blue")
         return details
@@ -1086,13 +1142,15 @@ class OptionsHelper:
 
                     # Fallback: Check for last traded price data
                     try:
-                        price = self.strategy.get_last_price(test_option)
-                        if price is not None:
-                            self.strategy.log_message(
-                                f"Found valid expiry {exp_date} with price data for {call_or_put_caps}",
-                                color="blue",
-                            )
-                            return exp_date
+                        mark_price, _, _ = self._get_option_mark_from_quote(test_option)
+                        if mark_price is None:
+                            price = self.strategy.get_last_price(test_option)
+                            if price is not None:
+                                self.strategy.log_message(
+                                    f"Found valid expiry {exp_date} with price data for {call_or_put_caps}",
+                                    color="blue",
+                                )
+                                return exp_date
                     except Exception:
                         pass
                 else:
@@ -1165,13 +1223,17 @@ class OptionsHelper:
             underlying_asset.symbol, asset_type="option", expiration=expiry,
             strike=call_strike, right="call", underlying_asset=underlying_asset
         )
-        call_sell_price = self.strategy.get_last_price(call_sell_asset)
+        call_sell_price, _, _ = self._get_option_mark_from_quote(call_sell_asset)
+        if call_sell_price is None:
+            call_sell_price = self.strategy.get_last_price(call_sell_asset)
         call_sell_order = self.strategy.create_order(call_sell_asset, quantity_to_trade, "sell")
         call_buy_asset = Asset(
             underlying_asset.symbol, asset_type="option", expiration=expiry,
             strike=call_strike + wing_size, right="call", underlying_asset=underlying_asset
         )
-        call_buy_price = self.strategy.get_last_price(call_buy_asset)
+        call_buy_price, _, _ = self._get_option_mark_from_quote(call_buy_asset)
+        if call_buy_price is None:
+            call_buy_price = self.strategy.get_last_price(call_buy_asset)
         call_buy_order = self.strategy.create_order(call_buy_asset, quantity_to_trade, "buy")
         if call_sell_price is None or call_buy_price is None:
             self.strategy.log_message("Call order build failed due to missing prices.", color="red")
@@ -1207,13 +1269,17 @@ class OptionsHelper:
             underlying_asset.symbol, asset_type="option", expiration=expiry,
             strike=put_strike, right="put", underlying_asset=underlying_asset
         )
-        put_sell_price = self.strategy.get_last_price(put_sell_asset)
+        put_sell_price, _, _ = self._get_option_mark_from_quote(put_sell_asset)
+        if put_sell_price is None:
+            put_sell_price = self.strategy.get_last_price(put_sell_asset)
         put_sell_order = self.strategy.create_order(put_sell_asset, quantity_to_trade, "sell")
         put_buy_asset = Asset(
             underlying_asset.symbol, asset_type="option", expiration=expiry,
             strike=put_strike - wing_size, right="put", underlying_asset=underlying_asset
         )
-        put_buy_price = self.strategy.get_last_price(put_buy_asset)
+        put_buy_price, _, _ = self._get_option_mark_from_quote(put_buy_asset)
+        if put_buy_price is None:
+            put_buy_price = self.strategy.get_last_price(put_buy_asset)
         put_buy_order = self.strategy.create_order(put_buy_asset, quantity_to_trade, "buy")
         if put_sell_price is None or put_buy_price is None:
             self.strategy.log_message("Put order build failed due to missing prices.", color="red")
@@ -1879,7 +1945,11 @@ class OptionsHelper:
         self.strategy.log_message("Calculating spread profit percentage.", color="blue")
         current_value = 0.0
         for order in orders:
-            price = self.strategy.get_last_price(order.asset)
+            price = None
+            if getattr(order.asset, "asset_type", None) == Asset.AssetType.OPTION:
+                price, _, _ = self._get_option_mark_from_quote(order.asset)
+            if price is None:
+                price = self.strategy.get_last_price(order.asset)
             if price is None:
                 self.strategy.log_message(f"Price unavailable for {order.asset.symbol}; cannot calculate spread profit.", color="red")
                 return None
