@@ -421,7 +421,11 @@ class OptionsHelper:
                 self.strategy.log_message(f"No price for option at strike {strike}. Skipping.", color="yellow")
                 continue
 
-            greeks = self.strategy.get_greeks(option, underlying_price=underlying_price, asset_price=option_price)
+            try:
+                greeks = self.strategy.get_greeks(option, underlying_price=underlying_price, asset_price=option_price)
+            except TypeError:
+                # Some unit tests (and custom strategy stubs) mock get_greeks without the asset_price kwarg.
+                greeks = self.strategy.get_greeks(option, underlying_price=underlying_price)
             if greeks is None:
                 self.strategy.log_message(f"Could not calculate Greeks for {option.symbol} at strike {strike}", color="yellow")
                 continue
@@ -487,7 +491,11 @@ class OptionsHelper:
             self.strategy.log_message(f"No price for option {option.symbol} at strike {strike}", color="yellow")
             return None
 
-        greeks = self.strategy.get_greeks(option, underlying_price=underlying_price, asset_price=option_price)
+        try:
+            greeks = self.strategy.get_greeks(option, underlying_price=underlying_price, asset_price=option_price)
+        except TypeError:
+            # Some unit tests (and custom strategy stubs) mock get_greeks without the asset_price kwarg.
+            greeks = self.strategy.get_greeks(option, underlying_price=underlying_price)
         # Handle None from get_greeks - can happen when option price or underlying price unavailable
         if greeks is None:
             self.strategy.log_message(
