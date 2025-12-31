@@ -1779,16 +1779,23 @@ class StrategyExecutor(Thread):
 
             # Initialize broker calendar and caches using trading days.
             #
-            # For Pandas backtests, derive the calendar from the data itself so the StrategyExecutor
-            # can run on the timestamps that exist in the supplied DataFrames (including daily bars
-            # where market_open == market_close).
+            # For *pure* PandasData backtests, derive the calendar from the data itself so the
+            # StrategyExecutor can run on timestamps that exist in the supplied DataFrames
+            # (including daily bars where market_open == market_close).
+            #
+            # IMPORTANT: do NOT apply this to PolygonDataBacktesting (or other providers that
+            # inherit from PandasData) because their _date_index is typically empty at startup.
+            # In that case, get_trading_days_pandas() returns a "full-day open" dummy calendar
+            # (00:00–23:59:59), which can skip lifecycle hooks like before_market_opens() and
+            # breaks legacy backtests (e.g. tests/backtest/test_polygon.py).
             data_source = getattr(self.broker, "data_source", None)
-            if (
+            is_pure_pandas_data_source = (
                 self.strategy.is_backtesting
                 and data_source is not None
-                and getattr(data_source, "SOURCE", None) == "PANDAS"
+                and type(data_source).__name__ in ("PandasData", "PandasDataBacktesting")
                 and hasattr(data_source, "get_trading_days_pandas")
-            ):
+            )
+            if is_pure_pandas_data_source:
                 self.broker.initialize_market_calendars(data_source.get_trading_days_pandas())
             else:
                 self.broker.initialize_market_calendars(get_trading_days(market))
