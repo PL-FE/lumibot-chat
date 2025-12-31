@@ -1448,6 +1448,36 @@ class _Strategy:
 
             strat_name = self._name if self._name is not None else "Strategy"
 
+            lumibot_version = None
+            backtesting_data_sources = None
+            backtest_time_seconds = None
+
+            try:
+                if self.is_backtesting:
+                    try:
+                        import lumibot as _lumibot
+
+                        lumibot_version = getattr(_lumibot, "__version__", None)
+                    except Exception:
+                        lumibot_version = None
+
+                    try:
+                        backtesting_data_sources = (
+                            os.environ.get("BACKTESTING_DATA_SOURCES")
+                            or os.environ.get("BACKTESTING_DATA_SOURCE")
+                            or type(self.broker.data_source).__name__
+                        )
+                    except Exception:
+                        backtesting_data_sources = os.environ.get("BACKTESTING_DATA_SOURCE")
+
+                    backtest_time_seconds = getattr(self, "_backtest_time_seconds", None)
+                    if backtest_time_seconds is None:
+                        start_ts = getattr(self, "_backtest_time_start_monotonic", None)
+                        if start_ts is not None:
+                            backtest_time_seconds = time.monotonic() - float(start_ts)
+            except Exception:
+                pass
+
             result = create_tearsheet(
                 self._strategy_returns_df,
                 strat_name,
@@ -1458,6 +1488,9 @@ class _Strategy:
                 save_tearsheet,
                 risk_free_rate=self.risk_free_rate,
                 strategy_parameters=strategy_parameters,
+                lumibot_version=lumibot_version,
+                backtesting_data_sources=backtesting_data_sources,
+                backtest_time_seconds=backtest_time_seconds,
             )
 
             return result
@@ -1926,6 +1959,10 @@ class _Strategy:
         self._trader.add_strategy(strategy)
 
         self.logger.info("Starting backtest...")
+        try:
+            strategy._backtest_time_start_monotonic = time.monotonic()
+        except Exception:
+            pass
         start = datetime.datetime.now()
 
         result = self._trader.run_all(
@@ -1989,6 +2026,14 @@ class _Strategy:
             indicators_file = f"{logdir}/{base_filename}_indicators.html"
         if not tearsheet_csv_file:
             tearsheet_csv_file = f"{logdir}/{base_filename}_tearsheet.csv"
+
+        try:
+            start_ts = getattr(self, "_backtest_time_start_monotonic", None)
+            if start_ts is not None:
+                self._backtest_time_seconds = time.monotonic() - float(start_ts)
+        except Exception:
+            # Never fail analysis due to timing metadata.
+            pass
 
         self.write_backtest_settings(settings_file)
 

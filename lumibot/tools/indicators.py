@@ -1038,6 +1038,10 @@ def create_tearsheet(
     save_tearsheet: bool,
     risk_free_rate: float,
     strategy_parameters: dict = None,
+    lumibot_version: str | None = None,
+    backtesting_data_source: str | None = None,
+    backtesting_data_sources: str | None = None,
+    backtest_time_seconds: float | None = None,
 ):
     # If show tearsheet is False, then we don't want to open the tearsheet in the browser
     # IMS create the tearsheet even if we are not showinbg it
@@ -1086,6 +1090,10 @@ def create_tearsheet(
             download_filename=tearsheet_file,  # Consider if you need a different name for clarity
             rf=risk_free_rate,
             parameters=strategy_parameters,
+            lumibot_version=lumibot_version,
+            backtesting_data_source=backtesting_data_source,
+            backtesting_data_sources=backtesting_data_sources,
+            backtest_time_seconds=backtest_time_seconds,
         )
 
     if show_tearsheet:

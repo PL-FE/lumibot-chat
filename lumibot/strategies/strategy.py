@@ -3542,6 +3542,32 @@ class Strategy(_Strategy):
         """
         datasource = self.broker.data_source
         auto_adjust = datasource.auto_adjust if hasattr(datasource, "auto_adjust") else False
+
+        lumibot_version = None
+        backtesting_data_sources = None
+        backtest_time_seconds = None
+        try:
+            import lumibot as _lumibot
+
+            lumibot_version = getattr(_lumibot, "__version__", None)
+        except Exception:
+            pass
+        try:
+            backtesting_data_sources = (
+                os.environ.get("BACKTESTING_DATA_SOURCES")
+                or os.environ.get("BACKTESTING_DATA_SOURCE")
+                or type(datasource).__name__
+            )
+        except Exception:
+            backtesting_data_sources = os.environ.get("BACKTESTING_DATA_SOURCE")
+        try:
+            backtest_time_seconds = getattr(self, "_backtest_time_seconds", None)
+            if backtest_time_seconds is None:
+                start_ts = getattr(self, "_backtest_time_start_monotonic", None)
+                if start_ts is not None:
+                    backtest_time_seconds = time.monotonic() - float(start_ts)
+        except Exception:
+            pass
         settings = {
             "name": self.name,
             "backtesting_start": str(self.backtesting_start),
@@ -3555,7 +3581,10 @@ class Strategy(_Strategy):
             "quote_asset": self.quote_asset,
             "benchmark_asset": self._benchmark_asset,
             "starting_positions": self.starting_positions,
-            "parameters": {k: v for k, v in self.parameters.items() if k != 'pandas_data'}
+            "parameters": {k: v for k, v in self.parameters.items() if k != 'pandas_data'},
+            "lumibot_version": lumibot_version,
+            "backtesting_data_sources": backtesting_data_sources,
+            "backtest_time_seconds": backtest_time_seconds,
         }
         os.makedirs(os.path.dirname(settings_file), exist_ok=True)
         with open(settings_file, "w") as outfile:
