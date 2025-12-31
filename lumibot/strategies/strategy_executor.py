@@ -21,6 +21,7 @@ from lumibot.constants import LUMIBOT_DEFAULT_PYTZ
 from lumibot.entities import Asset, Order
 from lumibot.entities import Asset
 from lumibot.tools import append_locals, get_trading_days, staticdecorator
+from lumibot.tools.smart_limit_utils import build_price_ladder, compute_final_price, compute_mid, infer_tick_size, round_to_tick
 
 
 class StrategyExecutor(Thread):
@@ -179,6 +180,10 @@ class StrategyExecutor(Thread):
                 self.process_queue()
             except Empty:
                 pass
+            try:
+                self._process_smart_limit_orders()
+            except Exception as exc:
+                self.strategy.logger.error(f"SMART_LIMIT processing failed: {exc}")
             time.sleep(0.5)
 
     def safe_sleep(self, sleeptime):
@@ -187,17 +192,39 @@ class StrategyExecutor(Thread):
         if self.strategy.is_backtesting:
             self.process_queue()
 
-            # Get positions and serialize to minimal format for progress logging
-            # Use Position.to_minimal_dict() for proper asset info
-            positions = self.strategy.get_positions()
-            positions_minimal = [p.to_minimal_dict() for p in positions] if positions else None
+            # PERF: Serializing positions/orders every bar is expensive and becomes a major cost in
+            # long intraday backtests. The progress CSV is only written every ~2s (wall clock), so
+            # only materialize these payloads when we are likely to log a snapshot.
+            positions_minimal = None
+            orders_minimal = None
+            try:
+                data_source = getattr(self.broker, "data_source", None)
+                should_capture_progress_state = bool(getattr(data_source, "log_backtest_progress_to_file", False))
+                if should_capture_progress_state:
+                    last_logging_time = getattr(data_source, "_last_logging_time", None)
+                    # Mirror DataSourceBacktesting._update_datetime() throttling (~2s); use a small
+                    # cushion to avoid missing the boundary between two datetime.now() calls.
+                    now_wall = datetime.now()
+                    if last_logging_time is not None:
+                        should_capture_progress_state = (now_wall - last_logging_time).total_seconds() >= 1.9
+            except Exception:
+                should_capture_progress_state = True
 
-            # Get ACTIVE (open) orders only and serialize to minimal format
-            # Filter to is_active() to avoid serializing thousands of filled orders
-            # which can exceed CSV field size limits in high-frequency strategies
-            orders = self.broker.get_tracked_orders(strategy=self.strategy.name)
-            active_orders = [o for o in orders if o.is_active()] if orders else []
-            orders_minimal = [o.to_minimal_dict() for o in active_orders] if active_orders else None
+            if should_capture_progress_state:
+                positions = self.strategy.get_positions()
+                positions_minimal = [p.to_minimal_dict() for p in positions] if positions else None
+
+                active_orders = None
+                if hasattr(self.broker, "get_active_tracked_orders"):
+                    try:
+                        active_orders = self.broker.get_active_tracked_orders(strategy=self.strategy.name)
+                    except Exception:
+                        active_orders = None
+
+                if active_orders is None:
+                    orders = self.broker.get_tracked_orders(strategy=self.strategy.name)
+                    active_orders = [o for o in orders if o.is_active()] if orders else []
+                orders_minimal = [o.to_minimal_dict() for o in active_orders] if active_orders else None
 
             # Get initial budget for return calculation
             initial_budget = getattr(self.strategy, '_initial_budget', None)
@@ -473,25 +500,31 @@ class StrategyExecutor(Thread):
 
     def process_event(self, event, payload):
         # Log that we are processing an event.
-        self.strategy.logger.debug(f"Processing event: {event}, payload: {payload}")
+        if self.strategy.logger.isEnabledFor(logging.DEBUG):
+            self.strategy.logger.debug(f"Processing event: {event}, payload: {payload}")
 
         # If it's the first iteration, we don't want to process any events.
         # This is because in this case we are most likely processing events that occurred before the strategy started.
         if self.strategy._first_iteration or self.broker._first_iteration:
             # Reduce noise on startup: log at debug instead of info
-            self.strategy.logger.debug(f"Skipping event {event} because it is the first iteration. Payload: {payload}")
+            if self.strategy.logger.isEnabledFor(logging.DEBUG):
+                self.strategy.logger.debug(
+                    f"Skipping event {event} because it is the first iteration. Payload: {payload}"
+                )
 
             return
 
         if event == self.NEW_ORDER:
             # Log that we are processing a new order.
-            self.strategy.logger.info(f"Processing a new order, payload: {payload}")
+            if self.strategy.logger.isEnabledFor(logging.INFO):
+                self.strategy.logger.info(f"Processing a new order, payload: {payload}")
 
             self._on_new_order(**payload)
 
         elif event == self.CANCELED_ORDER:
             # Log that we are processing a canceled order.
-            self.strategy.logger.info(f"Processing a canceled order, payload: {payload}")
+            if self.strategy.logger.isEnabledFor(logging.INFO):
+                self.strategy.logger.info(f"Processing a canceled order, payload: {payload}")
 
             self._on_canceled_order(**payload)
 
@@ -579,6 +612,110 @@ class StrategyExecutor(Thread):
             event, payload = self.queue.get()
             self.process_event(event, payload)
 
+    def _process_smart_limit_orders(self):
+        if self.broker.IS_BACKTESTING_BROKER:
+            return
+
+        orders = self.broker.get_tracked_orders(self.strategy.name)
+        if not orders:
+            return
+
+        now = time.monotonic()
+        for order in orders:
+            if not order.is_active():
+                continue
+            smart_limit = getattr(order, "smart_limit", None)
+            if smart_limit is None or order.order_type != Order.OrderType.SMART_LIMIT:
+                continue
+
+            state = getattr(order, "_smart_limit_state", None)
+            if state is None:
+                state = {
+                    "created_at": now,
+                    "step_index": 0,
+                    "steps": smart_limit.get_step_count(),
+                    "step_seconds": smart_limit.get_step_seconds(),
+                    "final_hold_seconds": smart_limit.get_final_hold_seconds(),
+                }
+                order._smart_limit_state = state
+
+            elapsed = now - state["created_at"]
+            step_index = min(state["steps"] - 1, int(elapsed // state["step_seconds"]))
+            final_hold_start = state["step_seconds"] * (state["steps"] - 1)
+
+            if step_index == state["steps"] - 1 and elapsed >= final_hold_start + state["final_hold_seconds"]:
+                self.broker.cancel_order(order)
+                continue
+
+            if step_index == state["step_index"]:
+                continue
+
+            state["step_index"] = step_index
+
+            side = "buy" if order.is_buy_order() else "sell"
+            bid = ask = None
+            if order.order_class == Order.OrderClass.MULTILEG and order.child_orders:
+                net_bid = 0.0
+                net_ask = 0.0
+                for leg in order.child_orders:
+                    quote = self.strategy.get_quote(leg.asset, quote=leg.quote, exchange=leg.exchange)
+                    leg_bid = getattr(quote, "bid", None)
+                    leg_ask = getattr(quote, "ask", None)
+                    if leg_bid is None or leg_ask is None:
+                        net_bid = net_ask = None
+                        break
+                    if side == "buy":
+                        if leg.is_buy_order():
+                            net_bid += leg_bid
+                            net_ask += leg_ask
+                        else:
+                            net_bid -= leg_ask
+                            net_ask -= leg_bid
+                    else:
+                        if leg.is_buy_order():
+                            net_bid -= leg_ask
+                            net_ask -= leg_bid
+                        else:
+                            net_bid += leg_bid
+                            net_ask += leg_ask
+                bid = net_bid
+                ask = net_ask
+            else:
+                quote = self.strategy.get_quote(order.asset, quote=order.quote, exchange=order.exchange)
+                bid = getattr(quote, "bid", None)
+                ask = getattr(quote, "ask", None)
+
+            if bid is None or ask is None or bid <= 0 or ask <= 0:
+                if not getattr(order, "_smart_limit_missing_quote_logged", False):
+                    self.strategy.log_message(
+                        f"[SMART_LIMIT] Missing bid/ask for {order.asset}; keeping last limit.",
+                        color="yellow",
+                    )
+                    order._smart_limit_missing_quote_logged = True
+                continue
+
+            tick = infer_tick_size(bid, ask)
+            mid = compute_mid(bid, ask)
+            final_price = compute_final_price(bid, ask, side, smart_limit.final_price_pct)
+            ladder = build_price_ladder(mid, final_price, smart_limit.get_step_count())
+            target_price = round_to_tick(ladder[step_index], tick, side=side)
+
+            if order.limit_price is not None and abs(order.limit_price - target_price) < 1e-9:
+                continue
+
+            order.limit_price = target_price
+            try:
+                self.broker.modify_order(order, limit_price=target_price)
+            except Exception:
+                try:
+                    self.broker.cancel_order(order)
+                    original_type = order.order_type
+                    order.order_type = Order.OrderType.LIMIT
+                    self.broker.submit_order(order)
+                    order.order_type = original_type
+                except Exception as exc:
+                    self.strategy.logger.error(f"SMART_LIMIT reprice failed for {order.identifier}: {exc}")
+
     def stop(self):
         self.stop_event.set()
         self._on_abrupt_closing(KeyboardInterrupt())
@@ -625,7 +762,9 @@ class StrategyExecutor(Thread):
         @wraps(func_input)
         def func_output(self, *args, **kwargs):
             self.strategy._update_portfolio_value()
-            snapshot_before = self.strategy._copy_dict()
+            snapshot_before = {}
+            if getattr(self, "_capture_locals", False):
+                snapshot_before = self.strategy._copy_dict()
             result = func_input(self, *args, **kwargs)
             self._trace_stats(self._strategy_context, snapshot_before)
             return result
@@ -1219,6 +1358,13 @@ class StrategyExecutor(Thread):
             # For backtesting: market close means end of current trading day, not end of entire backtest
             # For live trading: market close means stop trading
             if self.strategy.is_backtesting:
+                # Backtesting must still process expired option contracts at end-of-day.
+                # The strategy's sleeptime is often much shorter than the remaining time-to-close,
+                # so the "oversleep to close" path below is not taken. Without settling here, 0DTE
+                # strategies accumulate expired contracts and can appear to "freeze" late in the
+                # backtest due to exploding open positions.
+                if hasattr(self.broker, "process_expired_option_contracts"):
+                    self.broker.process_expired_option_contracts(self.strategy)
                 # In backtesting, when market closes, we should advance to the next trading day
                 # The broker should handle advancing to the next day automatically
                 # Just return False to end this trading session, but the main loop should continue
@@ -1588,6 +1734,18 @@ class StrategyExecutor(Thread):
             self._before_market_closes()  # perhaps the user could set the time of day based on their data that the market closes?
 
         self.strategy.await_market_to_close(timedelta=0)
+
+        # Backtesting must cash-settle expired option/futures contracts at end-of-day.
+        #
+        # The intraday backtesting loop stops running iterations once we enter the
+        # `minutes_before_closing` window. That means we may never hit the
+        # `_strategy_sleep()` branch that previously handled settlement. Ensure we
+        # always settle after we advance the clock to the session close so 0DTE
+        # strategies don't accumulate expired contracts (which can look like a hang
+        # late in long backtests).
+        if self.strategy.is_backtesting and hasattr(self.broker, "process_expired_option_contracts"):
+            self.broker.process_expired_option_contracts(self.strategy)
+
         self._after_market_closes()
 
     def get_next_ap_scheduler_run_time(self):
