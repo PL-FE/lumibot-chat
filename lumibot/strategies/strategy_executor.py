@@ -1777,8 +1777,21 @@ class StrategyExecutor(Thread):
             # Get the trading days based on the market that the strategy is trading on
             market = self.broker.market
 
-            # Initialize broker calendar and caches using trading days
-            self.broker.initialize_market_calendars(get_trading_days(market))
+            # Initialize broker calendar and caches using trading days.
+            #
+            # For Pandas backtests, derive the calendar from the data itself so the StrategyExecutor
+            # can run on the timestamps that exist in the supplied DataFrames (including daily bars
+            # where market_open == market_close).
+            data_source = getattr(self.broker, "data_source", None)
+            if (
+                self.strategy.is_backtesting
+                and data_source is not None
+                and getattr(data_source, "SOURCE", None) == "PANDAS"
+                and hasattr(data_source, "get_trading_days_pandas")
+            ):
+                self.broker.initialize_market_calendars(data_source.get_trading_days_pandas())
+            else:
+                self.broker.initialize_market_calendars(get_trading_days(market))
 
             #####
             # Main strategy execution loop
@@ -1807,6 +1820,12 @@ class StrategyExecutor(Thread):
                         raise e  # Re-raise original exception to preserve error message for tests
 
                 # Different logic for continuous vs non-continuous markets
+                if self._is_pandas_daily_data_source():
+                    # Pandas daily backtests advance via ``_process_pandas_daily_data`` (date-index driven),
+                    # so we must NOT also advance via the exchange trading calendar.
+                    if hasattr(self, "stop_event") and self.stop_event.is_set():
+                        break
+                    continue
                 if is_continuous_market:
                     # For continuous markets (24/7, futures), _run_trading_session handles the entire backtest
                     # No need to call _strategy_sleep or continue the loop - we're done

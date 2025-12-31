@@ -251,6 +251,13 @@ class BacktestingBroker(Broker):
         sessions = self._daily_sessions.get(day, [])
 
         for start, end in sessions:
+            # Daily backtests (PandasData w/ timestep="day") often produce calendars where
+            # ``market_open == market_close`` (single timestamp per day). Treat that instant
+            # as "open" so StrategyExecutor doesn't skip all iterations.
+            if start == end:
+                if now == start:
+                    return True
+                continue
             if start <= now < end:
                 return True
         return False
