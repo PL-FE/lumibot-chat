@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lumibot.backtesting.backtesting_broker import BacktestingBroker
-from lumibot.entities import Asset, Order, Quote
+from lumibot.entities import Asset, Order, Quote, SmartLimitConfig, SmartLimitPreset, TradingSlippage
 from lumibot.tools.lumibot_logger import get_logger
 
 
@@ -38,7 +38,6 @@ def _build_broker(quote: Quote) -> BacktestingBroker:
     broker.data_source = object()
     broker._trade_event_log_df = None  # not used in these unit tests
     broker.get_quote = MagicMock(return_value=quote)
-    broker._is_thetadata_source = MagicMock(return_value=True)
     return broker
 
 
@@ -57,7 +56,7 @@ def test_try_fill_with_quote_returns_ask_for_buy_order():
 
     assert price == pytest.approx(45.0)
     assert getattr(order, "_price_source", None) == "quote"
-    assert any("ThetaData quote" in msg for msg, _ in strategy.messages)
+    assert any("quote" in msg for msg, _ in strategy.messages)
 
 
 def test_try_fill_with_quote_respects_limit_price():
@@ -76,8 +75,8 @@ def test_try_fill_with_quote_respects_limit_price():
     assert not hasattr(order, "_price_source")
 
 
-def test_thetadata_option_market_order_prefers_quote_fill_without_ohlc(monkeypatch):
-    """ThetaData option market orders should fill from NBBO without forcing OHLC downloads."""
+def test_market_order_prefers_quote_fill_without_ohlc():
+    """Market orders should fill from quotes when OHLC is missing."""
     quote = Quote(
         asset=Asset("SPXW", asset_type=Asset.AssetType.OPTION, expiration=None, strike=None, right="CALL"),
         bid=10.0,
@@ -109,7 +108,6 @@ def test_thetadata_option_market_order_prefers_quote_fill_without_ohlc(monkeypat
 
     broker.data_source = _DummyDataSource()
     broker.get_quote = MagicMock(return_value=quote)
-    broker._is_thetadata_source = MagicMock(return_value=True)
     broker._trade_event_log_df = None
     broker.process_expired_option_contracts = MagicMock()
 
@@ -135,3 +133,40 @@ def test_thetadata_option_market_order_prefers_quote_fill_without_ohlc(monkeypat
     broker._execute_filled_order.assert_called_once()
     fill_kwargs = broker._execute_filled_order.call_args.kwargs
     assert fill_kwargs["price"] == pytest.approx(10.0)
+
+
+def test_smart_limit_uses_quotes_with_polygon_source():
+    """SMART_LIMIT should use quotes regardless of data source when bid/ask are available."""
+    quote = Quote(
+        asset=Asset("SPY", asset_type=Asset.AssetType.STOCK),
+        bid=100.0,
+        ask=102.0,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    broker = BacktestingBroker.__new__(BacktestingBroker)
+    broker.logger = get_logger("polygon_quote_test")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    broker.data_source = type(
+        "PolygonStub",
+        (),
+        {"SOURCE": "POLYGON", "get_datetime": lambda self: now},
+    )()
+    broker.get_quote = MagicMock(return_value=quote)
+
+    order = Order(
+        strategy="TestStrategy",
+        asset=quote.asset,
+        quantity=Decimal("1"),
+        side=Order.OrderSide.BUY,
+        order_type=Order.OrderType.SMART_LIMIT,
+        smart_limit=SmartLimitConfig(
+            preset=SmartLimitPreset.FAST,
+            slippage=TradingSlippage(amount=0.2),
+        ),
+    )
+    order.quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    order._date_created = now - datetime.timedelta(seconds=30)
+
+    fill_price, _ = broker._smart_limit_backtest_price(order, strategy=None, open_=100.0, high_=102.0, low_=99.0)
+
+    assert fill_price == pytest.approx(101.2)

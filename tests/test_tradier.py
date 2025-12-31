@@ -1,6 +1,7 @@
 import datetime as dt
 import os
 from time import sleep
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -8,8 +9,17 @@ import pytest
 
 from lumibot.brokers.tradier import Tradier
 from lumibot.data_sources.tradier_data import TradierData
-from lumibot.entities import Asset, Order, Position
+from lumibot.entities import Asset, Order, Position, SmartLimitConfig, SmartLimitPreset
 from lumibot.credentials import TRADIER_TEST_CONFIG
+from lumibot.strategies.strategy import Strategy
+
+
+class _StubStrategy(Strategy):
+    def initialize(self, parameters=None):
+        self.sleeptime = "1M"
+
+    def on_trading_iteration(self):
+        return
 
 
 def pytest_collection_modifyitems(config, items):
@@ -154,6 +164,64 @@ class TestTradierBroker:
         mock_pull_positions.return_value = Position(strategy=strategy, asset=option_asset, quantity=0)
         option_order.side = "buy"
         assert broker._lumi_side2tradier(option_order) == "buy_to_open"
+
+    def test_smart_limit_submits_as_limit(self, mocker):
+        broker = Tradier(account_number="1234", access_token="a1b2c3", paper=True, connect_stream=False)
+        broker._set_initial_positions = mocker.MagicMock()
+        mocker.patch.object(Strategy, "update_broker_balances", return_value=None)
+        captured = {}
+
+        def _capture_submit(order):
+            captured["order_type"] = order.order_type
+            return order
+
+        broker.submit_order = mocker.MagicMock(side_effect=_capture_submit)
+
+        strategy = _StubStrategy(broker=broker, budget=100_000.0, analyze_backtest=False, parameters={})
+        strategy._first_iteration = False
+        strategy.get_quote = mocker.MagicMock(return_value=SimpleNamespace(bid=99.0, ask=101.0))
+
+        asset = Asset("SPY")
+        config = SmartLimitConfig(preset=SmartLimitPreset.NORMAL)
+        order = strategy.create_order(
+            asset,
+            1,
+            Order.OrderSide.BUY,
+            order_type=Order.OrderType.SMART_LIMIT,
+            smart_limit=config,
+        )
+        strategy.submit_order(order)
+
+        assert captured["order_type"] == Order.OrderType.LIMIT
+
+    def test_smart_limit_downgrades_to_market_without_quotes(self, mocker):
+        broker = Tradier(account_number="1234", access_token="a1b2c3", paper=True, connect_stream=False)
+        broker._set_initial_positions = mocker.MagicMock()
+        mocker.patch.object(Strategy, "update_broker_balances", return_value=None)
+        captured = {}
+
+        def _capture_submit(order):
+            captured["order_type"] = order.order_type
+            return order
+
+        broker.submit_order = mocker.MagicMock(side_effect=_capture_submit)
+
+        strategy = _StubStrategy(broker=broker, budget=100_000.0, analyze_backtest=False, parameters={})
+        strategy._first_iteration = False
+        strategy.get_quote = mocker.MagicMock(return_value=SimpleNamespace(bid=None, ask=None))
+
+        asset = Asset("SPY")
+        config = SmartLimitConfig(preset=SmartLimitPreset.NORMAL)
+        order = strategy.create_order(
+            asset,
+            1,
+            Order.OrderSide.BUY,
+            order_type=Order.OrderType.SMART_LIMIT,
+            smart_limit=config,
+        )
+        strategy.submit_order(order)
+
+        assert captured["order_type"] == Order.OrderType.MARKET
 
     def test_pull_broker_all_orders(self, mocker):
         """
