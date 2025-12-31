@@ -64,7 +64,7 @@ setuptools.setup(
         "pytest",
         # SciPy 1.14.0+ supports NumPy 2.x
         "scipy>=1.14.0",
-        "quantstats-lumi>=1.0.1",
+        "quantstats-lumi>=1.1.0",
         "python-dotenv",  # Secret Storage
         "ccxt>=4.4.80",
         "termcolor",
