@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from lumibot.entities.asset import Asset
 
 import lumibot.entities as entities
+from lumibot.entities.smart_limit import SmartLimitConfig
 
 # Set up module-specific logger
 from lumibot.tools.lumibot_logger import get_logger
@@ -94,6 +95,7 @@ class Order:
         STOP = "stop"
         STOP_LIMIT = "stop_limit"
         TRAIL = "trailing_stop"
+        SMART_LIMIT = "smart_limit"
 
     class OrderSide(StrEnum):
         BUY = "buy"
@@ -148,6 +150,7 @@ class Order:
         order_type: Union[OrderType, None] = None,
         order_class: Union[OrderClass, None] = OrderClass.SIMPLE,
         trade_cost: float = None,
+        trade_slippage: float = None,
         custom_params: dict = None,
         identifier: str = None,
         avg_fill_price: float = None,
@@ -155,6 +158,7 @@ class Order:
         child_orders: Union[list, None] = None,
         tag: str = "",
         status: OrderStatus = "unprocessed",
+        smart_limit: SmartLimitConfig = None,
     ):
         """Order class for managing individual orders.
 
@@ -270,9 +274,12 @@ class Order:
             The type of order. Possible values are: `market`, `limit`, `stop`, `stop_limit`, `trail`, `trail_limit`.
             (Deprecated, use 'order_type' instead)
         order_type : str or Order.OrderType
-            The type of order. Possible values are: `market`, `limit`, `stop`, `stop_limit`, `trail`, `trail_limit`.
+            The type of order. Possible values are: `market`, `limit`, `stop`, `stop_limit`, `trail`, `trail_limit`,
+            `smart_limit`.
         order_class : str
             The order class. Possible values are: `simple`, `bracket`, `oco`, `oto`, `multileg`.
+        smart_limit : SmartLimitConfig
+            Configuration for SMART_LIMIT orders. When set, the order type defaults to `smart_limit`.
         trade_cost : float
             The cost of this order in the quote currency.
         custom_params : dict
@@ -387,7 +394,9 @@ class Order:
         self.dependent_order = None
         self.dependent_order_filled = False
         self.order_type = order_type
+        self.smart_limit = smart_limit
         self.trade_cost = trade_cost
+        self.trade_slippage = 0.0 if trade_slippage is None else trade_slippage
         self.custom_params = custom_params
         self._trail_stop_price = None  # Used by backtesting broker to track desired trailing stop price so far
         self.tag = tag
@@ -494,6 +503,9 @@ class Order:
 
         # Check - Order Class values passed in the 'type' parameter is depricated. OTO/Bracket/etc should
         # This is done here so that the older depricated parameters are still accepted for backwards compatibility
+        if order_type in (self.OrderType.SMART_LIMIT, "smart_limit") and self.smart_limit is None:
+            self.smart_limit = SmartLimitConfig()
+
         try:
             self.order_type = order_type \
                 if isinstance(order_type, (self.OrderType, NONE_TYPE)) else self.OrderType(order_type)
@@ -688,6 +700,9 @@ class Order:
         position_filled,
     ):
         if self.order_type is None:
+            if self.smart_limit is not None:
+                self.order_type = self.OrderType.SMART_LIMIT
+                return
             # Check if this is a trailing stop order
             if trail_price is not None or trail_percent is not None:
                 self.order_type = self.OrderType.TRAIL
@@ -922,13 +937,9 @@ class Order:
         if not isinstance(other, Order):
             return False
 
-        # If the other object is an Order object, then compare the identifier.
-        return (
-            self.identifier == other.identifier
-            and self.asset == other.asset
-            and self.quantity == other.quantity
-            and self.side == other.side
-        )
+        # Orders are uniquely identified by their identifier; comparing deeper fields is expensive
+        # and can be inconsistent with `__hash__` which also hashes the identifier.
+        return self.identifier == other.identifier
 
     def __repr__(self):
         if self.asset is None:
@@ -1027,8 +1038,13 @@ class Order:
         bool
             True if the order is active, False otherwise.
         """
-        active_children = any([child for child in self.child_orders if child.is_active()])
-        return not self.is_filled() and not self.is_canceled() or active_children
+        # Fast-path: most orders are simple and active; avoid recursively scanning children
+        # unless the parent itself is no longer active.
+        if not self.is_filled() and not self.is_canceled():
+            return True
+        if not self.child_orders:
+            return False
+        return any(child.is_active() for child in self.child_orders)
 
     def is_canceled(self):
         """
@@ -1206,6 +1222,8 @@ class Order:
             result["limit"] = float(self.limit_price)
         if self.stop_price is not None:
             result["stop"] = float(self.stop_price)
+        if self.smart_limit is not None:
+            result["smart_limit"] = self.smart_limit.to_dict()
 
         return result
 
@@ -1298,6 +1316,9 @@ class Order:
                         setattr(obj, key, datetime.datetime.fromisoformat(value))
                     except ValueError:
                         setattr(obj, key, value)
+
+                elif key == "smart_limit":
+                    setattr(obj, key, SmartLimitConfig.from_dict(value))
 
                 # Recursively convert nested objects using from_dict (for objects like quote)
                 elif isinstance(value, dict) and hasattr(cls, key) and hasattr(getattr(cls, key), 'from_dict'):
