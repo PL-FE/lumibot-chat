@@ -1416,13 +1416,26 @@ class StrategyExecutor(Thread):
     # ======Helper methods for _run_trading_session ====================
 
     def _is_pandas_daily_data_source(self):
-        """Check if the broker has a pandas daily data source"""
-        has_data_source = getattr(self.broker, "data_source", None) is not None
-        return (
-            has_data_source
-            and self.broker.data_source.SOURCE == "PANDAS"
-            and self.broker.data_source._timestep == "day"
-        )
+        """Return True only for *pure* Pandas daily backtests (not Polygon/ThetaData).
+
+        This route exists to support user-supplied `PandasDataBacktesting` runs where the
+        strategy should iterate over the provided DataFrame index (`_date_index`).
+
+        IMPORTANT: Do not apply this optimization to providers that *inherit* from
+        PandasData (e.g., PolygonDataBacktesting, ThetaDataBacktestingPandas). Those
+        providers manage their own market calendars and can switch `_timestep` to `"day"`
+        for daily-cadence strategies; treating them as "pure pandas daily" can cause the
+        backtest to terminate after a single bar.
+        """
+        data_source = getattr(self.broker, "data_source", None)
+        if not self.strategy.is_backtesting or data_source is None:
+            return False
+
+        # Strict class-name check to avoid matching derived providers.
+        if type(data_source).__name__ not in ("PandasData", "PandasDataBacktesting"):
+            return False
+
+        return getattr(data_source, "SOURCE", None) == "PANDAS" and getattr(data_source, "_timestep", None) == "day"
 
     def _process_pandas_daily_data(self):
         """Process pandas daily data and execute one trading iteration"""
