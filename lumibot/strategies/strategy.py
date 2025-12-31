@@ -18,8 +18,9 @@ from apscheduler.triggers.cron import CronTrigger
 from termcolor import colored, COLORS
 
 from ..data_sources import DataSource
-from ..entities import Asset, Data, Order, Position, Quote, TradingFee
+from ..entities import Asset, Data, Order, Position, Quote, TradingFee, TradingSlippage, SmartLimitConfig
 from ..tools import get_risk_free_rate
+from ..tools.smart_limit_utils import build_price_ladder, compute_final_price, compute_mid, infer_tick_size, round_to_tick
 from ..tools.polars_utils import PolarsResampleError, resample_polars_ohlc
 from ..traders import Trader
 from ..credentials import IS_BACKTESTING
@@ -423,6 +424,7 @@ class Strategy(_Strategy):
         order_type: Union[Order.OrderType, None] = None,
         order_class: Union[Order.OrderClass, None] = None,
         type: Union[Order.OrderType, None] = None,  # Deprecated, use 'order_type' instead
+        smart_limit: SmartLimitConfig = None,
         custom_params: dict = None,
     ):
         # noinspection PyShadowingNames,PyUnresolvedReferences
@@ -460,8 +462,10 @@ class Strategy(_Strategy):
             Whether the order is ``buy`` or ``sell``.
         order_type : Order.OrderType
             The type of order. Order types include: ``'market'``, ``'limit'``, ``'stop'``, ``'stop_limit'``,
-            ``trailing_stop``
+            ``trailing_stop``, ``smart_limit``
             We will try to determine the order type if you do not specify it.
+        smart_limit : SmartLimitConfig
+            Configuration for SMART_LIMIT orders. If provided, the order type defaults to ``smart_limit``.
         order_class: Order.OrderClass
             The class of the order. Order classes include: ``'simple'``, ``'bracket'``, ``'oco'``, ``'oto'``,
             ``'multileg'``
@@ -728,6 +732,9 @@ class Strategy(_Strategy):
             quote = self.quote_asset
 
         asset = self._sanitize_user_asset(asset)
+        if smart_limit is not None and order_type is None and type is None:
+            order_type = Order.OrderType.SMART_LIMIT
+
         order = Order(
             self.name,
             asset,
@@ -756,6 +763,7 @@ class Strategy(_Strategy):
             type=type,
             order_type=order_type,
             order_class=order_class,
+            smart_limit=smart_limit,
             custom_params=custom_params,
         )
 
@@ -1506,6 +1514,12 @@ class Strategy(_Strategy):
         >>> order = self.create_order("SPY", 100, "buy", limit_price=100.00, stop_price=100.00)
         >>> self.submit_order(order)
 
+        >>> # For a SMART_LIMIT order
+        >>> from lumibot.entities import SmartLimitConfig, SmartLimitPreset
+        >>> config = SmartLimitConfig(preset=SmartLimitPreset.NORMAL, slippage=0.05)
+        >>> order = self.create_order("SPY", 100, "buy", smart_limit=config)
+        >>> self.submit_order(order)
+
         >>> # For a market sell order
         >>> order = self.create_order("SPY", 100, "sell")
         >>> self.submit_order(order)
@@ -1585,7 +1599,114 @@ class Strategy(_Strategy):
             if not self._validate_order(order):
                 return
 
+            if order.order_type == Order.OrderType.SMART_LIMIT:
+                if self.broker.IS_BACKTESTING_BROKER:
+                    return self.broker.submit_order(order)
+
+                if order.smart_limit is None:
+                    order.smart_limit = SmartLimitConfig()
+
+                if order.order_class == Order.OrderClass.MULTILEG and order.child_orders:
+                    return self._submit_multileg_smart_limit(order)
+
+                quote = self.get_quote(order.asset, quote=order.quote, exchange=order.exchange)
+                bid = getattr(quote, "bid", None)
+                ask = getattr(quote, "ask", None)
+                if bid is None or ask is None or bid <= 0 or ask <= 0:
+                    self.log_message(
+                        f"[SMART_LIMIT] Missing bid/ask for {order.asset}; downgrading to market.",
+                        color="yellow",
+                    )
+                    order.smart_limit = None
+                    order.order_type = Order.OrderType.MARKET
+                    return self.broker.submit_order(order)
+
+                side = "buy" if order.is_buy_order() else "sell"
+                tick = infer_tick_size(bid, ask)
+                mid = compute_mid(bid, ask)
+                final_price = compute_final_price(bid, ask, side, order.smart_limit.final_price_pct)
+                ladder = build_price_ladder(mid, final_price, order.smart_limit.get_step_count())
+                initial_price = round_to_tick(ladder[0], tick, side=side)
+
+                order.limit_price = initial_price
+                order._smart_limit_state = {
+                    "created_at": time.monotonic(),
+                    "step_index": 0,
+                    "steps": order.smart_limit.get_step_count(),
+                    "step_seconds": order.smart_limit.get_step_seconds(),
+                    "final_hold_seconds": order.smart_limit.get_final_hold_seconds(),
+                }
+
+                original_type = order.order_type
+                order.order_type = Order.OrderType.LIMIT
+                try:
+                    submitted = self.broker.submit_order(order)
+                finally:
+                    order.order_type = original_type
+                return submitted
+
             return self.broker.submit_order(order)
+
+    def _submit_multileg_smart_limit(self, order: Order):
+        quote_data = []
+        for leg in order.child_orders:
+            quote = self.get_quote(leg.asset, quote=leg.quote, exchange=leg.exchange)
+            bid = getattr(quote, "bid", None)
+            ask = getattr(quote, "ask", None)
+            quote_data.append((leg, bid, ask))
+
+        if any(bid is None or ask is None or bid <= 0 or ask <= 0 for _, bid, ask in quote_data):
+            self.log_message(
+                f"[SMART_LIMIT] Missing bid/ask for multileg order; downgrading to market.",
+                color="yellow",
+            )
+            order.smart_limit = None
+            return self.broker.submit_orders(order.child_orders, is_multileg=True, order_type=Order.OrderType.MARKET)
+
+        net_bid = 0.0
+        net_ask = 0.0
+        side = "buy" if order.is_buy_order() else "sell"
+        for leg, bid, ask in quote_data:
+            if side == "buy":
+                if leg.is_buy_order():
+                    net_bid += bid
+                    net_ask += ask
+                else:
+                    net_bid -= ask
+                    net_ask -= bid
+            else:
+                if leg.is_buy_order():
+                    net_bid -= ask
+                    net_ask -= bid
+                else:
+                    net_bid += bid
+                    net_ask += ask
+        tick = infer_tick_size(net_bid, net_ask)
+        mid = compute_mid(net_bid, net_ask)
+        final_price = compute_final_price(net_bid, net_ask, side, order.smart_limit.final_price_pct)
+        ladder = build_price_ladder(mid, final_price, order.smart_limit.get_step_count())
+        initial_price = round_to_tick(ladder[0], tick, side=side)
+
+        order.limit_price = initial_price
+        order._smart_limit_state = {
+            "created_at": time.monotonic(),
+            "step_index": 0,
+            "steps": order.smart_limit.get_step_count(),
+            "step_seconds": order.smart_limit.get_step_seconds(),
+            "final_hold_seconds": order.smart_limit.get_final_hold_seconds(),
+        }
+
+        parent_order = self.broker.submit_orders(
+            order.child_orders,
+            is_multileg=True,
+            order_type=Order.OrderType.LIMIT,
+            price=initial_price,
+        )
+        if parent_order is not None:
+            parent_order.smart_limit = order.smart_limit
+            parent_order.order_type = Order.OrderType.SMART_LIMIT
+            parent_order._smart_limit_state = order._smart_limit_state
+        return parent_order
 
     def submit_orders(self, orders: List[Order], **kwargs):
         """[Deprecated] Submit a list of orders
@@ -3421,6 +3542,32 @@ class Strategy(_Strategy):
         """
         datasource = self.broker.data_source
         auto_adjust = datasource.auto_adjust if hasattr(datasource, "auto_adjust") else False
+
+        lumibot_version = None
+        backtesting_data_sources = None
+        backtest_time_seconds = None
+        try:
+            import lumibot as _lumibot
+
+            lumibot_version = getattr(_lumibot, "__version__", None)
+        except Exception:
+            pass
+        try:
+            backtesting_data_sources = (
+                os.environ.get("BACKTESTING_DATA_SOURCES")
+                or os.environ.get("BACKTESTING_DATA_SOURCE")
+                or type(datasource).__name__
+            )
+        except Exception:
+            backtesting_data_sources = os.environ.get("BACKTESTING_DATA_SOURCE")
+        try:
+            backtest_time_seconds = getattr(self, "_backtest_time_seconds", None)
+            if backtest_time_seconds is None:
+                start_ts = getattr(self, "_backtest_time_start_monotonic", None)
+                if start_ts is not None:
+                    backtest_time_seconds = time.monotonic() - float(start_ts)
+        except Exception:
+            pass
         settings = {
             "name": self.name,
             "backtesting_start": str(self.backtesting_start),
@@ -3434,7 +3581,10 @@ class Strategy(_Strategy):
             "quote_asset": self.quote_asset,
             "benchmark_asset": self._benchmark_asset,
             "starting_positions": self.starting_positions,
-            "parameters": {k: v for k, v in self.parameters.items() if k != 'pandas_data'}
+            "parameters": {k: v for k, v in self.parameters.items() if k != 'pandas_data'},
+            "lumibot_version": lumibot_version,
+            "backtesting_data_sources": backtesting_data_sources,
+            "backtest_time_seconds": backtest_time_seconds,
         }
         os.makedirs(os.path.dirname(settings_file), exist_ok=True)
         with open(settings_file, "w") as outfile:
@@ -4576,6 +4726,8 @@ class Strategy(_Strategy):
         parameters: dict = {},
         buy_trading_fees: List[TradingFee] = [],
         sell_trading_fees: List[TradingFee] = [],
+        buy_trading_slippages: List[TradingSlippage] = [],
+        sell_trading_slippages: List[TradingSlippage] = [],
         polygon_api_key: str = None,
         indicators_file: str = None,
         show_indicators: bool = True,
@@ -4653,6 +4805,10 @@ class Strategy(_Strategy):
             A list of TradingFee objects to apply to the buy orders during backtests.
         sell_trading_fees : list of TradingFee objects
             A list of TradingFee objects to apply to the sell orders during backtests.
+        buy_trading_slippages : list of TradingSlippage objects
+            Slippage amounts to apply to buy SMART_LIMIT fills when no per-order slippage is provided.
+        sell_trading_slippages : list of TradingSlippage objects
+            Slippage amounts to apply to sell SMART_LIMIT fills when no per-order slippage is provided.
         polygon_api_key : str
             The polygon api key to use for polygon data. Only required if you are using PolygonDataBacktesting as
             the datasource_class.
@@ -4738,6 +4894,8 @@ class Strategy(_Strategy):
             parameters=parameters,
             buy_trading_fees=buy_trading_fees,
             sell_trading_fees=sell_trading_fees,
+            buy_trading_slippages=buy_trading_slippages,
+            sell_trading_slippages=sell_trading_slippages,
             polygon_api_key=polygon_api_key,
             indicators_file=indicators_file,
             show_indicators=show_indicators,

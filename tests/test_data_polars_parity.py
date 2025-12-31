@@ -155,6 +155,46 @@ def test_data_polars_timeshift_timedelta():
     assert len(df_pandas) == len(df_polars), "Row count mismatch with timedelta timeshift"
 
 
+def test_data_get_bars_fast_path_does_not_drop_on_nan_extra_columns():
+    """
+    Ensure the Data.get_bars() fast-path matches legacy resample semantics.
+
+    Historically, get_bars() resampled/aggregated OHLCV and therefore ignored unrelated columns
+    (e.g. bid/ask) when dropping NaNs. The fast-path must not drop rows just because an extra
+    column is NaN.
+    """
+    start = datetime(2024, 7, 18, 9, 30, tzinfo=timezone.utc)
+    mock_df = _create_mock_ohlc_data(start, periods=300)
+
+    # Add an "extra" column that is entirely NaN. The output should still include bars.
+    mock_df["bid"] = None
+
+    # Make volume NaN everywhere. The legacy resample path turns NaN volumes into 0 via `sum`,
+    # so the fast-path must do the same.
+    mock_df["volume"] = None
+
+    asset = Asset("HIMS", asset_type=Asset.AssetType.STOCK)
+    data_pandas = Data(
+        asset=asset,
+        df=mock_df.copy(),
+        timestep="minute",
+        quote=asset,
+    )
+
+    test_dt = datetime(2024, 7, 18, 10, 0, tzinfo=timezone.utc)
+    df_bars = data_pandas.get_bars(
+        dt=test_dt,
+        length=2,
+        timestep="minute",
+        timeshift=-2,
+    )
+
+    assert len(df_bars) == 2
+    assert "bid" not in df_bars.columns, "Extra columns should not be returned by get_bars()"
+    assert df_bars["volume"].isna().sum() == 0, "NaN volume should be normalized to 0 (resample parity)"
+    assert all(float(v) == 0.0 for v in df_bars["volume"]), "Expected filled volume to be 0.0 for NaN inputs"
+
+
 if __name__ == "__main__":
     # Run tests with verbose output
     pytest.main([__file__, "-v", "-s"])

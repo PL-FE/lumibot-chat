@@ -1,3 +1,5 @@
+import logging
+import json
 import os
 import time
 import threading
@@ -87,7 +89,12 @@ class Broker(ABC):
         self._filled_positions = SafeList(self._lock)
         self._subscribers = SafeList(self._lock)
         self._is_stream_subscribed = False
-        self._trade_event_log_df = pd.DataFrame()
+        # PERF: appending to a pandas DataFrame with concat on every trade event is extremely slow
+        # (option-heavy intraday backtests can generate 100k+ events). Store rows in a Python list
+        # and materialize a DataFrame lazily when needed.
+        self._trade_event_log_enabled = True
+        self._trade_event_log_rows = []
+        self._trade_event_log_df_cache = pd.DataFrame()
         self._hold_trade_events = False
         self._held_trades = []
         self._config = config
@@ -640,6 +647,38 @@ class Broker(ABC):
                            chains['Chains']['CALL'][exp_date] = [strike1, strike2, ...]
                          Expiration Date Format: 2023-07-31
         """
+        # PERF: Strategies can call `get_chains()` hundreds of times per trading day. Normalizing the
+        # chain (copying strike maps + sorting) is expensive and, in backtests, the chain for a given
+        # (asset, date, constraints) is immutable. Cache the normalized result within a backtest to
+        # avoid repeating that work.
+        cache_key = None
+        if getattr(self, "IS_BACKTESTING_BROKER", False):
+            try:
+                cache_date = self.data_source.get_datetime().date()
+            except Exception:
+                cache_date = None
+
+            constraints = getattr(self.data_source, "_chain_constraints", None) or {}
+            try:
+                constraints_key = json.dumps(constraints, sort_keys=True, default=str)
+            except Exception:
+                constraints_key = str(constraints)
+
+            cache_key = (
+                getattr(asset, "symbol", str(asset)),
+                str(getattr(asset, "asset_type", "")),
+                cache_date,
+                constraints_key,
+            )
+
+            if getattr(self, "_chains_cache_date", None) != cache_date:
+                self._chains_cache_date = cache_date
+                self._chains_cache = {}
+
+            cached = getattr(self, "_chains_cache", {}).get(cache_key)
+            if cached is not None:
+                return cached
+
         raw_chains = self.data_source.get_chains(asset)
         normalized_chains = normalize_option_chains(raw_chains)
 
@@ -650,6 +689,12 @@ class Broker(ABC):
                     "yellow",
                 )
             )
+
+        if cache_key is not None:
+            try:
+                self._chains_cache[cache_key] = normalized_chains
+            except Exception:
+                pass
 
         return normalized_chains
 
@@ -837,12 +882,13 @@ class Broker(ABC):
                     if order.was_transmitted():
                         flat_orders = self._flatten_order(order)
                         for flat_order in flat_orders:
-                            self.logger.info(
-                                colored(
-                                    f"Order {flat_order} was sent to broker {self.name}",
-                                    color="green",
+                            if self.logger.isEnabledFor(logging.INFO):
+                                self.logger.info(
+                                    colored(
+                                        f"Order {flat_order} was sent to broker {self.name}",
+                                        color="green",
+                                    )
                                 )
-                            )
                             self._unprocessed_orders.append(flat_order)
 
                 # Trigger periodic cleanup after processing orders
@@ -967,8 +1013,27 @@ class Broker(ABC):
 
         position = self.get_tracked_position(order.strategy, order.asset)
         if position is not None:
-            # Add the order to the already existing position
-            position.add_order(order)  # Don't update quantity here, it's handled by querying broker
+            # Live brokers will update positions via polling, but in backtesting there is no broker-side
+            # reconciliation. Cash settlement must therefore adjust the position quantity immediately so
+            # expired contracts don't remain open forever (which can cause long backtests to "freeze"
+            # due to exploding open positions).
+            if getattr(self, "IS_BACKTESTING_BROKER", False):
+                try:
+                    position.add_order(order, Decimal(str(quantity)))
+                except Exception:
+                    # Fallback: still record the settlement order even if quantity normalization failed.
+                    position.add_order(order)
+
+                if position.quantity == 0:
+                    try:
+                        self._filled_positions.remove(position)
+                    except Exception:
+                        # SafeList/remove semantics vary by broker; leaving a 0-qty position is acceptable.
+                        pass
+            else:
+                # Add the order to the already existing position; don't update quantity here because it's
+                # handled by querying broker positions in live trading.
+                position.add_order(order)
 
     def _process_crypto_quote(self, order, quantity, price):
         """Used to process the quote side of a crypto trade."""
@@ -1263,6 +1328,37 @@ class Broker(ABC):
         for order in self._tracked_orders:
             if (strategy_name is None or order.strategy == strategy_name) and (asset is None or order.asset == asset):
                 result.append(order)
+        return result
+
+    def get_active_tracked_orders(self, strategy=None, asset=None) -> list[Order]:
+        """Return only active (open) tracked orders for a strategy/asset.
+
+        This is intentionally faster than `get_tracked_orders()` because it only scans
+        the internal lists that can contain active orders (unprocessed/new/partially-filled
+        plus placeholders), avoiding the much larger filled/canceled/error histories.
+        """
+        # Allow filtering by Strategy instance or by name
+        if strategy is not None and not isinstance(strategy, str):
+            strategy_name = getattr(strategy, "name", getattr(strategy, "_name", None))
+        else:
+            strategy_name = strategy
+
+        active_candidates = (
+            self._unprocessed_orders.get_list()
+            + self._new_orders.get_list()
+            + self._partially_filled_orders.get_list()
+            + self._placeholder_orders.get_list()
+        )
+
+        result: list[Order] = []
+        for order in active_candidates:
+            if not order.is_active():
+                continue
+            if strategy_name is not None and order.strategy != strategy_name:
+                continue
+            if asset is not None and order.asset != asset:
+                continue
+            result.append(order)
         return result
 
     def get_all_orders(self) -> list[Order]:
@@ -1567,7 +1663,8 @@ class Broker(ABC):
         """notify relevant subscriber/strategy about
         new order event"""
 
-        self.logger.info(colored(f"New order was created: {order}", color="green"))
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(colored(f"New order was created: {order}", color="green"))
 
         payload = dict(order=order)
         subscriber = self._get_subscriber(order.strategy)
@@ -1578,7 +1675,8 @@ class Broker(ABC):
         """notify relevant subscriber/strategy about
         canceled order event"""
 
-        self.logger.info(colored(f"Order was canceled: {order}", color="green"))
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(colored(f"Order was canceled: {order}", color="green"))
 
         payload = dict(order=order)
         subscriber = self._get_subscriber(order.strategy)
@@ -1589,7 +1687,8 @@ class Broker(ABC):
         """notify relevant subscriber/strategy about
         partially filled order event"""
 
-        self.logger.info(colored(f"Order was partially filled: {order}", color="green"))
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(colored(f"Order was partially filled: {order}", color="green"))
 
         payload = dict(
             position=position,
@@ -1608,7 +1707,8 @@ class Broker(ABC):
         """notify relevant subscriber/strategy about
         filled order event"""
 
-        self.logger.info(colored(f"Order was filled: {order}", color="green"))
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(colored(f"Order was filled: {order}", color="green"))
 
         payload = dict(
             position=position,
@@ -1628,6 +1728,29 @@ class Broker(ABC):
     def _stream_established(self):
         self._is_stream_subscribed = True
 
+    @property
+    def _trade_event_log_df(self) -> pd.DataFrame:
+        """Trade event log as a DataFrame (materialized lazily for performance)."""
+        if not getattr(self, "_trade_event_log_enabled", True):
+            return getattr(self, "_trade_event_log_df_cache", pd.DataFrame())
+        cache = getattr(self, "_trade_event_log_df_cache", None)
+        if cache is None:
+            rows = getattr(self, "_trade_event_log_rows", [])
+            cache = pd.DataFrame(rows) if rows else pd.DataFrame()
+            self._trade_event_log_df_cache = cache
+        return cache
+
+    @_trade_event_log_df.setter
+    def _trade_event_log_df(self, value) -> None:
+        # Preserve legacy test behavior where callers set this to None to disable logging.
+        if value is None:
+            self._trade_event_log_enabled = False
+            self._trade_event_log_rows = []
+            self._trade_event_log_df_cache = pd.DataFrame()
+            return
+        self._trade_event_log_enabled = True
+        self._trade_event_log_df_cache = value
+
     def process_held_trades(self):
         """Processes any held trade notifications."""
         while len(self._held_trades) > 0:
@@ -1640,12 +1763,12 @@ class Broker(ABC):
             filled_quantity = th[3]
             multiplier = th[4]
 
-            # Log that the trade event was received
-            self.logger.info(
-                f"Processing held trade event. Trade event received for stored_order: {stored_order}, "
-                f"type_event: {type_event}, ID: {stored_order.identifier}, price: {price}, "
-                f"filled_quantity: {filled_quantity}, multiplier: {multiplier}"
-            )
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"Processing held trade event. Trade event received for stored_order: {stored_order}, "
+                    f"type_event: {type_event}, ID: {stored_order.identifier}, price: {price}, "
+                    f"filled_quantity: {filled_quantity}, multiplier: {multiplier}"
+                )
 
             # Process the trade event
             self._process_trade_event(
@@ -1659,19 +1782,19 @@ class Broker(ABC):
     def _process_trade_event(self, stored_order, type_event, price=None, filled_quantity=None, multiplier=1, error=None): # Add error parameter
         """process an occurred trading event and update the
         corresponding order"""
-        # Log that the trade event was received
-        self.logger.info(
-            f"Processing trade event. Trade event received for {stored_order.strategy} strategy: {type_event} "
-            f"{stored_order.symbol} ID={stored_order.identifier}, processed by broker {self.name}"
-        )
+        if self.logger.isEnabledFor(logging.INFO):
+            self.logger.info(
+                f"Processing trade event. Trade event received for {stored_order.strategy} strategy: {type_event} "
+                f"{stored_order.symbol} ID={stored_order.identifier}, processed by broker {self.name}"
+            )
 
         if self._hold_trade_events and not self.IS_BACKTESTING_BROKER:
-            # Log that the trade event was held
-            self.logger.info(
-                f"Trade event held for {stored_order.strategy} strategy: {type_event} {stored_order.symbol} "
-                f"ID={stored_order.identifier}, processed by broker {self.name}. "
-                f"self._hold_trade_events is {self._hold_trade_events}"
-            )
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(
+                    f"Trade event held for {stored_order.strategy} strategy: {type_event} {stored_order.symbol} "
+                    f"ID={stored_order.identifier}, processed by broker {self.name}. "
+                    f"self._hold_trade_events is {self._hold_trade_events}"
+                )
 
             # Hold the trade event
             self._held_trades.append(
@@ -1731,7 +1854,8 @@ class Broker(ABC):
                     subscriber.add_event(subscriber.ERROR_ORDER, payload)
         elif Order.is_equivalent_status(type_event, self.MODIFIED_ORDER):
             # TODO: Implement modification logic and notification if needed
-            self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
+            if self.logger.isEnabledFor(logging.INFO):
+                self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
             # Update raw data if modification response is available (might need adjustment)
             # stored_order.update_raw(modification_response_data)
             # self._on_modified_order(stored_order) # Need to implement _on_modified_order
@@ -1764,6 +1888,7 @@ class Broker(ABC):
             "filled_quantity": filled_quantity,
             "multiplier": multiplier,
             "trade_cost": stored_order.trade_cost,
+            "trade_slippage": getattr(stored_order, "trade_slippage", None),
             "time_in_force": stored_order.time_in_force,
             "asset.right": stored_order.asset.right if stored_order.asset is not None else None,
             "asset.strike": stored_order.asset.strike if stored_order.asset is not None else None,
@@ -1778,14 +1903,11 @@ class Broker(ABC):
                 delattr(stored_order, "_price_source")
             except AttributeError:
                 pass
-        # Create a DataFrame with the new row
-        new_row_df = pd.DataFrame(new_row, index=[0])
-
-        # Filter out empty or all-NA columns from new_row_df
-        new_row_df = new_row_df.dropna(axis=1, how="all")
-
-        # Concatenate the filtered new_row_df with the existing _trade_event_log_df
-        self._trade_event_log_df = pd.concat([self._trade_event_log_df, new_row_df], axis=0)
+        if getattr(self, "_trade_event_log_enabled", True):
+            # PERF: Avoid pandas concat per event; append to list and materialize once.
+            self._trade_event_log_rows.append(new_row)
+            # Invalidate cached DataFrame representation.
+            self._trade_event_log_df_cache = None
 
         return
 

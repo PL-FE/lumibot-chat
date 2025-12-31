@@ -11,7 +11,7 @@ import pytz
 try:
     from lumibot.backtesting.backtesting_broker import BacktestingBroker
     from lumibot.data_sources import PandasData
-    from lumibot.entities import Asset, Order # Import Asset if needed by mocked methods
+    from lumibot.entities import Asset, Order, Quote # Import Asset if needed by mocked methods
 except ImportError:
     # Add path modification if running tests directly and lumibot is not installed
     import sys
@@ -19,7 +19,7 @@ except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
     from lumibot.backtesting.backtesting_broker import BacktestingBroker
     from lumibot.data_sources import PandasData
-    from lumibot.entities import Asset, Order
+    from lumibot.entities import Asset, Order, Quote
 
 
 class TestBacktestingBroker:
@@ -86,6 +86,59 @@ class TestBacktestingBroker:
         Order(asset=Asset("SPY"), quantity=10, side="buy", strategy='abc')
         broker.submit_order(Order(asset=Asset("SPY"), quantity=10, side="buy", strategy='abc'))
         broker._conform_order.assert_called_once()
+
+    def test_market_order_prefers_quote_when_missing_ohlc(self):
+        broker = BacktestingBroker.__new__(BacktestingBroker)
+        broker.logger = MagicMock()
+        broker.data_source = type("StubSource", (), {"_timestep": "minute"})()
+        broker.get_quote = MagicMock(
+            return_value=Quote(
+                asset=Asset("SPY"),
+                bid=99.0,
+                ask=101.0,
+            )
+        )
+
+        order = Order(
+            asset=Asset("SPY"),
+            quantity=10,
+            side="buy",
+            order_type=Order.OrderType.MARKET,
+            strategy="test",
+        )
+        order.quote = Asset("USD", asset_type="forex")
+
+        price = broker._try_fill_with_quote(order, strategy=None, open_=None, high_=None, low_=None)
+
+        assert price == 101.0
+
+    def test_get_next_trading_day_marks_end_of_trading_days(self):
+        """Regression: reaching end of trading calendar should stop backtest (no infinite loop)."""
+        broker = BacktestingBroker.__new__(BacktestingBroker)
+        broker.option_source = None
+        broker._end_of_trading_days_reached = False
+
+        tz = pytz.timezone("America/New_York")
+        now = tz.localize(dt(2025, 1, 3, 12, 0))
+
+        # Simulate a datasource whose configured end extends beyond available trading days.
+        broker.data_source = type(
+            "StubSource",
+            (),
+            {
+                "datetime_end": tz.localize(dt(2025, 2, 1)),
+                "get_datetime": lambda self: now,
+            },
+        )()
+
+        open_1 = tz.localize(dt(2025, 1, 2, 9, 30))
+        close_1 = tz.localize(dt(2025, 1, 2, 16, 0))
+        broker._trading_days = pd.DataFrame({"market_open": [open_1]}, index=[close_1])
+
+        assert broker._get_next_trading_day() is None
+        assert broker._end_of_trading_days_reached is True
+        assert broker.data_source.datetime_end == now
+        assert broker.should_continue() is False
 
 
 # New Test Class for Time Advancement Logic

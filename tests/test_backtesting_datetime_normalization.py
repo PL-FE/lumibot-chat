@@ -55,6 +55,27 @@ def test_verify_backtest_inputs_accepts_mixed_timezones():
     _Strategy.verify_backtest_inputs(naive_start, aware_end)
 
 
+def test_verify_backtest_inputs_rejects_future_end_by_default(monkeypatch):
+    """Guardrail: backtesting_end must not be in the future unless explicitly allowed."""
+    monkeypatch.delenv("BACKTESTING_ALLOW_FUTURE_END", raising=False)
+
+    start = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+    future_end = datetime.datetime(9999, 12, 31, tzinfo=datetime.timezone.utc)
+
+    with pytest.raises(ValueError, match="cannot be in the future"):
+        _Strategy.verify_backtest_inputs(start, future_end)
+
+
+def test_verify_backtest_inputs_allows_future_end_with_env(monkeypatch):
+    """Opt-in: allow future end dates for testing when BACKTESTING_ALLOW_FUTURE_END=true."""
+    monkeypatch.setenv("BACKTESTING_ALLOW_FUTURE_END", "true")
+
+    start = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+    future_end = datetime.datetime(9999, 12, 31, tzinfo=datetime.timezone.utc)
+
+    _Strategy.verify_backtest_inputs(start, future_end)
+
+
 def test_run_backtest_normalizes_mixed_timezones(disable_datasource_override):
     """Strategy.run_backtest should normalize naive/aware datetimes before validation."""
     naive_start = datetime.datetime(2025, 1, 1)

@@ -11,6 +11,8 @@ from .order import Order
 from .position import Position
 from .quote import Quote
 from .trading_fee import TradingFee
+from .trading_slippage import TradingSlippage
+from .smart_limit import SmartLimitConfig, SmartLimitPreset
 
 # Use base implementations directly
 Bars = _BarsBase
@@ -28,4 +30,7 @@ __all__ = [
     "Position",
     "Quote",
     "TradingFee",
+    "TradingSlippage",
+    "SmartLimitConfig",
+    "SmartLimitPreset",
 ]
