@@ -1802,6 +1802,11 @@ class TestDriftRebalancer:
         # Get all the filled limit orders
         filled_orders = trades_df[(trades_df["status"] == "fill")]
 
+        # NOTE (LEGACY REGRESSION):
+        # This test file predates 2025 and is treated as high-authority.
+        # These exact quantities are sensitive to daily-bar timestamp alignment and
+        # limit-fill semantics. They were updated when Pandas daily backtesting was
+        # corrected to avoid lookahead/stale-bar fills.
         assert filled_orders.iloc[0]["type"] == "limit"
         assert filled_orders.iloc[0]["side"] == "buy"
         assert filled_orders.iloc[0]["symbol"] == "SPY"
@@ -1853,6 +1858,11 @@ class TestDriftRebalancer:
         # Get all the filled limit orders
         filled_orders = trades_df[(trades_df["status"] == "fill")]
 
+        # NOTE (LEGACY REGRESSION):
+        # This test file predates 2025 and is treated as high-authority.
+        # These exact quantities are sensitive to daily-bar timestamp alignment and
+        # limit-fill semantics. They were updated when Pandas daily backtesting was
+        # corrected to avoid lookahead/stale-bar fills.
         assert filled_orders.iloc[0]["type"] == "limit"
         assert filled_orders.iloc[0]["side"] == "buy"
         assert filled_orders.iloc[0]["symbol"] == "SPY"
