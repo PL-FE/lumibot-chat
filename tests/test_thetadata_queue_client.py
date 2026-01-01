@@ -502,6 +502,72 @@ class TestSubmitRetry:
         assert was_pending is False
         assert mock_post.call_count == 2
 
+
+class TestSubmitNetworkTimeout:
+    """Tests for network-wedge behavior during submit.
+
+    These reproduce the production failure mode where a downloader submit call blocks/hangs.
+    The client must always pass a bounded timeout to requests.post and must retry on transient
+    network errors instead of stalling forever.
+    """
+
+    @patch.object(time, "sleep", return_value=None)
+    @patch.object(requests.Session, "post")
+    def test_submit_request_retries_on_read_timeout(self, mock_post, _mock_sleep):
+        """A read timeout during submit should trigger a retry and session reset."""
+        timeout_exc = requests.exceptions.ReadTimeout("submit timed out")
+
+        success_response = MagicMock()
+        success_response.status_code = 200
+        success_response.headers = {}
+        success_response.json.return_value = {
+            "request_id": "req-123",
+            "status": "pending",
+            "queue_position": 5,
+        }
+
+        mock_post.side_effect = [timeout_exc, success_response]
+
+        client = QueueClient("http://test:8080", "test-key")
+        generation_before = client._session_generation
+
+        request_id, status, was_pending = client.check_or_submit(
+            method="GET",
+            path="v3/stock/history/ohlc",
+            query_params={"symbol": "AAPL", "start": "2024-01-01"},
+        )
+
+        assert request_id == "req-123"
+        assert status == "pending"
+        assert was_pending is False
+        assert mock_post.call_count == 2
+        assert client._session_generation > generation_before
+
+        # Ensure we always pass a bounded timeout to post() so it cannot hang forever.
+        _, first_kwargs = mock_post.call_args_list[0]
+        assert "timeout" in first_kwargs
+        connect_timeout, read_timeout = first_kwargs["timeout"]
+        assert connect_timeout > 0
+        assert read_timeout > 0
+
+
+class TestStatusRefreshRecovery:
+    """Tests for recovery when status polling becomes unreliable."""
+
+    @patch.object(requests.Session, "get")
+    def test_refresh_status_invalidate_sessions_after_error_streak(self, mock_get):
+        """After repeated status refresh failures, the client should reset HTTP sessions."""
+        mock_get.side_effect = requests.exceptions.ConnectionError("status down")
+
+        client = QueueClient("http://test:8080", "test-key")
+        generation_before = client._session_generation
+
+        # Trigger the internal error streak.
+        for _ in range(3):
+            client._refresh_status("req-123")
+
+        assert client._session_generation > generation_before
+
 class TestThreadSafety:
     """Tests for thread safety."""
 
