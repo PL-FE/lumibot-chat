@@ -59,6 +59,43 @@ def test_get_delta_for_strike_uses_quote_mid_when_last_trade_missing():
     assert strategy.last_greeks_call["underlying_price"] == 60.0
 
 
+def test_get_delta_for_strike_uses_snapshot_only_quotes_when_backtesting_source_supports_it():
+    class _StubOptionSource:
+        def __init__(self):
+            self.calls = []
+
+        def get_quote(self, _asset, quote=None, exchange=None, **kwargs):
+            self.calls.append({"quote": quote, "exchange": exchange, **kwargs})
+            return SimpleNamespace(bid=1.0, ask=3.0)
+
+    class _StubBroker:
+        IS_BACKTESTING_BROKER = True
+
+        def __init__(self, option_source):
+            self.option_source = option_source
+            self.data_source = None
+
+    option_source = _StubOptionSource()
+    strategy = _StubStrategy()
+    strategy.broker = _StubBroker(option_source)
+    helper = OptionsHelper(strategy)
+
+    underlying = Asset("UBER", asset_type=Asset.AssetType.STOCK)
+    expiry = datetime.date(2027, 6, 17)
+
+    delta = helper.get_delta_for_strike(
+        underlying_asset=underlying,
+        underlying_price=60.0,
+        strike=60.0,
+        expiry=expiry,
+        right="call",
+    )
+
+    assert delta == 0.5
+    assert option_source.calls, "Expected OptionsHelper to call broker.option_source.get_quote()"
+    assert option_source.calls[0].get("snapshot_only") is True
+
+
 def test_get_expiration_on_or_after_date_rejects_expiry_without_strikes_near_underlying():
     strategy = _StubStrategy(underlying_price=60.0)
     helper = OptionsHelper(strategy)
@@ -103,4 +140,3 @@ def test_get_expiration_on_or_after_date_accepts_expiry_with_nearby_strikes():
     )
 
     assert expiry == datetime.date(2027, 6, 17)
-

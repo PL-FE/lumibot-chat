@@ -555,6 +555,81 @@ class TestThreadSafety:
         assert all(r[1] is not None for r in results)
 
 
+class TestSessionRecovery:
+    """Tests for session handling + self-healing retries.
+
+    These cover production failure modes where shared sessions or wedged queue entries can
+    cause backtests to "go silent" while waiting forever.
+    """
+
+    def test_thread_local_sessions_are_isolated(self):
+        """Each thread should get its own requests.Session instance."""
+        client = QueueClient("http://test:8080", "test-key")
+        main_session = client._get_session()
+
+        other_session_id = {}
+
+        def _worker():
+            other_session_id["id"] = id(client._get_session())
+
+        thread = threading.Thread(target=_worker)
+        thread.start()
+        thread.join()
+
+        assert other_session_id["id"] != id(main_session)
+
+    def test_invalidate_sessions_rotates_generation(self):
+        """Invalidate should force a new Session in the current thread."""
+        client = QueueClient("http://test:8080", "test-key")
+        first = client._get_session()
+        client._invalidate_sessions("unit test")
+        second = client._get_session()
+        assert id(first) != id(second)
+
+    @patch.object(time, "sleep", return_value=None)
+    def test_execute_request_resubmits_after_repeated_timeouts(self, _mock_sleep):
+        """After repeated per-attempt timeouts, execute_request should force a new correlation id."""
+        client = QueueClient("http://test:8080", "test-key", timeout=0.05)
+
+        method = "GET"
+        path = "v3/test"
+        query_params = {"symbol": "AAPL"}
+        base_corr = client._build_correlation_id(method, path, query_params)
+
+        submit_calls = []
+
+        def _fake_check_or_submit(*args, **kwargs):
+            submit_calls.append(kwargs.get("correlation_id_override"))
+            return "req-123", "pending", False
+
+        wait_calls = {"count": 0}
+
+        def _fake_wait_for_result(*_args, **_kwargs):
+            wait_calls["count"] += 1
+            if wait_calls["count"] <= 3:
+                raise TimeoutError("simulated timeout")
+            return {"ok": True}, 200
+
+        with patch.object(client, "check_or_submit", side_effect=_fake_check_or_submit) as _mock_submit:
+            with patch.object(client, "wait_for_result", side_effect=_fake_wait_for_result):
+                result, status_code = client.execute_request(
+                    method=method,
+                    path=path,
+                    query_params=query_params,
+                    timeout=0.05,
+                )
+
+        assert result == {"ok": True}
+        assert status_code == 200
+        # First 3 attempts keep the base correlation (override=None); the 4th should force a retry override.
+        assert len(submit_calls) == 4
+        assert submit_calls[0] is None
+        assert submit_calls[1] is None
+        assert submit_calls[2] is None
+        assert isinstance(submit_calls[3], str)
+        assert submit_calls[3].startswith(f"{base_corr}-retry-3-")
+
+
 class TestQueuedRequestInfo:
     """Tests for QueuedRequestInfo dataclass."""
 

@@ -146,6 +146,8 @@ class OptionsHelper:
     def _get_option_mark_from_quote(
         self,
         option_asset: Asset,
+        *,
+        snapshot: bool = False,
     ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
         """Return (mark_price, bid, ask) derived from quotes; never calls get_last_price()."""
         self._reset_per_bar_caches_if_needed()
@@ -155,7 +157,29 @@ class OptionsHelper:
             return cached
 
         try:
-            quote = self.strategy.get_quote(option_asset)
+            # PERF: delta/strike probing can touch many strikes that will never be traded. For those,
+            # we want a point-in-time quote snapshot (1-2 bars), not a full-day prefetch that can
+            # balloon to ~956 minute rows per strike. Use a ThetaData backtesting fast-path when
+            # available; otherwise fall back to the normal Strategy.get_quote().
+            broker = getattr(self.strategy, "broker", None)
+            if snapshot and broker is not None and getattr(broker, "IS_BACKTESTING_BROKER", False):
+                asset_type = getattr(option_asset, "asset_type", None)
+                is_option_asset = asset_type == Asset.AssetType.OPTION or "option" in str(asset_type).lower()
+
+                # Mirror Strategy.get_quote behavior: prefer the broker's option_source when
+                # available; otherwise fall back to the primary data source.
+                source = getattr(broker, "option_source", None) if is_option_asset else None
+                if source is None:
+                    source = getattr(broker, "data_source", None)
+                if source is not None:
+                    try:
+                        quote = source.get_quote(option_asset, quote=None, exchange=None, snapshot_only=True)
+                    except TypeError:
+                        quote = source.get_quote(option_asset, quote=None, exchange=None)
+                else:
+                    quote = self.strategy.get_quote(option_asset)
+            else:
+                quote = self.strategy.get_quote(option_asset)
         except Exception:
             return None, None, None
 
@@ -446,7 +470,7 @@ class OptionsHelper:
                 right=right,
                 underlying_asset=underlying_asset,
             )
-            option_price, _, _ = self._get_option_mark_from_quote(option)
+            option_price, _, _ = self._get_option_mark_from_quote(option, snapshot=True)
             if option_price is None:
                 try:
                     option_price = self._float_positive(self.strategy.get_last_price(option))
@@ -534,7 +558,7 @@ class OptionsHelper:
                 return None
             return numeric
 
-        option_price, _, _ = self._get_option_mark_from_quote(option)
+        option_price, _, _ = self._get_option_mark_from_quote(option, snapshot=True)
         if option_price is None:
             try:
                 option_price = _coerce_price(self.strategy.get_last_price(option))

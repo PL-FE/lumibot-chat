@@ -615,6 +615,7 @@ class ThetaDataBacktestingPandas(PandasData):
         start_dt=None,
         require_quote_data: bool = False,
         require_ohlc_data: bool = True,
+        snapshot_only: bool = False,
     ):
         """
         Get asset data and update the self.pandas_data dictionary.
@@ -750,6 +751,7 @@ class ThetaDataBacktestingPandas(PandasData):
                     and isinstance(length, int)
                     and length <= 5
                     and ts_unit in {"minute", "hour"}
+                    and not snapshot_only
                 ):
                     try:
                         # PERF: `get_trading_days()` is expensive (calendar lookup + schedule build).
@@ -2781,6 +2783,7 @@ class ThetaDataBacktestingPandas(PandasData):
         Quote
             A Quote object with the quote information.
         """
+        snapshot_only = bool(kwargs.pop("snapshot_only", False))
         dt = self.get_datetime()
 
         # FIX (2025-12-12): In day mode, use day data for quote lookups instead of minute.
@@ -2819,6 +2822,130 @@ class ThetaDataBacktestingPandas(PandasData):
         cached = getattr(self, "_quote_cache", {}).get(cache_key)
         if cached is not None:
             return cached
+
+        # SNAPSHOT MODE (perf-critical)
+        # -----------------------------
+        # Some strategies (notably delta/strike scanners) need only a point-in-time NBBO for many
+        # strikes that will never be traded. The normal caching path for intraday ThetaData quotes
+        # is date-based and can download an entire trading day (~956 minute rows) per strike, which
+        # is both slow and can stall long-running backtests in production.
+        #
+        # When snapshot_only=True, bypass parquet caching entirely and request only the minimal
+        # intraday quote window around the current simulation timestamp.
+        if snapshot_only:
+            from lumibot.entities import Quote as QuoteEntity
+
+            def _cache_and_return(obj: QuoteEntity):
+                try:
+                    self._quote_cache[cache_key] = obj
+                except Exception:
+                    pass
+                return obj
+
+            try:
+                from lumibot.tools import thetadata_helper
+
+                delta_td, ts_unit = self.convert_timestep_str_to_timedelta(timestep)
+                if ts_unit not in {"minute", "second", "hour"}:
+                    raise ValueError(f"snapshot_only unsupported for ts_unit={ts_unit}")
+
+                ivl_ms = int(delta_td.total_seconds() * 1000)
+                if ivl_ms <= 0:
+                    ivl_ms = 60_000
+
+                # Request only a tiny window around dt. Using [dt - ivl, dt] is more robust than
+                # [dt, dt] when the provider treats end_time as inclusive/exclusive.
+                start_dt = dt - delta_td
+                end_dt = dt
+
+                df_snapshot = thetadata_helper.get_historical_data(
+                    asset,
+                    start_dt,
+                    end_dt,
+                    ivl_ms,
+                    datastyle="quote",
+                    include_after_hours=True,
+                )
+
+                if df_snapshot is None or getattr(df_snapshot, "empty", True):
+                    # Snapshot-only is intentionally non-caching: do not fall back to the day-chunk
+                    # parquet fetch path, which is extremely expensive for delta probes and can
+                    # introduce lookahead if later-session quotes are forward-filled.
+                    return _cache_and_return(
+                        QuoteEntity(
+                            asset=asset,
+                            price=None,
+                            bid=None,
+                            ask=None,
+                            volume=None,
+                            timestamp=dt,
+                            bid_size=None,
+                            ask_size=None,
+                            raw_data=None,
+                        )
+                    )
+
+                # Prefer the last bar at/before dt.
+                try:
+                    df_slice = df_snapshot.loc[:dt]
+                    row = df_slice.iloc[-1] if not df_slice.empty else df_snapshot.iloc[-1]
+                    row_ts = df_slice.index[-1] if not df_slice.empty else df_snapshot.index[-1]
+                except Exception:
+                    row = df_snapshot.iloc[-1]
+                    row_ts = df_snapshot.index[-1]
+
+                def _coerce_positive(value):
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        return None
+                    if not math.isfinite(numeric) or numeric <= 0:
+                        return None
+                    return numeric
+
+                bid = _coerce_positive(row.get("bid") if hasattr(row, "get") else None)
+                ask = _coerce_positive(row.get("ask") if hasattr(row, "get") else None)
+
+                bid_size = row.get("bid_size") if hasattr(row, "get") else None
+                ask_size = row.get("ask_size") if hasattr(row, "get") else None
+                volume = row.get("volume") if hasattr(row, "get") else None
+
+                price = None
+                if bid is not None and ask is not None:
+                    price = (bid + ask) / 2.0
+                elif bid is not None:
+                    price = bid
+                elif ask is not None:
+                    price = ask
+
+                return _cache_and_return(
+                    QuoteEntity(
+                        asset=asset,
+                        price=price,
+                        bid=bid,
+                        ask=ask,
+                        volume=volume,
+                        timestamp=row_ts,
+                        bid_size=bid_size,
+                        ask_size=ask_size,
+                        raw_data=None,
+                    )
+                )
+            except Exception:
+                logger.debug("[THETA][QUOTE][SNAPSHOT_ONLY] failed", exc_info=True)
+                return _cache_and_return(
+                    QuoteEntity(
+                        asset=asset,
+                        price=None,
+                        bid=None,
+                        ask=None,
+                        volume=None,
+                        timestamp=dt,
+                        bid_size=None,
+                        ask_size=None,
+                        raw_data=None,
+                    )
+                )
 
         # Log quote request details for debugging (options vs other assets).
         # Guard to avoid allocating strings/dicts when debug logging is disabled.
@@ -2888,6 +3015,7 @@ class ThetaDataBacktestingPandas(PandasData):
                 dt,
                 require_quote_data=True,
                 require_ohlc_data=require_ohlc_data,
+                snapshot_only=snapshot_only,
             )
 
         quote_obj = None
