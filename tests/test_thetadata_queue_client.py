@@ -568,6 +568,59 @@ class TestStatusRefreshRecovery:
 
         assert client._session_generation > generation_before
 
+
+class TestExecuteRequestRecovery:
+    """Tests for recovery inside execute_request().
+
+    These cover the production "silent stall" failure mode where:
+    - a request is submitted (or re-used idempotently),
+    - but waiting for the result times out repeatedly (e.g., downloader wedged),
+    - and the client must force a resubmit with a new correlation id instead of hanging forever.
+    """
+
+    @patch.object(time, "sleep", return_value=None)
+    def test_execute_request_forces_resubmit_after_repeated_timeouts(self, _mock_sleep):
+        client = QueueClient("http://test:8080", "test-key")
+
+        # Simulate a persistent wedge: wait_for_result keeps timing out, then finally succeeds.
+        wait_calls = {"count": 0}
+
+        def wait_side_effect(*args, **kwargs):
+            wait_calls["count"] += 1
+            if wait_calls["count"] <= 3:
+                raise TimeoutError("timed out waiting for req-1")
+            return {"ok": True}, 200
+
+        client.wait_for_result = MagicMock(side_effect=wait_side_effect)
+
+        # check_or_submit should be called repeatedly. After 3 timeouts, execute_request
+        # should force a resubmit using a correlation_id_override containing "-retry-<n>".
+        submit_calls = []
+
+        def check_or_submit_side_effect(*, correlation_id_override=None, **kwargs):
+            submit_calls.append(correlation_id_override)
+            # When forcing resubmit, pretend we get a new request id.
+            if correlation_id_override and "retry" in correlation_id_override:
+                return "req-2", "pending", False
+            return "req-1", "pending", False
+
+        client.check_or_submit = MagicMock(side_effect=check_or_submit_side_effect)
+
+        result, status_code = client.execute_request(
+            method="GET",
+            path="/v3/test",
+            query_params={"symbol": "AAPL"},
+            timeout=1.0,  # per-attempt timeout doesn't matter; wait_for_result is mocked
+        )
+
+        assert result == {"ok": True}
+        assert status_code == 200
+        assert wait_calls["count"] == 4
+
+        # We should see at least one forced-resubmit correlation id after repeated timeouts.
+        assert any((cid or "").find("retry") != -1 for cid in submit_calls)
+
+
 class TestThreadSafety:
     """Tests for thread safety."""
 
