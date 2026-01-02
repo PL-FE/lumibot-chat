@@ -39,6 +39,56 @@ def _is_finite_positive(value: Any) -> bool:
         return False
 
 
+def _quote_snapshot(strategy: Strategy, asset: Asset, *, quote: Asset | None = None, exchange: str | None = None):
+    q = strategy.get_quote(asset, quote=quote, exchange=exchange)
+    bid = getattr(q, "bid", None)
+    ask = getattr(q, "ask", None)
+    try:
+        bid_f = float(bid) if bid is not None else None
+    except Exception:
+        bid_f = None
+    try:
+        ask_f = float(ask) if ask is not None else None
+    except Exception:
+        ask_f = None
+    mid_f = None
+    if bid_f is not None and ask_f is not None and ask_f > 0 and bid_f >= 0:
+        mid_f = (bid_f + ask_f) / 2.0
+    return bid_f, ask_f, mid_f
+
+
+def _multileg_net_snapshot(strategy: Strategy, legs: list[Order]):
+    quote_data: list[tuple[Order, float | None, float | None]] = []
+    for leg in legs:
+        q = strategy.get_quote(leg.asset, quote=leg.quote, exchange=leg.exchange)
+        bid = getattr(q, "bid", None)
+        ask = getattr(q, "ask", None)
+        try:
+            bid_f = float(bid) if bid is not None else None
+        except Exception:
+            bid_f = None
+        try:
+            ask_f = float(ask) if ask is not None else None
+        except Exception:
+            ask_f = None
+        quote_data.append((leg, bid_f, ask_f))
+
+    if any(b is None or a is None or b < 0 or a <= 0 for _, b, a in quote_data):
+        return None, None, None
+
+    net_best = 0.0
+    net_fastest = 0.0
+    for leg, bid_f, ask_f in quote_data:
+        if leg.is_buy_order():
+            net_best += float(bid_f)
+            net_fastest += float(ask_f)
+        else:
+            net_best -= float(ask_f)
+            net_fastest -= float(bid_f)
+
+    return net_best, net_fastest, (net_best + net_fastest) / 2.0
+
+
 class _BenchStrategy(Strategy):
     def initialize(self, parameters=None):
         self.sleeptime = "1S"
@@ -152,6 +202,10 @@ def _wait_for_fill(
 
         time.sleep(1.0)
 
+    try:
+        strategy.broker.cancel_order(order)
+    except Exception:
+        pass
     return False, snapshots
 
 
@@ -312,7 +366,7 @@ def main() -> int:
     parser.add_argument("--final-price-pct", type=float, default=1.0)
     parser.add_argument("--final-hold-seconds", type=int, default=120)
     parser.add_argument("--timeout-seconds", type=int, default=240)
-    parser.add_argument("--output", default="logs/bench_smart_limit_vs_market.csv")
+    parser.add_argument("--output", default="logs/bench_smart_limit_vs_market_v2.csv")
     parser.add_argument("--market-first", action="store_true")
     args = parser.parse_args()
 
@@ -342,8 +396,20 @@ def main() -> int:
         "symbol",
         "structure",
         "mode",
+        "open_submit_bid",
+        "open_submit_ask",
+        "open_submit_mid",
+        "open_net_best",
+        "open_net_fastest",
+        "open_net_mid",
         "open_status",
         "open_fill_price",
+        "close_submit_bid",
+        "close_submit_ask",
+        "close_submit_mid",
+        "close_net_best",
+        "close_net_fastest",
+        "close_net_mid",
         "close_status",
         "close_fill_price",
         "open_reprices",
@@ -377,6 +443,11 @@ def main() -> int:
                     smart_limit = smart_cfg
                     drive = True
 
+                open_submit_bid = open_submit_ask = open_submit_mid = None
+                close_submit_bid = close_submit_ask = close_submit_mid = None
+                open_net_best = open_net_fastest = open_net_mid = None
+                close_net_best = close_net_fastest = close_net_mid = None
+
                 if args.structure == "single_call":
                     open_order, close_order = _build_single_call(
                         strategy,
@@ -387,13 +458,34 @@ def main() -> int:
                         smart_limit=smart_limit,
                     )
 
+                    open_submit_bid, open_submit_ask, open_submit_mid = _quote_snapshot(
+                        strategy, open_order.asset, quote=open_order.quote, exchange=open_order.exchange
+                    )
                     submitted = strategy.submit_order(open_order)
                     open_parent = submitted
                     ok_open, open_snaps = _wait_for_fill(strategy, open_parent, timeout_seconds=args.timeout_seconds, drive_smart_limit=drive)
 
-                    submitted_close = strategy.submit_order(close_order)
-                    close_parent = submitted_close
-                    ok_close, close_snaps = _wait_for_fill(strategy, close_parent, timeout_seconds=args.timeout_seconds, drive_smart_limit=drive)
+                    ok_close = False
+                    close_snaps: list[_FillSnapshot] = []
+                    if ok_open:
+                        close_submit_bid, close_submit_ask, close_submit_mid = _quote_snapshot(
+                            strategy, close_order.asset, quote=close_order.quote, exchange=close_order.exchange
+                        )
+                        submitted_close = strategy.submit_order(close_order)
+                        close_parent = submitted_close
+                        ok_close, close_snaps = _wait_for_fill(strategy, close_parent, timeout_seconds=args.timeout_seconds, drive_smart_limit=drive)
+                        if not ok_close:
+                            # Best-effort flatten to avoid leaving positions behind.
+                            mkt_close = strategy.create_order(
+                                close_order.asset,
+                                close_order.quantity,
+                                close_order.side,
+                                order_type=Order.OrderType.MARKET,
+                                quote=close_order.quote,
+                                exchange=close_order.exchange,
+                            )
+                            submitted_mkt = strategy.submit_order(mkt_close)
+                            _wait_for_fill(strategy, submitted_mkt, timeout_seconds=60, drive_smart_limit=False)
 
                 else:
                     open_legs, close_legs = _build_iron_condor(
@@ -410,13 +502,30 @@ def main() -> int:
                     if mode == "market" and args.broker == "alpaca":
                         submit_kwargs = {"is_multileg": True, "order_type": "market"}
 
+                    open_net_best, open_net_fastest, open_net_mid = _multileg_net_snapshot(strategy, open_legs)
                     submitted = strategy.submit_order(open_legs, **submit_kwargs)
                     open_parent = submitted[0] if isinstance(submitted, list) else submitted
                     ok_open, open_snaps = _wait_for_fill(strategy, open_parent, timeout_seconds=args.timeout_seconds, drive_smart_limit=drive)
 
-                    submitted_close = strategy.submit_order(close_legs, **submit_kwargs)
-                    close_parent = submitted_close[0] if isinstance(submitted_close, list) else submitted_close
-                    ok_close, close_snaps = _wait_for_fill(strategy, close_parent, timeout_seconds=args.timeout_seconds, drive_smart_limit=drive)
+                    ok_close = False
+                    close_snaps = []
+                    if ok_open:
+                        close_net_best, close_net_fastest, close_net_mid = _multileg_net_snapshot(strategy, close_legs)
+                        submitted_close = strategy.submit_order(close_legs, **submit_kwargs)
+                        close_parent = submitted_close[0] if isinstance(submitted_close, list) else submitted_close
+                        ok_close, close_snaps = _wait_for_fill(strategy, close_parent, timeout_seconds=args.timeout_seconds, drive_smart_limit=drive)
+                        if not ok_close:
+                            # Best-effort flatten: market close legs as a package.
+                            close_mkt_legs = [
+                                strategy.create_order(leg.asset, leg.quantity, leg.side, order_type=Order.OrderType.MARKET, smart_limit=None)
+                                for leg in close_legs
+                            ]
+                            mkt_kwargs = {}
+                            if args.broker == "alpaca":
+                                mkt_kwargs = {"is_multileg": True, "order_type": "market"}
+                            submitted_mkt = strategy.submit_order(close_mkt_legs, **mkt_kwargs)
+                            mkt_parent = submitted_mkt[0] if isinstance(submitted_mkt, list) else submitted_mkt
+                            _wait_for_fill(strategy, mkt_parent, timeout_seconds=60, drive_smart_limit=False)
 
                 def _count_reprices(snaps: list[_FillSnapshot]) -> int:
                     prices = [s.limit_price for s in snaps if s.limit_price is not None]
@@ -436,8 +545,20 @@ def main() -> int:
                         "symbol": args.symbol,
                         "structure": args.structure,
                         "mode": mode,
+                        "open_submit_bid": open_submit_bid,
+                        "open_submit_ask": open_submit_ask,
+                        "open_submit_mid": open_submit_mid,
+                        "open_net_best": open_net_best,
+                        "open_net_fastest": open_net_fastest,
+                        "open_net_mid": open_net_mid,
                         "open_status": ok_open,
                         "open_fill_price": open_fill,
+                        "close_submit_bid": close_submit_bid,
+                        "close_submit_ask": close_submit_ask,
+                        "close_submit_mid": close_submit_mid,
+                        "close_net_best": close_net_best,
+                        "close_net_fastest": close_net_fastest,
+                        "close_net_mid": close_net_mid,
                         "close_status": ok_close,
                         "close_fill_price": close_fill,
                         "open_reprices": _count_reprices(open_snaps),
@@ -448,6 +569,11 @@ def main() -> int:
                     }
                 )
                 f.flush()
+
+                try:
+                    strategy.cancel_open_orders()
+                except Exception:
+                    pass
 
     print(f"Wrote results to {output_path}")
     return 0

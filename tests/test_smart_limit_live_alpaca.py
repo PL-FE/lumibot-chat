@@ -33,6 +33,35 @@ def _alpaca() -> Alpaca:
 def _poll_alpaca_order(broker: Alpaca, order: Order):
     return broker.api.get_order_by_id(order.identifier)
 
+def _cancel_alpaca_open_orders_for_symbol(broker: Alpaca, symbol: str) -> None:
+    """Best-effort cleanup for Alpaca to avoid crypto wash-trade rejections in paper."""
+    try:
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+    except Exception:
+        return
+
+    target = str(symbol).upper().replace("/", "")
+    try:
+        request = GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=500)
+        open_orders = broker.api.get_orders(filter=request) or []
+    except Exception:
+        return
+
+    for raw in open_orders:
+        raw_symbol = getattr(raw, "symbol", None)
+        if raw_symbol is None and hasattr(raw, "_raw") and isinstance(raw._raw, dict):
+            raw_symbol = raw._raw.get("symbol")
+        if not raw_symbol:
+            continue
+        raw_norm = str(raw_symbol).upper().replace("/", "")
+        if raw_norm != target:
+            continue
+        try:
+            broker.api.cancel_order_by_id(getattr(raw, "id", None) or raw._raw.get("id"))  # noqa: SLF001
+        except Exception:
+            pass
+
 
 def _wait_fill(strategy: _HarnessStrategy, order: Order, *, timeout: int, drive_smart_limit: bool) -> tuple[bool, int, float]:
     start = time.time()
@@ -242,3 +271,77 @@ def test_alpaca_spy_stock_smart_limit_fills():
     submitted_close = strategy.submit_order(close_order)
     ok_close, _, close_elapsed = _wait_fill(strategy, submitted_close, timeout=120, drive_smart_limit=True)
     assert ok_close, f"Stock sell did not fill (elapsed={close_elapsed:.1f}s)"
+
+
+def test_alpaca_crypto_btcusd_smart_limit_fills_24_7():
+    broker = _alpaca()
+
+    strategy = _HarnessStrategy(broker=broker)
+    try:
+        strategy.initialize()
+    except TypeError:
+        strategy.initialize(parameters=None)
+
+    cfg = SmartLimitConfig(preset=SmartLimitPreset.FAST, final_price_pct=1.0, step_seconds=1, final_hold_seconds=180)
+    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
+    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    qty = 0.001
+
+    try:
+        _cancel_alpaca_open_orders_for_symbol(broker, "BTC/USD")
+
+        open_order = strategy.create_order(
+            base,
+            qty,
+            Order.OrderSide.BUY,
+            order_type=Order.OrderType.SMART_LIMIT,
+            smart_limit=cfg,
+            quote=quote,
+        )
+        submitted_open = strategy.submit_order(open_order)
+        assert submitted_open is not None
+        ok_open, reprices_open, open_elapsed = _wait_fill(strategy, submitted_open, timeout=240, drive_smart_limit=True)
+        assert ok_open, f"BTCUSD buy did not fill (reprices={reprices_open}, elapsed={open_elapsed:.1f}s)"
+
+        # Alpaca crypto can apply fees/rounding such that the filled base quantity is slightly less than requested.
+        # Close whatever we actually have available to avoid "insufficient balance" errors.
+        close_qty = qty
+        try:
+            positions = broker.api.get_all_positions() or []
+            for p in positions:
+                sym = str(getattr(p, "symbol", "")).upper().replace("/", "")
+                if sym.startswith(base.symbol.upper()):
+                    close_qty = float(getattr(p, "qty", close_qty))
+                    break
+        except Exception:
+            pass
+        if close_qty <= 0:
+            close_qty = qty
+
+        close_order = strategy.create_order(
+            base,
+            close_qty,
+            Order.OrderSide.SELL,
+            order_type=Order.OrderType.SMART_LIMIT,
+            smart_limit=cfg,
+            quote=quote,
+        )
+        submitted_close = strategy.submit_order(close_order)
+        ok_close, reprices_close, close_elapsed = _wait_fill(strategy, submitted_close, timeout=240, drive_smart_limit=True)
+        if not ok_close:
+            market_close = strategy.create_order(base, qty, Order.OrderSide.SELL, order_type=Order.OrderType.MARKET, quote=quote)
+            submitted_market = strategy.submit_order(market_close)
+            ok_mkt, _, _ = _wait_fill(strategy, submitted_market, timeout=60, drive_smart_limit=False)
+            assert ok_mkt, "BTCUSD market close fallback did not fill"
+            pytest.fail(f"BTCUSD smart close did not fill (reprices={reprices_close}, elapsed={close_elapsed:.1f}s)")
+
+        if open_elapsed > cfg.get_step_seconds():
+            assert reprices_open >= 1
+        if close_elapsed > cfg.get_step_seconds():
+            assert reprices_close >= 1
+    finally:
+        # Best-effort cleanup to avoid leaving open orders behind if the test fails mid-way.
+        try:
+            strategy.cancel_open_orders()
+        except Exception:
+            pass

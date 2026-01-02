@@ -122,6 +122,11 @@ def _drive_until_done(strategy: _Harness, order: Order, *, timeout_seconds: int)
 
         time.sleep(1.0)
 
+    # Timeout: cancel the order so we don't leave a dangling after-hours paper order behind.
+    try:
+        strategy.broker.cancel_order(order)
+    except Exception:
+        pass
     return False, snapshots
 
 
@@ -143,40 +148,52 @@ def main() -> int:
     cfg = SmartLimitConfig(preset=SmartLimitPreset.FAST, final_price_pct=1.0, final_hold_seconds=30)
     asset = Asset(args.symbol.upper(), asset_type=Asset.AssetType.STOCK)
 
-    print(f"{datetime.now().isoformat()} submitting BUY SMART_LIMIT {asset.symbol} after-hours tif={args.tif}")
-    buy = strategy.create_order(
-        asset,
-        1,
-        Order.OrderSide.BUY,
-        order_type=Order.OrderType.SMART_LIMIT,
-        smart_limit=cfg,
-        time_in_force=args.tif,
-    )
-    submitted_buy = strategy.submit_order(buy)
-    ok_buy, buy_snaps = _drive_until_done(strategy, submitted_buy, timeout_seconds=args.timeout_seconds)
-    buy_fill = next((s.avg_fill_price for s in reversed(buy_snaps) if s.avg_fill_price is not None), None)
-    print(f"{datetime.now().isoformat()} BUY done ok={ok_buy} fill={buy_fill}")
+    try:
+        # Best-effort: clear any previously-open orders for this strategy before we start.
+        try:
+            strategy.cancel_open_orders()
+        except Exception:
+            pass
 
-    if not ok_buy:
-        return 2
+        print(f"{datetime.now().isoformat()} submitting BUY SMART_LIMIT {asset.symbol} after-hours tif={args.tif}")
+        buy = strategy.create_order(
+            asset,
+            1,
+            Order.OrderSide.BUY,
+            order_type=Order.OrderType.SMART_LIMIT,
+            smart_limit=cfg,
+            time_in_force=args.tif,
+        )
+        submitted_buy = strategy.submit_order(buy)
+        ok_buy, buy_snaps = _drive_until_done(strategy, submitted_buy, timeout_seconds=args.timeout_seconds)
+        buy_fill = next((s.avg_fill_price for s in reversed(buy_snaps) if s.avg_fill_price is not None), None)
+        print(f"{datetime.now().isoformat()} BUY done ok={ok_buy} fill={buy_fill}")
 
-    print(f"{datetime.now().isoformat()} submitting SELL SMART_LIMIT {asset.symbol} after-hours tif={args.tif}")
-    sell = strategy.create_order(
-        asset,
-        1,
-        Order.OrderSide.SELL,
-        order_type=Order.OrderType.SMART_LIMIT,
-        smart_limit=cfg,
-        time_in_force=args.tif,
-    )
-    submitted_sell = strategy.submit_order(sell)
-    ok_sell, sell_snaps = _drive_until_done(strategy, submitted_sell, timeout_seconds=args.timeout_seconds)
-    sell_fill = next((s.avg_fill_price for s in reversed(sell_snaps) if s.avg_fill_price is not None), None)
-    print(f"{datetime.now().isoformat()} SELL done ok={ok_sell} fill={sell_fill}")
+        if not ok_buy:
+            return 2
 
-    return 0 if ok_sell else 3
+        print(f"{datetime.now().isoformat()} submitting SELL SMART_LIMIT {asset.symbol} after-hours tif={args.tif}")
+        sell = strategy.create_order(
+            asset,
+            1,
+            Order.OrderSide.SELL,
+            order_type=Order.OrderType.SMART_LIMIT,
+            smart_limit=cfg,
+            time_in_force=args.tif,
+        )
+        submitted_sell = strategy.submit_order(sell)
+        ok_sell, sell_snaps = _drive_until_done(strategy, submitted_sell, timeout_seconds=args.timeout_seconds)
+        sell_fill = next((s.avg_fill_price for s in reversed(sell_snaps) if s.avg_fill_price is not None), None)
+        print(f"{datetime.now().isoformat()} SELL done ok={ok_sell} fill={sell_fill}")
+
+        return 0 if ok_sell else 3
+    finally:
+        # Best-effort cleanup so we don't leave paper orders hanging around.
+        try:
+            strategy.cancel_open_orders()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
