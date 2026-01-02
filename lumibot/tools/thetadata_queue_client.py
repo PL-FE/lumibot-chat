@@ -803,8 +803,9 @@ class QueueClient:
         try:
             # Self-healing retry loop:
             # - Never "go silent" when downloader status polling fails.
-            # - Never hang forever on a single wedged request.
-            # - Do not fail-fast: keep retrying with backoff and session resets.
+            # - Recover from wedged requests via timeouts/session resets/resubmits.
+            # - Do not fail-fast: keep retrying with backoff and session resets. Backtest
+            #   wall-clock enforcement belongs to the outer orchestrator (ECS/task timeouts).
             base_correlation_id = self._build_correlation_id(method, path, query_params)
 
             # Choose a finite per-attempt timeout even if the caller requests "forever" waits.
@@ -815,18 +816,10 @@ class QueueClient:
             else:
                 attempt_timeout = 900.0
 
-            max_total_wait = max(6 * 3600.0, attempt_timeout * 4)
-            total_start = time.time()
             timeout_count = 0
             correlation_override: Optional[str] = None
 
             while True:
-                elapsed_total = time.time() - total_start
-                if elapsed_total > max_total_wait:
-                    raise TimeoutError(
-                        f"Timed out after {elapsed_total:.1f}s waiting for downloader result (path={path})"
-                    )
-
                 request_id, status, was_pending = self.check_or_submit(
                     method=method,
                     path=path,
