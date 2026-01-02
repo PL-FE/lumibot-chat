@@ -1384,22 +1384,6 @@ class OptionsHelper:
             or getattr(data_source, "IS_BACKTESTING_DATA_SOURCE", False) is True
         )
 
-        is_theta_backtest = (
-            is_backtesting
-            and data_source is not None
-            and data_source.__class__.__name__ == "ThetaDataBacktestingPandas"
-        )
-        is_daily_cadence = False
-        if is_backtesting:
-            try:
-                sleeptime = getattr(self.strategy, "sleeptime", None)
-                if isinstance(sleeptime, str) and sleeptime.strip().upper().endswith("D"):
-                    is_daily_cadence = True
-            except Exception:
-                pass
-            if getattr(data_source, "_timestep", None) == "day":
-                is_daily_cadence = True
-
         skip_quote_validation = False
         if is_backtesting and underlying_symbol and as_of_date is not None:
             disabled_until = self._expiration_validation_disabled_until.get(underlying_symbol)

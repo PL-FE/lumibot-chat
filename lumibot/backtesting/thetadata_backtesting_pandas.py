@@ -3,7 +3,7 @@ import logging
 import math
 import os
 import subprocess
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Union
 
