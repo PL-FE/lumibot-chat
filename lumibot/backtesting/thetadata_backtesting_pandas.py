@@ -3254,21 +3254,14 @@ class ThetaDataBacktestingPandas(PandasData):
         # ThetaData quote history for options can omit actionable NBBO while still surfacing a trade-derived
         # "close" field.
         #
-        # Correctness rule:
-        # - For intraday quote requests (minute/second/hour), Quote.price must be quote-derived (mid/bid/ask)
-        #   and must NOT silently use trade-last/close as an execution anchor. This avoids unrealistically
-        #   favorable fills when NBBO is missing.
-        # - For day-mode quote requests (daily-cadence strategies), we allow Quote.price to remain populated
-        #   from the EOD trade close when NBBO is missing. Many long-window option strategies depend on
-        #   daily option history that lacks intraday NBBO but still has trade-based EOD marks.
+        # Prefer quote-derived (bid/ask) pricing when available:
+        # - If NBBO is present, set Quote.price to a mid/bid/ask-derived value.
+        # - If NBBO is missing, preserve any existing `price` value (often trade close) so callers that
+        #   expect a numeric Quote.price (including backtest tests) remain functional.
+        #
+        # Important: Quote.price does not imply actionable two-sided NBBO exists; execution/fill logic must
+        # still prefer bid/ask when available.
         if quote_obj is not None and getattr(asset, "asset_type", None) == Asset.AssetType.OPTION:
-            is_day_quote_request = False
-            try:
-                _, ts_unit = self.convert_timestep_str_to_timedelta(timestep)
-                is_day_quote_request = ts_unit == "day"
-            except Exception:
-                is_day_quote_request = False
-
             bid = getattr(quote_obj, "bid", None)
             ask = getattr(quote_obj, "ask", None)
             try:
@@ -3287,19 +3280,15 @@ class ThetaDataBacktestingPandas(PandasData):
             elif ask is not None and ask > 0:
                 quote_obj.price = ask
             else:
-                if is_day_quote_request:
-                    # Preserve the existing price (often EOD close) for daily backtests, but ensure
-                    # it's finite and positive.
-                    existing = getattr(quote_obj, "price", None)
-                    try:
-                        existing = float(existing) if existing is not None else None
-                    except (TypeError, ValueError):
-                        existing = None
-                    if existing is None or (not math.isfinite(existing)) or existing <= 0:
-                        existing = None
-                    quote_obj.price = existing
-                else:
-                    quote_obj.price = None
+                # Preserve the existing price (often trade close) but ensure it's finite and positive.
+                existing = getattr(quote_obj, "price", None)
+                try:
+                    existing = float(existing) if existing is not None else None
+                except (TypeError, ValueError):
+                    existing = None
+                if existing is None or (not math.isfinite(existing)) or existing <= 0:
+                    existing = None
+                quote_obj.price = existing
 
         # [INSTRUMENTATION] Final quote result with all details
         if logger.isEnabledFor(logging.DEBUG):

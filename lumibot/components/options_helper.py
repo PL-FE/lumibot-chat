@@ -253,7 +253,9 @@ class OptionsHelper:
             current_dt = None
 
         broker = getattr(self.strategy, "broker", None)
-        is_backtesting = broker is not None and getattr(broker, "IS_BACKTESTING_BROKER", False) is True
+        is_backtesting = bool(getattr(self.strategy, "is_backtesting", False)) or (
+            broker is not None and getattr(broker, "IS_BACKTESTING_BROKER", False) is True
+        )
 
         cooldown = getattr(self, "_valid_option_search_cooldown", None)
         if not isinstance(cooldown, dict):
@@ -279,8 +281,7 @@ class OptionsHelper:
 
         data_source = getattr(broker, "data_source", None) if broker is not None else None
         is_theta_backtest = (
-            broker is not None
-            and getattr(broker, "IS_BACKTESTING_BROKER", False) is True
+            is_backtesting
             and data_source is not None
             and data_source.__class__.__name__ == "ThetaDataBacktestingPandas"
         )
@@ -308,6 +309,8 @@ class OptionsHelper:
 
         # Use the chain expirations (not "next day") to avoid churn and weekend/non-expiry dates.
         expirations = self._get_chain_expirations(chains=chains, side=put_or_call)
+        if not expirations:
+            expirations = [expiry]
         expirations = [exp for exp in expirations if exp >= expiry]
 
         attempts = 0
@@ -426,6 +429,10 @@ class OptionsHelper:
                     )
                     mark_price, bid, ask = self._get_option_mark_from_quote(option, snapshot=True)
                     if mark_price is None:
+                        continue
+                    # Intraday strategies depend on actionable NBBO to select a tradeable contract.
+                    # Prefer strikes that have both bid and ask (two-sided) rather than one-sided quotes.
+                    if bid is None or ask is None:
                         continue
                     if max_spread_pct is not None:
                         if bid is None or ask is None:
