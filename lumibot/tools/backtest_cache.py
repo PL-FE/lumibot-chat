@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -101,6 +102,22 @@ class BacktestCacheManager:
         self._downloaded_remote_keys: set[str] = set()
         self._downloaded_remote_keys_lock = threading.Lock()
 
+        # Lightweight per-process accounting so we can quantify S3 hydration cost in production.
+        # NOTE: This deliberately avoids logging per-object at INFO (too spammy); we log a single
+        # summary line at the end of the backtest instead.
+        self._stats_lock = threading.Lock()
+        self._stats: Dict[str, float] = {
+            "downloads": 0.0,
+            "download_bytes": 0.0,
+            "download_s": 0.0,
+            "misses": 0.0,
+            "local_reuse": 0.0,
+            "inprocess_reuse": 0.0,
+            "uploads": 0.0,
+            "upload_bytes": 0.0,
+            "upload_s": 0.0,
+        }
+
     @property
     def enabled(self) -> bool:
         return bool(self._settings and self._settings.mode != CacheMode.DISABLED)
@@ -140,6 +157,8 @@ class BacktestCacheManager:
                     marker_value = ""
 
                 if marker_value == remote_key:
+                    with self._stats_lock:
+                        self._stats["local_reuse"] += 1.0
                     with self._downloaded_remote_keys_lock:
                         self._downloaded_remote_keys.add(remote_key)
                     return False
@@ -151,6 +170,8 @@ class BacktestCacheManager:
             # semantics), but then allow local reuse to avoid repeated downloads during the same
             # backtest.
             if local_path.exists() and already_downloaded and not force_download:
+                with self._stats_lock:
+                    self._stats["inprocess_reuse"] += 1.0
                 return False
 
             if local_path.exists():
@@ -172,7 +193,14 @@ class BacktestCacheManager:
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            started = time.perf_counter()
             client.download_file(self._settings.bucket, remote_key, str(tmp_path))
+            elapsed = time.perf_counter() - started
+            downloaded_bytes = 0
+            try:
+                downloaded_bytes = tmp_path.stat().st_size
+            except Exception:
+                downloaded_bytes = 0
             os.replace(tmp_path, local_path)
             # Persist a tiny marker so future runs can reuse the file without an extra S3 roundtrip,
             # as long as the remote key (including cache version) matches.
@@ -189,6 +217,10 @@ class BacktestCacheManager:
             )
             with self._downloaded_remote_keys_lock:
                 self._downloaded_remote_keys.add(remote_key)
+            with self._stats_lock:
+                self._stats["downloads"] += 1.0
+                self._stats["download_s"] += float(elapsed)
+                self._stats["download_bytes"] += float(downloaded_bytes)
             return True
         except Exception as exc:  # pragma: no cover - narrow in helper
             if tmp_path.exists():
@@ -209,6 +241,8 @@ class BacktestCacheManager:
                         marker_path.unlink()
                 except Exception:
                     pass
+                with self._stats_lock:
+                    self._stats["misses"] += 1.0
                 return False
             raise
 
@@ -234,11 +268,54 @@ class BacktestCacheManager:
             return False
 
         client = self._get_client()
+        started = time.perf_counter()
         client.upload_file(str(local_path), self._settings.bucket, remote_key)
+        elapsed = time.perf_counter() - started
+        uploaded_bytes = 0
+        try:
+            uploaded_bytes = local_path.stat().st_size
+        except Exception:
+            uploaded_bytes = 0
         logger.debug(
             "[REMOTE_CACHE][UPLOAD] %s <- %s", remote_key, local_path.as_posix()
         )
+        with self._stats_lock:
+            self._stats["uploads"] += 1.0
+            self._stats["upload_s"] += float(elapsed)
+            self._stats["upload_bytes"] += float(uploaded_bytes)
         return True
+
+    def stats_snapshot(self) -> Dict[str, float]:
+        """Return a copy of the current in-process stats (numbers only; safe for logs)."""
+        with self._stats_lock:
+            return dict(self._stats)
+
+    def log_summary(self) -> None:
+        """Emit a single INFO line describing cache hydration/upload cost for this run."""
+        if not self.enabled:
+            return
+        snap = self.stats_snapshot()
+        settings = self._settings
+        if not settings:
+            return
+        logger.info(
+            "[REMOTE_CACHE][SUMMARY] mode=%s bucket=%s prefix=%s version=%s "
+            "downloads=%d misses=%d local_reuse=%d inprocess_reuse=%d download_bytes=%d download_s=%.3f "
+            "uploads=%d upload_bytes=%d upload_s=%.3f",
+            settings.mode,
+            settings.bucket,
+            settings.prefix,
+            settings.version,
+            int(snap.get("downloads", 0.0)),
+            int(snap.get("misses", 0.0)),
+            int(snap.get("local_reuse", 0.0)),
+            int(snap.get("inprocess_reuse", 0.0)),
+            int(snap.get("download_bytes", 0.0)),
+            float(snap.get("download_s", 0.0)),
+            int(snap.get("uploads", 0.0)),
+            int(snap.get("upload_bytes", 0.0)),
+            float(snap.get("upload_s", 0.0)),
+        )
 
     def remote_key_for(
         self,

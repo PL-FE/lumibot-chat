@@ -2867,7 +2867,13 @@ def get_price_data(
 
 # PERFORMANCE FIX (2025-12-07): Cache calendar objects to avoid rebuilding them.
 # mcal.get_calendar() is slow; caching the calendar objects saves significant time.
-_CALENDAR_CACHE: Dict[str, object] = {}
+#
+# NOTE: We intentionally use a single cache dict for both:
+#   - calendar objects (key: calendar_name: str)
+#   - full-year schedules (key: (calendar_name: str, year: int))
+# so that tests (and any debugging code) can clear *all* calendar-related caches by calling
+# `_CALENDAR_CACHE.clear()` once.
+_CALENDAR_CACHE: Dict[object, object] = {}
 
 
 def _get_cached_calendar(name: str):
@@ -2875,6 +2881,33 @@ def _get_cached_calendar(name: str):
     if name not in _CALENDAR_CACHE:
         _CALENDAR_CACHE[name] = mcal.get_calendar(name)
     return _CALENDAR_CACHE[name]
+
+
+# PERFORMANCE (2026-01-03): Cache full-year schedules and slice for sub-ranges.
+#
+# Why: backtests frequently request trading dates for many overlapping (start, end) pairs
+# (e.g., per-bar alignment, session-close alignment). Even with an LRU cache on the exact
+# (start_date, end_date) tuple, production can still see hundreds of unique ranges in a
+# single backtest, causing repeated `calendar.schedule(...)` calls (expensive holiday logic).
+#
+# Strategy: cache `schedule()` results per (calendar_name, year) and slice cheaply for the
+# requested range. This preserves correctness (NYSE holidays/half-days) while drastically
+# reducing calendar.schedule churn.
+#
+# NOTE: We store these schedules in `_CALENDAR_CACHE` so clearing that dict also clears
+# schedule caching (important for legacy tests that monkeypatch the calendar impl).
+def _cached_year_schedule(calendar_name: str, year: int) -> pd.DataFrame:
+    key = (calendar_name, year)
+    schedule = _CALENDAR_CACHE.get(key)
+    if schedule is not None:
+        return schedule  # type: ignore[return-value]
+
+    cal = _get_cached_calendar(calendar_name)
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
+    schedule = cal.schedule(start_date=start, end_date=end)
+    _CALENDAR_CACHE[key] = schedule
+    return schedule
 
 
 @functools.lru_cache(maxsize=2048)  # Increased from 512 for longer backtests
@@ -2886,13 +2919,27 @@ def _cached_trading_dates(asset_type: str, start_date: date, end_date: date) -> 
     if asset_type == "crypto":
         return [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
     if asset_type == "stock" or asset_type == "option" or asset_type == "index":
-        cal = _get_cached_calendar("NYSE")
+        calendar_name = "NYSE"
     elif asset_type == "forex":
-        cal = _get_cached_calendar("CME_FX")
+        calendar_name = "CME_FX"
     else:
         raise ValueError(f"Unsupported asset type for thetadata: {asset_type}")
-    df = cal.schedule(start_date=start_date, end_date=end_date)
-    return df.index.date.tolist()
+
+    def _slice_year(year: int, start: date, end: date) -> List[date]:
+        schedule = _cached_year_schedule(calendar_name, year)
+        # DatetimeIndex slicing accepts ISO date strings.
+        df_slice = schedule.loc[str(start) : str(end)]
+        return df_slice.index.date.tolist()
+
+    if start_date.year == end_date.year:
+        return _slice_year(start_date.year, start_date, end_date)
+
+    dates_out: List[date] = []
+    for year in range(start_date.year, end_date.year + 1):
+        year_start = start_date if year == start_date.year else date(year, 1, 1)
+        year_end = end_date if year == end_date.year else date(year, 12, 31)
+        dates_out.extend(_slice_year(year, year_start, year_end))
+    return dates_out
 
 
 def get_trading_dates(asset: Asset, start: datetime, end: datetime):
