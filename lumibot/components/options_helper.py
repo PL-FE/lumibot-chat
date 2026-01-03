@@ -1079,7 +1079,7 @@ class OptionsHelper:
             if getattr(quote, "ask", None) is not None:
                 ask = self._coerce_price(getattr(quote, "ask", None), "ask", data_quality_flags, sanitization_notes)
 
-        if (bid is None or ask is None) and getattr(option_asset, "asset_type", None) == Asset.AssetType.OPTION:
+        if getattr(option_asset, "asset_type", None) == Asset.AssetType.OPTION:
             broker = getattr(self.strategy, "broker", None)
             data_source = getattr(broker, "data_source", None) if broker is not None else None
             is_theta_backtest = (
@@ -1092,10 +1092,38 @@ class OptionsHelper:
                 and data_source.__class__.__name__ == "ThetaDataBacktestingPandas"
             )
 
-            # Prefer actionable NBBO from a point-in-time snapshot when bar-aligned quotes omit
-            # bid/ask (common in historical option backtests). Only fall back to `quote.price`
-            # or last-trade pricing when NBBO is unavailable.
+            is_daily_cadence = False
             if is_theta_backtest:
+                # Daily-cadence backtests can have a mismatch between:
+                # - bar-aligned "day" quotes (which can effectively reflect a prior close), and
+                # - intraday option NBBO (which is what execution/fill logic should anchor to).
+                #
+                # Prefer a point-in-time NBBO snapshot for ThetaData options when running daily
+                # cadence, but keep the existing behavior for intraday strategies (and for cases
+                # where snapshot quotes are genuinely missing).
+                try:
+                    sleeptime = getattr(self.strategy, "sleeptime", None)
+                    if isinstance(sleeptime, str) and sleeptime.strip().upper().endswith("D"):
+                        is_daily_cadence = True
+                except Exception:
+                    pass
+                try:
+                    if getattr(data_source, "_timestep", None) == "day":
+                        is_daily_cadence = True
+                except Exception:
+                    pass
+
+            if is_theta_backtest and is_daily_cadence:
+                _, snap_bid, snap_ask = self._get_option_mark_from_quote(option_asset, snapshot=True)
+                if snap_bid is not None and snap_ask is not None:
+                    if bid != snap_bid or ask != snap_ask:
+                        data_quality_flags.append("snapshot_nbbo_override")
+                    bid = snap_bid
+                    ask = snap_ask
+            elif (bid is None or ask is None) and is_theta_backtest:
+                # Prefer actionable NBBO from a point-in-time snapshot when bar-aligned quotes omit
+                # bid/ask (common in historical option backtests). Only fall back to `quote.price`
+                # or last-trade pricing when NBBO is unavailable.
                 _, snap_bid, snap_ask = self._get_option_mark_from_quote(option_asset, snapshot=True)
                 if snap_bid is not None and snap_ask is not None:
                     bid = snap_bid
