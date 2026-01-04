@@ -9,9 +9,12 @@ the test should fail immediately.
 
 How it works
 ------------
-Python automatically imports `sitecustomize` at interpreter startup (after `site`), if it is
+Python imports `usercustomize` at interpreter startup (after `site` + `sitecustomize`), if it is
 present on `sys.path`. The acceptance test harness prepends this directory to `PYTHONPATH` for
 the subprocess that runs each demo script.
+
+We intentionally use `usercustomize` (not `sitecustomize`) so we do **not** shadow Homebrew's
+own `sitecustomize.py`, which configures the interpreter's prefix and global site-packages.
 
 When `LUMIBOT_ACCEPTANCE_TRIPWIRE=1` and `DATADOWNLOADER_BASE_URL` is set, this module patches
 common HTTP entry points and raises a RuntimeError as soon as a request targets the downloader.
