@@ -5,8 +5,10 @@ These rules are mandatory whenever you work on ThetaData integrations.
 ## Multi-Agent Collaboration (CRITICAL)
 This repo is frequently edited by **multiple AI sessions**. To avoid lost work:
 
-- **Stay on the release branch:** work only on branch `4.4.25` for this release; do not create new branches/PRs.
+- **Branch etiquette:** it’s OK to create/switch branches and open PRs when needed. Start new work branches from a stable base branch (e.g., `dev`/`main`/`master`), and avoid chaining feature/WIP branches.
+- **No “feature branch chaining”:** if you’re already on a feature/WIP or version branch (e.g., `feature/*`, `fix/*`, `wip/*`, `version/*`, `release/*`, or a version-named branch like `X.Y.Z`), keep working there; don’t create another feature branch from it unless explicitly instructed.
 - **Never run `git checkout`.** Avoid other destructive operations (`git reset --hard`, `git clean -f`, `git stash`).
+- **Dirty-tree safety:** if you need to branch with uncommitted changes, create the new branch from the current working tree so the changes come with you; avoid `git stash`. Verify with `git status --porcelain=v1`.
 - **Before committing:** `git status` must be clean/understood; read diffs for any changes you didn’t personally create.
 - **Avoid stepping on the CI agent:** if `tests/backtest/`, baselines, or CI workflows are in-flight, coordinate via `docs/handoffs/` and keep edits non-overlapping.
 - **Document + test behavioral changes:** update the relevant docs in `docs/` and add regression tests in the same commit; add comments explaining “why/invariants” for non-obvious logic.
@@ -58,12 +60,18 @@ Failure to follow these rules will break everyone's workflows—double-check env
   - Investigations and full trade audits: `docs/investigations/`.
   - Cross-session coordination: `docs/handoffs/`.
   - One-off helpers: `scripts/` (and keep them safe-timeout friendly).
+  - **Public docs (Sphinx):** `docsrc/` is the source for the public documentation site; keep docstrings and Sphinx pages up to date for user-facing behaviors.
 - When a workflow changes (new env vars, new cache semantics, new harness flags), update the relevant `docs/*` page in the same change set so other agents don’t re-learn it.
 - Prefer **date-first filenames** for handoffs/investigations so they sort chronologically:
   - `docs/handoffs/YYYY-MM-DD_<topic>.md`
   - `docs/investigations/YYYY-MM-DD_<topic>.md`
 - Interop note: `AGENTS.md` is the cross-tool convention; `CLAUDE.md` is Claude Code’s native file. If you want a single source of truth, Claude Code supports importing:
   - `@AGENTS.md`
+
+## Env var documentation (REQUIRED)
+- If you add or change an environment variable, update:
+  - `docsrc/environment_variables.rst` (public docs), and
+  - `docs/ENV_VARS.md` when engineering notes help contributors.
 
 ## Scoped instruction files
 - `tests/AGENTS.md` — rules for everything under `tests/` (legacy-test authority policy).

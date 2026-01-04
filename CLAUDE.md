@@ -9,8 +9,10 @@
 ## Multi-Agent Collaboration (CRITICAL)
 This repo is often worked on by **multiple AI sessions** at the same time.
 
-- Work only on branch `4.4.25` for this release; do not create new branches/PRs.
+- Branch etiquette: it’s OK to create/switch branches and open PRs when needed. Start new work branches from a stable base branch (e.g., `dev`/`main`/`master`), and avoid chaining feature/WIP branches.
+- No “feature branch chaining”: if you’re already on a feature/WIP or version branch (e.g., `feature/*`, `fix/*`, `wip/*`, `version/*`, `release/*`, or a version-named branch like `X.Y.Z`), keep working there; don’t create another feature branch from it unless explicitly instructed.
 - Never run `git checkout`; avoid destructive commands (`git reset --hard`, `git clean -f`, `git stash`).
+- Dirty-tree safety: if you need to branch with uncommitted changes, create the new branch from the current working tree so the changes come with you; avoid `git stash`. Verify with `git status --porcelain=v1`.
 - Before committing: `git status` must be clean/understood; read diffs for changes you didn’t personally create.
 - Coordinate via `docs/handoffs/` when touching shared areas (CI/baselines/backtest harnesses).
 - Any behavioral change must include docs updates + regression tests, with comments explaining “why/invariants”.
@@ -22,12 +24,18 @@ This repo is often worked on by **multiple AI sessions** at the same time.
   - Investigations and full trade audits: `docs/investigations/`.
   - Cross-session coordination: `docs/handoffs/`.
   - One-off helpers: `scripts/` (safe-timeout friendly).
+  - **Public docs (Sphinx):** `docsrc/` is the source for the public documentation site; keep docstrings and Sphinx pages up to date for user-facing behaviors.
 - When a workflow changes (env vars, cache semantics, harness flags), update the relevant `docs/*` page in the same change set.
 - Prefer **date-first filenames** for handoffs/investigations so they sort chronologically:
   - `docs/handoffs/YYYY-MM-DD_<topic>.md`
   - `docs/investigations/YYYY-MM-DD_<topic>.md`
 - Interop note: `AGENTS.md` is the cross-tool convention; `CLAUDE.md` is Claude Code’s native file. If you want a single source of truth, Claude Code supports importing:
   - `@AGENTS.md`
+
+## Env var documentation (REQUIRED)
+- If you add or change an environment variable, update:
+  - `docsrc/environment_variables.rst` (public docs), and
+  - `docs/ENV_VARS.md` when engineering notes help contributors.
 
 ## Documentation Layout
 

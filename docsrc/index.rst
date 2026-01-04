@@ -175,6 +175,7 @@ Table of Contents
    Get Pre-Built Strategies <https://www.botspot.trade/?utm_source=documentation&utm_medium=referral&utm_campaign=lumibot_sidebar>
    deployment
    getting_started
+   environment_variables
    lifecycle_methods
    vars
    strategy_methods

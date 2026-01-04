@@ -109,6 +109,16 @@ def main() -> int:
         help="Label printed in output (no functional impact)",
     )
     parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Enable backtest trade audit telemetry (sets LUMIBOT_BACKTEST_AUDIT=1; adds audit.* columns to trade logs)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Enable backtest profiling (sets BACKTESTING_PROFILE, e.g. 'yappi')",
+    )
+    parser.add_argument(
         "--subprocess-log",
         default=None,
         help="Write the child backtest process stdout/stderr to this file (keeps runner output small)",
@@ -148,6 +158,14 @@ def main() -> int:
     env["SHOW_TEARSHEET"] = "True"
     env["BACKTESTING_QUIET_LOGS"] = "false"
     env["BACKTESTING_SHOW_PROGRESS_BAR"] = "true"
+
+    if args.audit:
+        # WHY: Investigations (NVDA/SPX) require a bulletproof per-fill record of quotes/inputs.
+        # Keep this behind a flag because it increases CSV width and can add overhead.
+        env["LUMIBOT_BACKTEST_AUDIT"] = "1"
+
+    if args.profile:
+        env["BACKTESTING_PROFILE"] = args.profile
 
     # Data downloader config
     for k in [
@@ -193,6 +211,8 @@ def main() -> int:
     print(f"[run] cache_s3_bucket={env.get('LUMIBOT_CACHE_S3_BUCKET')}")
     print(f"[run] cache_s3_prefix={env.get('LUMIBOT_CACHE_S3_PREFIX')}")
     print(f"[run] cache_s3_version={env.get('LUMIBOT_CACHE_S3_VERSION')}")
+    print(f"[run] audit={_bool_str(args.audit)}")
+    print(f"[run] profile={env.get('BACKTESTING_PROFILE')}")
 
     subprocess_log = Path(args.subprocess_log) if args.subprocess_log else (workdir / f"subprocess_{label}.log")
     subprocess_log.parent.mkdir(parents=True, exist_ok=True)

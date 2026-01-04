@@ -930,6 +930,14 @@ class BacktestingBroker(Broker):
     def _submit_order(self, order):
         """Submit an order for an asset"""
 
+        # Optional audit trail (submission-time context).
+        #
+        # Invariant: audit collection must never break backtests; any errors must be swallowed.
+        try:
+            self._audit_merge(order, self._audit_submit_fields(order), overwrite=False)
+        except Exception:
+            pass
+
         # NOTE: This code is to address Tradier API requirements, they want is as "to_open" or "to_close" instead of just "buy" or "sell"
         # If the order has a "buy_to_open" or "buy_to_close" side, then we should change it to "buy"
         if order.is_buy_order():
@@ -960,6 +968,13 @@ class BacktestingBroker(Broker):
                 order=order,
             )
             for child in order.child_orders:
+                # Ensure OCO child orders get the same submission-time audit context (and do not
+                # rely solely on the parent placeholder).
+                try:
+                    self._audit_merge(child, self._audit_submit_fields(child), overwrite=False)
+                except Exception:
+                    pass
+
                 if child.is_buy_order():
                     child.side = Order.OrderSide.BUY
                 elif child.is_sell_order():
@@ -2538,6 +2553,69 @@ class BacktestingBroker(Broker):
 
         fields = {"underlying.symbol": getattr(underlying, "symbol", None), "underlying.asset_type": getattr(underlying, "asset_type", None)}
         fields.update(self._audit_quote_fields("underlying_quote", quote))
+        return fields
+
+    def _audit_submit_fields(self, order: Order) -> dict[str, Any]:
+        """Collect best-effort *order submission time* audit fields.
+
+        WHY: Fill-time telemetry alone can hide issues where the strategy chose to submit an order
+        when quotes were stale/wide/invalid. For accuracy investigations we record both submission-
+        time and fill-time context so a human can validate every decision.
+        """
+        fields: dict[str, Any] = {}
+
+        try:
+            fields["submit.time"] = self.data_source.get_datetime()
+        except Exception:
+            pass
+
+        try:
+            fields["submit.order_class"] = str(getattr(order, "order_class", None))
+            fields["submit.order_type"] = str(getattr(order, "order_type", None))
+            fields["submit.side"] = str(getattr(order, "side", None))
+            fields["submit.time_in_force"] = str(getattr(order, "time_in_force", None))
+            fields["submit.quantity"] = str(getattr(order, "quantity", None))
+            fields["submit.limit_price"] = self._coerce_price(getattr(order, "limit_price", None))
+            fields["submit.stop_price"] = self._coerce_price(getattr(order, "stop_price", None))
+        except Exception:
+            pass
+
+        asset = getattr(order, "asset", None)
+        if asset is not None:
+            try:
+                fields["submit.asset.symbol"] = getattr(asset, "symbol", None)
+                fields["submit.asset.asset_type"] = getattr(asset, "asset_type", None)
+                fields["submit.asset.right"] = getattr(asset, "right", None)
+                fields["submit.asset.strike"] = getattr(asset, "strike", None)
+                fields["submit.asset.expiration"] = getattr(asset, "expiration", None)
+                fields["submit.asset.multiplier"] = getattr(asset, "multiplier", None)
+            except Exception:
+                pass
+
+        # Asset quote at submission time.
+        try:
+            quote = self.get_quote(asset, quote=getattr(order, "quote", None)) if asset is not None else None
+            fields.update(self._audit_quote_fields("submit.asset_quote", quote))
+            snap = getattr(quote, "snapshot", None)
+            if snap is not None:
+                fields.update(self._audit_quote_fields("submit.asset_quote.snapshot", snap))
+        except Exception as exc:
+            fields["submit.asset_quote_error"] = str(exc)
+
+        # Underlying quote at submission time (options only), kept distinct from fill-time fields.
+        try:
+            if asset is not None and str(getattr(asset, "asset_type", "")).lower() == "option":
+                underlying = getattr(asset, "underlying_asset", None)
+                fields["submit.underlying.symbol"] = getattr(underlying, "symbol", None) if underlying else None
+                if underlying is not None:
+                    uquote = self.get_quote(underlying, quote=getattr(order, "quote", None))
+                    fields.update(self._audit_quote_fields("submit.underlying_quote", uquote))
+                    usnap = getattr(uquote, "snapshot", None)
+                    if usnap is not None:
+                        fields.update(self._audit_quote_fields("submit.underlying_quote.snapshot", usnap))
+        except Exception as exc:
+            fields["submit.underlying_quote_error"] = str(exc)
+
         return fields
 
     def _try_fill_with_quote(self, order, strategy, open_=None, high_=None, low_=None) -> Optional[float]:

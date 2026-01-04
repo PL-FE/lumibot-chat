@@ -6427,3 +6427,4 @@ timestamp,test_name,data_source,trading_days,execution_time_seconds,git_commit,l
 2026-01-04T16:26:53.996220,test_acceptance_tqqq_sma200,unknown,,20.264,212ea2b0,4.4.24,,,,,Auto-tracked from test_acceptance_backtests_ci
 2026-01-04T17:32:30.713055,test_acceptance_backdoor_butterfly,unknown,,279.733,ff387728,4.4.24,,,,,Auto-tracked from test_acceptance_backtests_ci
 2026-01-04T17:45:47.148169,test_acceptance_aapl_deep_dip_calls,unknown,,61.711,ff387728,4.4.24,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-04T17:48:35.525815,test_acceptance_leaps_alpha_picks,unknown,,32.667,bd2f192e,4.4.24,,,,,Auto-tracked from test_acceptance_backtests_ci
