@@ -15,6 +15,15 @@ This repo is often worked on by **multiple AI sessions** at the same time.
 - Coordinate via `docs/handoffs/` when touching shared areas (CI/baselines/backtest harnesses).
 - Any behavioral change must include docs updates + regression tests, with comments explaining “why/invariants”.
 
+## AGENTS.md / CLAUDE.md Best Practices (how we keep instructions useful)
+- These instruction files are loaded automatically at session start, so keep guidance here **universal** and avoid dumping long, task-specific walls of text here.
+- Prefer **progressive disclosure**:
+  - Architecture + runbooks: `docs/` (start with `docs/BACKTESTING_ARCHITECTURE.md`).
+  - Investigations and full trade audits: `docs/investigations/`.
+  - Cross-session coordination: `docs/handoffs/`.
+  - One-off helpers: `scripts/` (safe-timeout friendly).
+- When a workflow changes (env vars, cache semantics, harness flags), update the relevant `docs/*` page in the same change set.
+
 ## Documentation Layout
 
 - `docs/` = hand-authored markdown (architecture, investigations, handoffs, ops notes)

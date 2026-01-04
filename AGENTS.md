@@ -51,6 +51,15 @@ Failure to follow these rules will break everyone's workflows—double-check env
 
 ---
 
+## AGENTS.md / CLAUDE.md Best Practices (how we keep instructions useful)
+- These instruction files are loaded automatically at session start. Keep guidance here **universal** and put deep, task-specific material in `docs/`.
+- Prefer **progressive disclosure**:
+  - Architecture + runbooks: `docs/` (start with `docs/BACKTESTING_ARCHITECTURE.md`).
+  - Investigations and full trade audits: `docs/investigations/`.
+  - Cross-session coordination: `docs/handoffs/`.
+  - One-off helpers: `scripts/` (and keep them safe-timeout friendly).
+- When a workflow changes (new env vars, new cache semantics, new harness flags), update the relevant `docs/*` page in the same change set so other agents don’t re-learn it.
+
 ## Documentation Layout
 
 - `docs/` = hand-authored markdown (architecture, investigations, handoffs, ops notes); start with `docs/BACKTESTING_ARCHITECTURE.md`
