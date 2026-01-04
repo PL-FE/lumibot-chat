@@ -59,6 +59,14 @@ Failure to follow these rules will break everyone's workflows—double-check env
   - Cross-session coordination: `docs/handoffs/`.
   - One-off helpers: `scripts/` (and keep them safe-timeout friendly).
 - When a workflow changes (new env vars, new cache semantics, new harness flags), update the relevant `docs/*` page in the same change set so other agents don’t re-learn it.
+- Prefer **date-first filenames** for handoffs/investigations so they sort chronologically:
+  - `docs/handoffs/YYYY-MM-DD_<topic>.md`
+  - `docs/investigations/YYYY-MM-DD_<topic>.md`
+- Interop note: `AGENTS.md` is the cross-tool convention; `CLAUDE.md` is Claude Code’s native file. If you want a single source of truth, Claude Code supports importing:
+  - `@AGENTS.md`
+
+## Scoped instruction files
+- `tests/AGENTS.md` — rules for everything under `tests/` (legacy-test authority policy).
 
 ## Documentation Layout
 

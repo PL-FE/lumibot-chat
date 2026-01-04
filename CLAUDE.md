@@ -23,6 +23,11 @@ This repo is often worked on by **multiple AI sessions** at the same time.
   - Cross-session coordination: `docs/handoffs/`.
   - One-off helpers: `scripts/` (safe-timeout friendly).
 - When a workflow changes (env vars, cache semantics, harness flags), update the relevant `docs/*` page in the same change set.
+- Prefer **date-first filenames** for handoffs/investigations so they sort chronologically:
+  - `docs/handoffs/YYYY-MM-DD_<topic>.md`
+  - `docs/investigations/YYYY-MM-DD_<topic>.md`
+- Interop note: `AGENTS.md` is the cross-tool convention; `CLAUDE.md` is Claude Code’s native file. If you want a single source of truth, Claude Code supports importing:
+  - `@AGENTS.md`
 
 ## Documentation Layout
 
