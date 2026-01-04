@@ -169,11 +169,11 @@ CI uses the full-year window; the shorter window is retained only as historical 
 #### Expected Results (ThetaData / S3 v44)
 
 - Correct Total Return = -21.00%
-- Correct CAGR = -23.15%
-- Correct Max DD = -26.45%
-- Observed `backtest_time_seconds` (macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8) = 119.4s
+- Correct CAGR = -23.12%
+- Correct Max DD = -26.42%
+- Observed `backtest_time_seconds` (macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8) = 235.2s
 - CI cap (seconds) <= 600
-- Baseline `run_id` = `BackdoorButterfly0DTE_2026-01-04_11-40_1VPPZ9`
+- Baseline `run_id` = `BackdoorButterfly0DTE_2026-01-04_17-14_Dg5NJR`
 
 | run_id | lumibot | window | wall_time_s | total_return | cagr | max_dd | flags | machine |
 |---|---:|---|---:|---:|---:|---:|---|---|
@@ -182,10 +182,11 @@ CI uses the full-year window; the shorter window is retained only as historical 
 | `BackdoorButterfly0DTE_2026-01-02_10-29_HPNuUM` | 4.4.21 | 2025-01-01 → 2025-11-30 | 267.8 | -19% | -20.79% | -25.94% | prod-like | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
 | `BackdoorButterfly0DTE_2026-01-02_18-52_XdYcWQ` | 4.4.21 | 2025-01-01 → 2025-11-29 | 121.6 | -21% | -23.12% | -26.42% | prod-like | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
 | `BackdoorButterfly0DTE_2026-01-04_06-26_S1FSC2` | 4.4.24 | 2025-01-01 → 2025-11-30 | 120.5 | -20% | -22.1% | -25.48% | historical (superseded; pre daily-bar end-row fix) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
-| `BackdoorButterfly0DTE_2026-01-04_11-40_1VPPZ9` | 4.4.24 | 2025-01-01 → 2025-11-30 | 119.4 | -21% | -23.15% | -26.45% | prod-like (baseline) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
+| `BackdoorButterfly0DTE_2026-01-04_11-40_1VPPZ9` | 4.4.24 | 2025-01-01 → 2025-11-30 | 119.4 | -21% | -23.15% | -26.45% | historical (superseded; multileg parent NEW_ORDER dispatch nondeterminism) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
 | `BackdoorButterfly0DTE_2026-01-04_06-24_KaizMH` | 4.4.24 | 2025-01-01 → 2025-11-29 | 116.4 | -21% | -23.37% | -26.62% | historical (superseded; pre daily-bar end-row fix) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
 | `BackdoorButterfly0DTE_2026-01-04_11-27_KD9Qi0` | 4.4.24 | 2025-01-01 → 2025-11-29 | 118.0 | -21% | -23.11% | -26.41% | historical (superseded; minor rounding drift) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
-| `BackdoorButterfly0DTE_2026-01-04_11-33_sBKYi2` | 4.4.24 | 2025-01-01 → 2025-11-29 | 118.1 | -21% | -23.12% | -26.42% | prod-like (baseline) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
+| `BackdoorButterfly0DTE_2026-01-04_11-33_sBKYi2` | 4.4.24 | 2025-01-01 → 2025-11-29 | 118.1 | -21% | -23.12% | -26.42% | historical (pre deterministic multileg parent dispatch) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
+| `BackdoorButterfly0DTE_2026-01-04_17-14_Dg5NJR` | 4.4.24 | 2025-01-01 → 2025-11-30 | 235.2 | -21% | -23.12% | -26.42% | expected baseline (deterministic multileg parent dispatch; fresh-cache / CI-like) | macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8 |
 
 ### 5) MELI Deep Drawdown Calls
 

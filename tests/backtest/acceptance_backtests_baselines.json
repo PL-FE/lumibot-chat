@@ -73,20 +73,20 @@
       "strategy_name": "TqqqSma200Strategy"
     },
     {
-      "backtest_time_seconds": 119.36270583304577,
-      "baseline_run_id": "BackdoorButterfly0DTE_2026-01-04_11-40_1VPPZ9",
+      "backtest_time_seconds": 235.24646108300658,
+      "baseline_run_id": "BackdoorButterfly0DTE_2026-01-04_17-14_Dg5NJR",
       "data_source": "thetadata",
       "end_date": "2025-12-01",
       "max_backtest_time_seconds": 600,
       "lumibot_version": "4.4.24",
       "metrics_centipercent": {
-        "cagr": -2315,
-        "max_drawdown": -2645,
+        "cagr": -2312,
+        "max_drawdown": -2642,
         "total_return": -2100
       },
       "metrics_raw": {
-        "cagr": "-23.15%",
-        "max_drawdown": "-26.45%",
+        "cagr": "-23.12%",
+        "max_drawdown": "-26.42%",
         "total_return": "-21%"
       },
       "script_filename": "Backdoor Butterfly 0 DTE (Copy).py",
