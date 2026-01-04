@@ -12,6 +12,37 @@ Scope (what this handoff covers):
 
 This handoff assumes the acceptance/CI gate work is being handled by a separate agent (see the CI acceptance handoff referenced below). This doc focuses on **NVDA + SPX + parity + startup**.
 
+## What “Done” Means (success criteria)
+
+This work is not “done” until we have **fresh proof** (not old artifacts) that:
+
+### NVDA (P0)
+- The customer NVDA backtest completes **end-to-end** over **2013-01-10 → 2025-12-30**.
+- It produces new artifacts:
+  - `*_tearsheet.html` (browser-openable)
+  - `*_trades.csv`
+  - `*_logs.csv`
+  - `*_settings.json`
+- It does **not** crash at the end.
+- It is **fast enough**:
+  - Target ≤ 20 minutes on a warm cache / typical prod-like run; if slower, we need to identify why (request volume vs compute vs artifacts).
+
+### SPX Copy2/Copy3 (P0/P1)
+- Cold-S3 simulation run (fresh namespace) completes full-year runs without “hours/days”.
+- Cold run is allowed to hit the downloader (it *must* if S3 is cold), but request volume must be bounded.
+- Warm proof run (same S3 namespace, fresh local cache folder) shows:
+  - **near-zero** queue submits (“Submitted to queue” lines)
+  - material speedup
+
+### Parity + Startup (P1)
+- We can quantify the remaining prod vs local warm-run gap with evidence:
+  - wall time
+  - downloader queue submits (should be near-zero for warm runs)
+  - yappi attribution (S3 hydration vs compute vs artifacts vs progress/logging)
+- We can quantify startup latency as a timeline:
+  - submit → ECS startedAt → first log → first progress row → stage transitions
+- We have an evidence-backed plan to close the gap (or confirm it’s mostly ECS CPU/network limits).
+
 ---
 
 ## 0) Hard Constraints / Rules (do not violate)
@@ -50,6 +81,26 @@ This handoff assumes the acceptance/CI gate work is being handled by a separate 
 ### Acceptance suite definition (human release gate)
 - `docs/ACCEPTANCE_BACKTESTS.md`
 
+### “Where code lives” on this machine (absolute paths)
+- LumiBot repo (this project):
+  - `/Users/robertgrzesik/Documents/Development/lumivest_bot_server/strategies/lumibot`
+- Strategy Library (manual backtests + artifacts):
+  - `/Users/robertgrzesik/Documents/Development/Strategy Library`
+  - Demos:
+    - `/Users/robertgrzesik/Documents/Development/Strategy Library/Demos`
+  - Artifacts (tearsheets/trades/logs):
+    - `/Users/robertgrzesik/Documents/Development/Strategy Library/logs`
+  - Extracted prod strategy code zips (for repro only, never edit):
+    - `/Users/robertgrzesik/Documents/Development/Strategy Library/tmp/backtest_code/<manager_bot_id>/main.py`
+- BotManager repo (runs production backtests/bots):
+  - `/Users/robertgrzesik/Documents/Development/bot_manager`
+- BotSpot node backend (starts backtests, injects env, fetches artifacts):
+  - `/Users/robertgrzesik/Documents/Development/botspot_node`
+- BotSpot React frontend (backtest UI):
+  - `/Users/robertgrzesik/Documents/Development/botspot_react`
+- ThetaData downloader repo (remote service; local checkout exists):
+  - `/Users/robertgrzesik/Documents/Development/botspot_data_downloader`
+
 ### Prior handoffs (chronological)
 - `docs/handoffs/2026-01-01_THETADATA_SESSION_HANDOFF.md`
 - `docs/handoffs/2025-12-26_THETADATA_SESSION_HANDOFF.md`
@@ -58,6 +109,12 @@ This handoff assumes the acceptance/CI gate work is being handled by a separate 
 
 ### CI acceptance gate (owned by Agent A)
 - `docs/handoffs/2026-01-04_THETADATA_CI_ACCEPTANCE_GATE_HANDOFF.md`
+
+### AWS CLI profiles (what to use when)
+- `--profile BotManager`
+  - Used for: bot backtest ECS logs (CloudWatch group `/aws/ecs/prod-trading-bots-backtest`).
+- `--profile default`
+  - Used for: data-downloader logs and other infrastructure (exact log group names vary; discover via `describe-log-groups`).
 
 ---
 
@@ -674,3 +731,350 @@ Action:
 
 Do not ship a “big refactor” here without buy-in, but measure it — this may explain “nothing happens for a few seconds”.
 
+---
+
+## Appendix G — Full “Game Plan” (step-by-step, with strict leashes)
+
+This is the execution plan the next agent should follow **in order**, with the required “stop conditions” so we don’t burn 6 hours on a run that is obviously broken.
+
+### Step 1: NVDA P0 (customer-facing) — full-window, prod-like, leash = 20 minutes
+
+1) Confirm the exact customer run code is available locally:
+- `Strategy Library/tmp/backtest_code/334e2c98-7134-4f38-860c-b6b11879a51b/main.py`
+
+2) Run full-window with prod-like flags:
+- Window: **2013-01-10 → 2025-12-30**
+- Data source: ThetaData (via downloader)
+- S3 cache: dev cache (readwrite)
+- Leash: **20 minutes**
+
+Stop conditions:
+- If the run exceeds 20 minutes without meaningful progress:
+  - stop the run
+  - extract “Submitted to queue” count
+  - identify the dominant request type(s) (e.g., `option/list/strikes` storms)
+
+Pass conditions:
+- finishes
+- produces fresh artifacts in `Strategy Library/logs`
+- no end-of-run crash
+
+If it fails:
+- capture traceback
+- capture last ~300 lines of `_logs.csv`
+- patch LumiBot and add regression test (strategy remains unchanged)
+
+### Step 2: SPX Copy2/Copy3 P0/P1 — cold S3 namespace, initial inspection leash = 15 minutes
+
+For each manager_bot_id:
+- Copy2: `c7c6bbd9-41f7-48c9-8754-3231e354f83b`
+- Copy3: `6be31002-44ec-4ae7-857a-db5e01323e7c`
+
+1) Ensure code is extracted under Strategy Library:
+- `Strategy Library/tmp/backtest_code/<id>/main.py`
+
+2) Generate a unique SPX cold namespace (do NOT delete caches):
+- Example:
+  - `LUMIBOT_CACHE_S3_VERSION=spx_cold_<runid>`
+  - `LUMIBOT_CACHE_FOLDER=/Users/robertgrzesik/Documents/Development/tmp/lumibot_cache_spx_<runid>`
+
+3) Run full-year window exactly as prod:
+- Leash: **15 minutes** initially (inspection run)
+
+Stop conditions during the 15m inspection:
+- If you see:
+  - thousands of `Submitted to queue` within minutes
+  - sequential strike scanning (`OPTION_PARAMS` in a tight loop)
+  - repeated delta probes per strike
+  → stop and fix the request explosion before attempting full completion.
+
+If inspection looks sane (bounded request volume):
+- rerun with a larger leash (up to 60 minutes) to complete the full year on cold S3.
+
+### Step 3: SPX warm proof — warm S3 + cold local (fresh container)
+
+Immediately after cold run:
+- Keep the same `LUMIBOT_CACHE_S3_VERSION` (S3 now warm)
+- Change only `LUMIBOT_CACHE_FOLDER` to a new empty folder
+
+Pass conditions:
+- queue submits near-zero
+- materially faster runtime
+
+If warm run still hits downloader heavily:
+- caching coverage is incomplete for some request type (chains, strikes, snapshots, quotes)
+- use logs to identify which request type is missing from S3 and patch only that gap
+
+### Step 4: Prod parity (warm) — quantify remaining gap with yappi + counters
+
+Once NVDA/SPX are no longer obviously broken:
+- Run the same strategy in prod and locally with:
+  - same window
+  - same flags
+  - yappi enabled
+
+Record:
+- wall time
+- queue submit counts (should be near-zero for warm)
+- yappi totals (S3 vs compute vs artifacts vs progress/logging)
+
+### Step 5: Startup latency — timeline and root cause
+
+For one prod run, capture timestamps for:
+- submit time (API accepted)
+- ECS startedAt
+- first log line
+- first progress row
+- stage transitions
+
+Then decide:
+- ECS pull/provisioning vs python boot vs progress write path
+
+---
+
+## Appendix H — “How to Use AWS” (profiles, where logs live, what to pull)
+
+### AWS CLI profiles (what we know works)
+
+This machine uses at least two profiles:
+- `BotManager` (restricted; for bot backtest ECS logs)
+- `default` (broader; for downloader + BotSpot infra logs)
+
+Confirm configured profiles:
+```bash
+aws configure list-profiles
+```
+
+### Bot backtest logs (BotManager profile)
+- CloudWatch log group:
+  - `/aws/ecs/prod-trading-bots-backtest`
+
+Filter by manager_bot_id:
+```bash
+aws logs tail "/aws/ecs/prod-trading-bots-backtest" \\
+  --profile BotManager \\
+  --since 2h \\
+  --filter-pattern "<manager_bot_id>"
+```
+
+### Downloader logs (default profile)
+Exact log group names can vary; discover them:
+```bash
+aws logs describe-log-groups --profile default | rg -i \"downloader|thetadata|theta\"
+```
+
+Once you have the log group name, filter by:
+- `request_id` (from bot logs)
+- `correlation_id` (if present)
+
+---
+
+## Appendix I — BotSpot → BotManager → ECS Flow (how production backtests actually run)
+
+This is the “real” production loop:
+
+1) User starts a backtest in BotSpot (React UI)
+2) BotSpot React calls BotSpot Node endpoint (e.g., `/backtest/start`)
+3) BotSpot Node:
+   - pulls the stored strategy code from DB
+   - prepends the **LUMIBOT_LOG_PATCH** (forces logfile artifacts)
+   - injects provider/caching env vars into `bot_config.env`
+   - sends a POST request to BotManager (`BACKTEST_SERVICE_URL`) with:
+     - `bot_id` (manager_bot_id)
+     - `main` (python code string)
+     - `requirements` (usually `lumibot`)
+     - `start_date`, `end_date`
+     - optional `bot_config`
+4) BotManager launches an ECS task, runs `main.py`, writes artifacts to S3, writes progress/status
+5) BotSpot Node polls BotManager status and surfaces it to the UI
+6) UI polls Node and displays progress/stage/files
+
+### Where to see the exact payload sent (useful for debugging)
+In `botspot_node`:
+- File: `src/Backtest/backtest.controller.ts`
+- Function: `startBacktest`
+- It logs:
+  - exact payload summary (redacted)
+  - lengths of code (`main`) and bot_config keys
+
+This is the first place to confirm:
+- which env vars were actually sent to prod
+- whether cache backend/mode/version were set the way you expect
+
+---
+
+## Appendix J — “How to Run Strategies on Production” (API keys + safe CLI workflow)
+
+### Where the API key + service URL live locally (do not paste secrets)
+In `botspot_node/.env-local`:
+- `BACKTEST_SERVICE_URL`
+- `BACKTEST_API_KEY`
+
+This is the “backtest API key” BotSpot Node uses to talk to BotManager.
+
+### Safe way to run a prod backtest from CLI (no secrets printed)
+
+The simplest approach is:
+1) read env vars from `.env-local` using a small python snippet (don’t `source` it; it contains `;` lines)
+2) POST to `{BACKTEST_SERVICE_URL}/backtest` with `x-api-key`
+
+**Important:** do not echo the API key in stdout/stderr. Keep output to “status code, manager id, etc.”
+
+Pseudo-flow:
+- Create a new UUID for `bot_id` (manager_bot_id)
+- Provide the python strategy code string for `main` (BotSpot Node uses DB code + log patch)
+- Provide the desired `start_date/end_date`
+- Provide `bot_config.env` with:
+  - downloader config
+  - cache backend config
+  - profiling config (if desired)
+
+This is intentionally not copy/paste-ready here to avoid accidental secret leakage; implement as a small local script under `bot_manager/scripts/` or `lumibot/scripts/` that:
+- loads dotenv
+- posts JSON
+- prints only safe fields
+
+---
+
+## Appendix K — YAPPI Profiling (how to use it, what artifact to expect, how to analyze)
+
+### Why yappi matters
+Yappi is the only reliable way to answer:
+- “Is prod slow because of S3 hydration?”
+- “Is it CPU (ECS instance type)?”
+- “Is it artifacts (tearsheet/indicators)?”
+- “Is it progress/log overhead?”
+
+### How to enable it (backtests only)
+The intended interface (per prior work) is an env var:
+- `BACKTESTING_PROFILE=yappi`
+
+When enabled, a profile artifact is written (CSV) and uploaded alongside other backtest files.
+
+### How to analyze locally
+In LumiBot repo:
+- `scripts/analyze_yappi_csv.py`
+
+Expected workflow:
+1) run a backtest with `BACKTESTING_PROFILE=yappi`
+2) locate the `*_profile_yappi.csv` artifact
+3) run:
+```bash
+python3 scripts/analyze_yappi_csv.py /path/to/profile_yappi.csv
+```
+4) compare “top total time” functions/modules across prod vs local
+
+### What to look for
+Group hotspots into buckets:
+- S3 cache (boto3, download/upload, serialization)
+- downloader client waits (HTTP poll loops, queue waiting)
+- pandas compute (merge/copy/timezone conversion)
+- artifact generation (QuantStats/indicators/plotting)
+- progress/logging (CloudWatch formatting, DB writes)
+
+### Common yappi gotchas
+- If you profile the entire process, log spam can dominate the profile.
+- Ensure flags match production:
+  - `SHOW_TEARSHEET=True`, `SHOW_INDICATORS=True`, `SHOW_PLOT=True`
+  - `BACKTESTING_QUIET_LOGS=false`
+  - `BACKTESTING_SHOW_PROGRESS_BAR=true`
+
+---
+
+## Appendix L — “How to Tell What’s Slow” (diagnostic patterns + next action)
+
+This section is deliberately redundant because it prevents wasting hours.
+
+### Pattern 1: Downloader queue storm (thousands of submits)
+Signals:
+- `Submitted to queue:` lines grow extremely fast
+- `OPTION_PARAMS` repeated for many strikes/expirations
+
+Likely causes:
+- delta-to-strike selection doing per-strike quote probes
+- repeated chain/strike-list fetches per minute
+
+Next action:
+- stop early (15m leash), inspect request types, patch helper logic to bound probes
+
+### Pattern 2: Placeholder-only data coverage (status_code 472 size=0)
+Signals:
+- repeated placeholder responses
+- repeated “schema upgrade” messages on placeholder-only caches
+
+Likely causes:
+- trying to request options before symbol had options coverage
+- repeatedly re-fetching known-empty ranges
+
+Next action:
+- ensure placeholder suppression / negative caching is effective for that request path
+
+### Pattern 3: Warm S3 run still hits downloader
+Signals:
+- warm run still shows many `Submitted to queue` lines
+
+Likely causes:
+- S3 cache namespace mismatch:
+  - wrong `LUMIBOT_CACHE_S3_VERSION`
+  - wrong `LUMIBOT_CACHE_S3_PREFIX`
+  - wrong bucket/region credentials
+- or cache coverage is missing a request type (chains vs strikes vs quotes)
+
+Next action:
+- confirm env vars actually set in the run payload (`bot_config.env` in prod)
+- confirm which request type is missing and add caching for only that type
+
+### Pattern 4: Low queue submits but still slow
+Signals:
+- warm run has near-zero submits but wall time still high
+
+Likely causes:
+- CPU bottleneck in ECS
+- heavy artifact generation
+- progress/log writes overhead
+- S3 read of many small objects (still cache, but slow)
+
+Next action:
+- yappi profile to separate compute vs artifacts vs S3 IO
+
+---
+
+## Appendix M — Cold-cache simulation (S3-first) without deleting anything
+
+The only safe way to test “cold cache” in a shared environment is namespace isolation.
+
+### Recommended method
+- Use `LUMIBOT_CACHE_S3_VERSION=spx_cold_<runid>`
+- Use `LUMIBOT_CACHE_FOLDER=/Users/robertgrzesik/Documents/Development/tmp/lumibot_cache_spx_<runid>`
+
+### Why this works
+S3 key shape is:
+- `<prefix>/<version>/<relative-path>`
+
+So changing `version` makes it logically empty without deleting shared objects.
+
+### Cleanup
+Do not delete shared caches.
+If you need to clean up scratch cold namespaces later, delete only:
+- objects under `<prefix>/spx_cold_<runid>/...`
+
+---
+
+## Appendix N — What has already been learned / changed (so you don’t re-learn it)
+
+### Key lessons learned
+- “Cold cache” must include **S3 namespace coldness** (not just local disk).
+- Strategy Library contains nested `.env` files; LumiBot recursively loads `.env`, which can override env vars and slow startup.
+- A warm run should not hit the downloader; if it does, either:
+  - env vars are wrong, or
+  - cache coverage is missing for that request type.
+- Long runs without early inspection are a time sink; use strict leashes and inspect request patterns early.
+
+### Relevant commits already on branch `4.4.25`
+(Commit hashes referenced here are already in the git history.)
+
+- `41b9207e` — OptionsHelper: fast-path get_strike_deltas (reduce SPX request explosion)
+- `69f57031` — indicators: avoid tearsheet crash on flat returns (NVDA “fails at end” class)
+- `ab21fac5` — thetadata_helper: memoize corporate actions (avoid repeated fetch storms)
+- `c9c0f17a` — scripts: add prod-like backtest runner + AGENTS write-location policy
+- `74459c7b` — docs: date-first handoffs + this NVDA/SPX/parity runbook
