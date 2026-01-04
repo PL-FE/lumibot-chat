@@ -160,6 +160,54 @@ def set_download_status(
         _download_status["timeout_at"] = (time.time() + timeout_s) if (timeout_s is not None and timeout_s > 0) else None
 
 
+def advance_download_status_progress(
+    *,
+    asset: Optional[Asset] = None,
+    data_type: Optional[str] = None,
+    timespan: Optional[str] = None,
+    step: int = 1,
+) -> None:
+    """Increment download progress counters without resetting queue diagnostics."""
+    if step <= 0:
+        return
+
+    with _download_status_lock:
+        if not _download_status.get("active"):
+            return
+
+        if data_type is not None and _download_status.get("data_type") != data_type:
+            return
+        if timespan is not None and _download_status.get("timespan") != timespan:
+            return
+
+        if asset is not None:
+            try:
+                status_symbol = (_download_status.get("asset") or {}).get("symbol")
+                asset_symbol = getattr(asset, "symbol", None)
+                if status_symbol is not None and asset_symbol is not None and str(status_symbol) != str(asset_symbol):
+                    return
+            except Exception:
+                pass
+
+        total = _download_status.get("total") or 0
+        try:
+            total_int = int(total)
+        except Exception:
+            total_int = 0
+        if total_int <= 0:
+            return
+
+        current = _download_status.get("current") or 0
+        try:
+            current_int = int(current)
+        except Exception:
+            current_int = 0
+
+        new_current = min(current_int + step, total_int)
+        _download_status["current"] = new_current
+        _download_status["progress"] = int((new_current / max(total_int, 1)) * 100)
+
+
 def update_download_status_queue_info(
     *,
     request_id: str,
@@ -183,14 +231,24 @@ def update_download_status_queue_info(
             return
 
         existing_request_id = _download_status.get("request_id")
-        if existing_request_id is not None and existing_request_id != request_id:
-            return
+        switching_requests = existing_request_id != request_id
+        existing_submitted_at = _download_status.get("submitted_at")
+        if switching_requests and existing_request_id is not None:
+            # We only switch tracked request_ids on a submit event (submitted_at is present).
+            if submitted_at is None:
+                return
+            try:
+                if existing_submitted_at is not None and float(submitted_at) < float(existing_submitted_at):
+                    return
+            except Exception:
+                pass
 
         # Avoid hammering the lock/payload. The queue poll interval can be 200ms;
         # UI only needs coarse updates.
-        last_poll_at = _download_status.get("last_poll_at")
-        if last_poll_at is not None and (now - float(last_poll_at)) < 1.0:
-            return
+        if not switching_requests:
+            last_poll_at = _download_status.get("last_poll_at")
+            if last_poll_at is not None and (now - float(last_poll_at)) < 1.0:
+                return
 
         _download_status["request_id"] = request_id
         if correlation_id is not None:
@@ -234,6 +292,19 @@ def clear_download_status() -> None:
         _download_status["attempts"] = None
         _download_status["last_error"] = None
         _download_status["submitted_at"] = None
+        _download_status["last_poll_at"] = None
+        _download_status["timeout_at"] = None
+
+
+def finalize_download_status() -> None:
+    """Mark download inactive while keeping last progress payload.
+
+    Some UIs poll progress at multi-second intervals; fully resetting to 0 can make
+    completed downloads appear as "0/1 then vanished". This keeps the final
+    `current/total/progress` visible for at least one subsequent progress.csv read.
+    """
+    with _download_status_lock:
+        _download_status["active"] = False
         _download_status["last_poll_at"] = None
         _download_status["timeout_at"] = None
 
@@ -2698,15 +2769,29 @@ def get_price_data(
         disable=disable_progress,
     )
 
-    # Track completed chunks for download status (thread-safe counter)
-    completed_chunks = [0]  # Use list to allow mutation in nested scope
-    completed_chunks_lock = threading.Lock()
+    total_download_units = total_queries
+    if str(getattr(asset, "asset_type", "")).lower() != "index" or str(datastyle).lower() != "ohlc":
+        # Intraday history endpoints issue one queued request per trading day. Surface that
+        # granularity to the UI so downloads don't look like "0/1 then done".
+        try:
+            total_download_units = len(get_trading_dates(asset, fetch_start, fetch_end))
+        except Exception:
+            total_download_units = total_queries
+    try:
+        total_download_units = int(total_download_units)
+    except Exception:
+        total_download_units = total_queries
+    total_download_units = max(1, total_download_units)
 
     # Set initial download status
-    set_download_status(asset, quote_asset, datastyle, timespan, 0, total_queries)
+    set_download_status(asset, quote_asset, datastyle, timespan, 0, total_download_units)
 
     def _fetch_chunk(chunk_start: datetime, chunk_end: datetime):
-        kwargs = {"datastyle": datastyle, "include_after_hours": include_after_hours}
+        kwargs = {
+            "datastyle": datastyle,
+            "include_after_hours": include_after_hours,
+            "download_timespan": timespan,
+        }
         if username is not None:
             kwargs["username"] = username
         if password is not None:
@@ -2758,9 +2843,6 @@ def get_price_data(
             )
             df_all = append_missing_markers(df_all, missing_chunk)
             pbar.update(1)
-            with completed_chunks_lock:
-                completed_chunks[0] += 1
-                set_download_status(asset, quote_asset, datastyle, timespan, completed_chunks[0], total_queries)
             return
 
         df_all = update_df(df_all, result_df)
@@ -2787,9 +2869,6 @@ def get_price_data(
             elapsed,
         )
         pbar.update(1)
-        with completed_chunks_lock:
-            completed_chunks[0] += 1
-            set_download_status(asset, quote_asset, datastyle, timespan, completed_chunks[0], total_queries)
 
     # Avoid ThreadPoolExecutor overhead (and potential deadlocks) when there's only a single chunk.
     if total_queries == 1:
@@ -2840,8 +2919,8 @@ def get_price_data(
                     result_df=result_df,
                 )
 
-    # Clear download status when fetch completes
-    clear_download_status()
+    # Mark download complete (keep final progress payload for UI polling)
+    finalize_download_status()
     update_cache(cache_file, df_all, df_cached, remote_payload=remote_payload)
     if df_all is not None:
         logger.debug("[THETA][DEBUG][THETADATA-CACHE-WRITE] wrote %s rows=%d", cache_file, len(df_all))
@@ -4431,6 +4510,7 @@ def get_historical_data(
     datastyle: str = "ohlc",
     include_after_hours: bool = True,
     session_time_override: Optional[Tuple[str, str]] = None,
+    download_timespan: Optional[str] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
 ):
@@ -4488,6 +4568,19 @@ def get_historical_data(
         include_after_hours,
     )
 
+    def _advance_download_progress() -> None:
+        if download_timespan is None:
+            return
+        try:
+            advance_download_status_progress(
+                asset=asset,
+                data_type=datastyle,
+                timespan=download_timespan,
+                step=1,
+            )
+        except Exception:
+            return
+
     def build_option_params() -> Dict[str, str]:
         if not asset.expiration:
             raise ValueError(f"Expiration date missing for option asset {asset}")
@@ -4518,6 +4611,7 @@ def get_historical_data(
             headers=headers,
             querystring=querystring,
         )
+        _advance_download_progress()
         if not json_resp:
             return None
         df = pd.DataFrame(json_resp["response"], columns=json_resp["header"]["format"])
@@ -4566,6 +4660,7 @@ def get_historical_data(
             headers=headers,
             querystring=querystring,
         )
+        _advance_download_progress()
         if not json_resp:
             continue
 
