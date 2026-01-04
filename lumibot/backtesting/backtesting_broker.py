@@ -1,10 +1,13 @@
+import json
 import math
+import os
+import time
 import traceback
 import threading
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import pandas as pd
 import polars as pl
@@ -148,6 +151,14 @@ class BacktestingBroker(Broker):
         self._market_open_cache = {}
         # Track per-strategy futures lots for accurate margin/P&L when flipping
         self._futures_lot_ledgers = defaultdict(list)
+
+        # Backtest-only trade audit telemetry (NVDA/SPX investigations).
+        #
+        # WHY: Investigations sometimes require a per-fill record of the inputs used to decide fills
+        # (OHLC bars, quote bid/ask, spread gating, SMART_LIMIT model inputs, underlying quotes, etc.).
+        # This can add overhead and widen CSV outputs, so keep it disabled by default and gate behind
+        # `LUMIBOT_BACKTEST_AUDIT=1`.
+        self._backtest_audit_enabled = self._truthy_env(os.environ.get("LUMIBOT_BACKTEST_AUDIT"))
         # Track end-of-data to prevent infinite loops when end date is in the future
         self._end_of_trading_days_reached = False
 
@@ -1505,6 +1516,7 @@ class BacktestingBroker(Broker):
 
         # Prefetching: Track assets and schedule prefetch
         current_dt = self.datetime
+        audit_enabled = self._audit_enabled()
 
         if self.hybrid_prefetcher:
             # Use advanced hybrid prefetcher
@@ -1600,6 +1612,32 @@ class BacktestingBroker(Broker):
                     if hasattr(order, "asset") and getattr(order.asset, "multiplier", None):
                         parent_multiplier = order.asset.multiplier
 
+                    if audit_enabled:
+                        legs = []
+                        for leg in order.child_orders:
+                            legs.append(
+                                {
+                                    "identifier": getattr(leg, "identifier", None),
+                                    "symbol": getattr(getattr(leg, "asset", None), "symbol", None),
+                                    "asset_type": getattr(getattr(leg, "asset", None), "asset_type", None),
+                                    "right": getattr(getattr(leg, "asset", None), "right", None),
+                                    "strike": getattr(getattr(leg, "asset", None), "strike", None),
+                                    "expiration": getattr(getattr(leg, "asset", None), "expiration", None),
+                                    "side": getattr(leg, "side", None),
+                                    "quantity": float(getattr(leg, "quantity", 0) or 0),
+                                    "fill_price": leg.get_fill_price(),
+                                }
+                            )
+                        self._audit_merge(
+                            order,
+                            {
+                                "fill.model": "multileg_parent_placeholder",
+                                "fill.price": float(parent_price),
+                                "multileg.legs": legs,
+                            },
+                            overwrite=True,
+                        )
+
                     self.stream.dispatch(
                         self.FILLED_ORDER,
                         wait_until_complete=True,
@@ -1637,6 +1675,7 @@ class BacktestingBroker(Broker):
                 if ask is not None and self._is_invalid_price(ask):
                     ask = None
 
+                snap = None
                 # ThetaData daily-cadence backtests frequently return day-aligned option quotes without
                 # NBBO (bid/ask). For execution (especially MARKET exits), prefer a point-in-time
                 # quote snapshot so we can fill against realistic bid/ask instead of falling through
@@ -1666,6 +1705,19 @@ class BacktestingBroker(Broker):
                 if order.order_type == Order.OrderType.MARKET:
                     required_price = ask if is_buy else bid
                     if required_price is not None and not self._is_invalid_price(required_price):
+                        if audit_enabled:
+                            payload: dict[str, Any] = {
+                                "fill.model": "quote_market",
+                                "fill.price": float(required_price),
+                                "asset_quote.final_bid": bid,
+                                "asset_quote.final_ask": ask,
+                                "asset_quote.snapshot_only_used": bool(snap is not None),
+                            }
+                            payload.update(self._audit_quote_fields("asset_quote", quote))
+                            if snap is not None:
+                                payload.update(self._audit_quote_fields("asset_quote.snapshot", snap))
+                            self._audit_merge(order, payload, overwrite=False)
+                            self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
                         setattr(order, "_price_source", "quote")
                         self._execute_filled_order(
                             order=order,
@@ -1698,6 +1750,7 @@ class BacktestingBroker(Broker):
                         spread_limit = self._get_spread_limit(strategy, spread_key)
                         if spread_limit is None:
                             spread_limit = self._get_spread_limit(strategy, "max_spread_pct")
+                        spread_pct = None
                         # Only apply spread gating to *inside-spread* limit fills.
                         # Marketable limits (>=ask for buys, <=bid for sells) should fill regardless
                         # of spread width, otherwise strategies can get stuck with uncloseable legs.
@@ -1709,6 +1762,23 @@ class BacktestingBroker(Broker):
                                     fill_price = None
 
                     if fill_price is not None and not self._is_invalid_price(fill_price):
+                        if audit_enabled:
+                            payload = {
+                                "fill.model": "quote_limit",
+                                "fill.price": float(fill_price),
+                                "fill.crossed": bool(crossed),
+                                "order.limit_price": limit_price,
+                                "asset_quote.final_bid": bid,
+                                "asset_quote.final_ask": ask,
+                                "asset_quote.snapshot_only_used": bool(snap is not None),
+                                "spread.limit": spread_limit,
+                                "spread.pct": spread_pct,
+                            }
+                            payload.update(self._audit_quote_fields("asset_quote", quote))
+                            if snap is not None:
+                                payload.update(self._audit_quote_fields("asset_quote.snapshot", snap))
+                            self._audit_merge(order, payload, overwrite=False)
+                            self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
                         setattr(order, "_price_source", "quote")
                         self._execute_filled_order(
                             order=order,
@@ -1822,6 +1892,20 @@ class BacktestingBroker(Broker):
                     if limit_price is not None:
                         if order.is_buy_order():
                             if ask is not None and not self._is_invalid_price(ask) and limit_price >= ask:
+                                if audit_enabled:
+                                    self._audit_merge(
+                                        order,
+                                        {
+                                            "fill.model": "quote_limit_marketable",
+                                            "fill.price": float(ask),
+                                            "order.limit_price": limit_price,
+                                            "asset_quote.final_bid": bid,
+                                            "asset_quote.final_ask": ask,
+                                        },
+                                        overwrite=False,
+                                    )
+                                    self._audit_merge(order, self._audit_quote_fields("asset_quote", quote), overwrite=False)
+                                    self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
                                 setattr(order, "_price_source", "quote")
                                 self._execute_filled_order(
                                     order=order,
@@ -1832,6 +1916,20 @@ class BacktestingBroker(Broker):
                                 continue
                         elif order.is_sell_order():
                             if bid is not None and not self._is_invalid_price(bid) and limit_price <= bid:
+                                if audit_enabled:
+                                    self._audit_merge(
+                                        order,
+                                        {
+                                            "fill.model": "quote_limit_marketable",
+                                            "fill.price": float(bid),
+                                            "order.limit_price": limit_price,
+                                            "asset_quote.final_bid": bid,
+                                            "asset_quote.final_ask": ask,
+                                        },
+                                        overwrite=False,
+                                    )
+                                    self._audit_merge(order, self._audit_quote_fields("asset_quote", quote), overwrite=False)
+                                    self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
                                 setattr(order, "_price_source", "quote")
                                 self._execute_filled_order(
                                     order=order,
@@ -1893,6 +1991,33 @@ class BacktestingBroker(Broker):
                                     parent_price = sum(child_prices)
                                     parent_multiplier = getattr(getattr(order, "asset", None), "multiplier", 1) or 1
 
+                                    if audit_enabled:
+                                        legs = []
+                                        for leg in order.child_orders:
+                                            legs.append(
+                                                {
+                                                    "identifier": getattr(leg, "identifier", None),
+                                                    "symbol": getattr(getattr(leg, "asset", None), "symbol", None),
+                                                    "asset_type": getattr(getattr(leg, "asset", None), "asset_type", None),
+                                                    "right": getattr(getattr(leg, "asset", None), "right", None),
+                                                    "strike": getattr(getattr(leg, "asset", None), "strike", None),
+                                                    "expiration": getattr(getattr(leg, "asset", None), "expiration", None),
+                                                    "side": getattr(leg, "side", None),
+                                                    "quantity": float(getattr(leg, "quantity", 0) or 0),
+                                                    "fill_price": leg.get_fill_price(),
+                                                }
+                                            )
+                                        self._audit_merge(
+                                            order,
+                                            {
+                                                "fill.model": "smart_limit_parent",
+                                                "fill.price": float(parent_price),
+                                                "multileg.legs": legs,
+                                                "multileg.note": "OHLC missing; legs filled at market open fallback",
+                                            },
+                                            overwrite=True,
+                                        )
+
                                     self.stream.dispatch(
                                         self.FILLED_ORDER,
                                         wait_until_complete=True,
@@ -1915,6 +2040,32 @@ class BacktestingBroker(Broker):
                                 ]
                                 parent_price = sum(child_prices)
                                 parent_multiplier = getattr(getattr(order, "asset", None), "multiplier", 1) or 1
+
+                                if audit_enabled:
+                                    legs = []
+                                    for leg in order.child_orders:
+                                        legs.append(
+                                            {
+                                                "identifier": getattr(leg, "identifier", None),
+                                                "symbol": getattr(getattr(leg, "asset", None), "symbol", None),
+                                                "asset_type": getattr(getattr(leg, "asset", None), "asset_type", None),
+                                                "right": getattr(getattr(leg, "asset", None), "right", None),
+                                                "strike": getattr(getattr(leg, "asset", None), "strike", None),
+                                                "expiration": getattr(getattr(leg, "asset", None), "expiration", None),
+                                                "side": getattr(leg, "side", None),
+                                                "quantity": float(getattr(leg, "quantity", 0) or 0),
+                                                "fill_price": leg.get_fill_price(),
+                                            }
+                                        )
+                                    self._audit_merge(
+                                        order,
+                                        {
+                                            "fill.model": "smart_limit_parent",
+                                            "fill.price": float(parent_price),
+                                            "multileg.legs": legs,
+                                        },
+                                        overwrite=True,
+                                    )
 
                                 self.stream.dispatch(
                                     self.FILLED_ORDER,
@@ -2044,10 +2195,12 @@ class BacktestingBroker(Broker):
                         # Not executable yet; keep waiting.
                         continue
 
+                    fill_method = "smart_limit_quotes"
                     filled = self._fill_multileg_smart_limit_children(order, strategy, float(price))
                     if not filled:
                         # Quotes missing (or invalid). SMART_LIMIT should downgrade to a market-style
                         # fill. For multileg orders that means filling each leg from its own OHLC open.
+                        fill_method = "market_open_fallback"
                         filled = self._fill_multileg_children_at_market_open(order, strategy)
 
                     if filled:
@@ -2058,6 +2211,33 @@ class BacktestingBroker(Broker):
                         ]
                         parent_price = sum(child_prices)
                         parent_multiplier = getattr(getattr(order, "asset", None), "multiplier", 1) or 1
+
+                        if audit_enabled:
+                            legs = []
+                            for leg in order.child_orders:
+                                legs.append(
+                                    {
+                                        "identifier": getattr(leg, "identifier", None),
+                                        "symbol": getattr(getattr(leg, "asset", None), "symbol", None),
+                                        "asset_type": getattr(getattr(leg, "asset", None), "asset_type", None),
+                                        "right": getattr(getattr(leg, "asset", None), "right", None),
+                                        "strike": getattr(getattr(leg, "asset", None), "strike", None),
+                                        "expiration": getattr(getattr(leg, "asset", None), "expiration", None),
+                                        "side": getattr(leg, "side", None),
+                                        "quantity": float(getattr(leg, "quantity", 0) or 0),
+                                        "fill_price": leg.get_fill_price(),
+                                    }
+                                )
+                            self._audit_merge(
+                                order,
+                                {
+                                    "fill.model": "smart_limit_parent",
+                                    "fill.price": float(parent_price),
+                                    "multileg.fill_method": fill_method,
+                                    "multileg.legs": legs,
+                                },
+                                overwrite=True,
+                            )
 
                         self.stream.dispatch(
                             self.FILLED_ORDER,
@@ -2096,6 +2276,34 @@ class BacktestingBroker(Broker):
 
             # If the price is set, then the order has been filled
             if price is not None:
+                if audit_enabled:
+                    bar_dt = None
+                    try:
+                        bar_dt = dt.isoformat()  # type: ignore[union-attr]
+                    except Exception:
+                        bar_dt = dt
+
+                    self._audit_merge(
+                        order,
+                        {
+                            "fill.model": "ohlc",
+                            "fill.order_type": str(getattr(order, "order_type", None)),
+                            "fill.price": float(price),
+                            "bar.datetime": bar_dt,
+                            "bar.open": self._coerce_price(open),
+                            "bar.high": self._coerce_price(high),
+                            "bar.low": self._coerce_price(low),
+                            "bar.close": self._coerce_price(close),
+                            "bar.volume": self._coerce_price(volume),
+                            "order.limit_price": self._coerce_price(getattr(order, "limit_price", None)),
+                            "order.stop_price": self._coerce_price(getattr(order, "stop_price", None)),
+                            "data_source": getattr(getattr(self, "data_source", None), "SOURCE", None),
+                            "timestep": getattr(getattr(self, "data_source", None), "_timestep", None),
+                        },
+                        overwrite=False,
+                    )
+                    self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
+
                 self._execute_filled_order(
                     order=order,
                     price=price,
@@ -2227,6 +2435,111 @@ class BacktestingBroker(Broker):
                     continue
         return total
 
+    def _audit_enabled(self) -> bool:
+        # Prefer a cached value (set in __init__) to avoid env lookups in hot loops.
+        enabled = getattr(self, "_backtest_audit_enabled", None)
+        if enabled is None:
+            return self._truthy_env(os.environ.get("LUMIBOT_BACKTEST_AUDIT"))
+        return bool(enabled)
+
+    def _audit_merge(self, order: Order, payload: dict[str, Any], *, overwrite: bool = False) -> None:
+        """Best-effort merge of audit fields onto an Order.
+
+        Invariant: audit collection must never break backtests. This function must be safe to call
+        in hot paths, and must swallow/ignore unexpected value types rather than raising.
+        """
+        if not self._audit_enabled() or not payload:
+            return
+
+        audit = getattr(order, "_audit", None)
+        if not isinstance(audit, dict):
+            audit = {}
+            setattr(order, "_audit", audit)
+
+        # Stamp a schema version once so downstream analysis can evolve safely.
+        audit.setdefault("schema_version", 1)
+
+        for key, value in payload.items():
+            if key is None:
+                continue
+            key_str = str(key)
+            if not overwrite and key_str in audit:
+                continue
+
+            try:
+                if isinstance(value, datetime):
+                    audit[key_str] = value.isoformat()
+                elif isinstance(value, (dict, list, tuple)):
+                    audit[key_str] = json.dumps(value, default=str, sort_keys=True)
+                else:
+                    audit[key_str] = value
+            except Exception:
+                audit[key_str] = str(value)
+
+    def _audit_quote_fields(self, prefix: str, quote: object) -> dict[str, Any]:
+        if quote is None:
+            return {}
+
+        def iso(value: Any) -> Any:
+            try:
+                return value.isoformat()  # type: ignore[no-any-return]
+            except Exception:
+                return value
+
+        out: dict[str, Any] = {}
+        for attr in (
+            "price",
+            "bid",
+            "ask",
+            "mid_price",
+            "bid_size",
+            "ask_size",
+            "volume",
+            "change",
+            "percent_change",
+        ):
+            value = getattr(quote, attr, None)
+            if value is None:
+                continue
+            coerced = self._coerce_price(value)
+            if isinstance(coerced, float) and self._is_invalid_price(coerced):
+                continue
+            out[f"{prefix}.{attr}"] = coerced
+
+        for attr in ("timestamp", "quote_time", "bid_time", "ask_time"):
+            value = getattr(quote, attr, None)
+            if value is None:
+                continue
+            out[f"{prefix}.{attr}"] = iso(value)
+
+        raw = getattr(quote, "raw_data", None)
+        if isinstance(raw, dict) and raw:
+            try:
+                raw_json = json.dumps(raw, default=str, sort_keys=True)
+                out[f"{prefix}.raw_json"] = raw_json if len(raw_json) <= 2000 else f"<omitted len={len(raw_json)}>"
+            except Exception:
+                out[f"{prefix}.raw_json"] = "<unserializable>"
+
+        return out
+
+    def _audit_underlying_quote_fields(self, order: Order) -> dict[str, Any]:
+        asset = getattr(order, "asset", None)
+        if asset is None or str(getattr(asset, "asset_type", "")).lower() != "option":
+            return {}
+
+        underlying = getattr(asset, "underlying_asset", None)
+        if underlying is None:
+            return {"underlying.symbol": getattr(asset, "symbol", None), "underlying.missing": True}
+
+        try:
+            quote = self.get_quote(underlying, quote=getattr(order, "quote", None))
+        except Exception as exc:
+            return {"underlying.symbol": getattr(underlying, "symbol", None), "underlying.quote_error": str(exc)}
+
+        fields = {"underlying.symbol": getattr(underlying, "symbol", None), "underlying.asset_type": getattr(underlying, "asset_type", None)}
+        fields.update(self._audit_quote_fields("underlying_quote", quote))
+        return fields
+
     def _try_fill_with_quote(self, order, strategy, open_=None, high_=None, low_=None) -> Optional[float]:
         """Attempt to fill an order using quotes when OHLC bars are missing."""
         timestep = getattr(self.data_source, "_timestep", None)
@@ -2302,6 +2615,31 @@ class BacktestingBroker(Broker):
                 color="yellow",
             )
 
+        spread_pct = None
+        if bid is not None and ask is not None:
+            mid = (ask + bid) / 2
+            if mid:
+                try:
+                    spread_pct = (ask - bid) / mid
+                except Exception:
+                    spread_pct = None
+
+        self._audit_merge(
+            order,
+            {
+                "fill.model": "quote_fallback",
+                "fill.order_type": str(getattr(order, "order_type", None)),
+                "fill.price": float(fill_price),
+                "fill.crossed": bool(crossed) if order.order_type != Order.OrderType.MARKET else True,
+                "order.limit_price": self._coerce_price(getattr(order, "limit_price", None)),
+                "spread.limit": spread_limit,
+                "spread.pct": spread_pct,
+            },
+            overwrite=False,
+        )
+        self._audit_merge(order, self._audit_quote_fields("asset_quote", quote), overwrite=False)
+        self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
+
         setattr(order, "_price_source", "quote")
         return fill_price
 
@@ -2309,6 +2647,8 @@ class BacktestingBroker(Broker):
         smart_limit = getattr(order, "smart_limit", None)
         if smart_limit is None:
             return None, False
+        audit_enabled = self._audit_enabled()
+        legs_audit: Optional[list[dict[str, Any]]] = None
 
         state = getattr(order, "_smart_limit_state", None)
         if state is None:
@@ -2345,6 +2685,8 @@ class BacktestingBroker(Broker):
             net_bid = 0.0
             net_ask = 0.0
             order_side = "buy" if order.is_buy_order() else "sell"
+            if audit_enabled:
+                legs_audit = []
             for leg in order.child_orders:
                 try:
                     quote = self.get_quote(leg.asset, quote=leg.quote)
@@ -2352,6 +2694,20 @@ class BacktestingBroker(Broker):
                     quote = None
                 leg_bid = self._coerce_price(getattr(quote, "bid", None)) if quote is not None else None
                 leg_ask = self._coerce_price(getattr(quote, "ask", None)) if quote is not None else None
+                if legs_audit is not None:
+                    legs_audit.append(
+                        {
+                            "symbol": getattr(getattr(leg, "asset", None), "symbol", None),
+                            "asset_type": getattr(getattr(leg, "asset", None), "asset_type", None),
+                            "right": getattr(getattr(leg, "asset", None), "right", None),
+                            "strike": getattr(getattr(leg, "asset", None), "strike", None),
+                            "expiration": getattr(getattr(leg, "asset", None), "expiration", None),
+                            "side": getattr(leg, "side", None),
+                            "quantity": float(getattr(leg, "quantity", 0) or 0),
+                            "bid": leg_bid,
+                            "ask": leg_ask,
+                        }
+                    )
                 if leg_bid is None or leg_ask is None:
                     net_bid = net_ask = None
                     break
@@ -2397,6 +2753,18 @@ class BacktestingBroker(Broker):
                     )
                 state["missing_quote_warned"] = True
             order.trade_slippage = 0.0
+            if audit_enabled:
+                self._audit_merge(
+                    order,
+                    {
+                        "fill.model": "smart_limit_missing_quote",
+                        "fill.price": self._coerce_price(open_),
+                        "smart_limit.bid": bid,
+                        "smart_limit.ask": ask,
+                        "smart_limit.legs": legs_audit,
+                    },
+                    overwrite=False,
+                )
             return open_, False
 
         side = "buy" if order.is_buy_order() else "sell"
@@ -2431,6 +2799,22 @@ class BacktestingBroker(Broker):
         ) or 1
         order.trade_slippage = abs(fill_price - mid) * float(order.quantity) * multiplier
         setattr(order, "_price_source", "smart_limit")
+        if audit_enabled:
+            payload: dict[str, Any] = {
+                "fill.model": "smart_limit_net" if order.order_class == Order.OrderClass.MULTILEG else "smart_limit",
+                "fill.price": float(fill_price),
+                "smart_limit.bid": bid,
+                "smart_limit.ask": ask,
+                "smart_limit.mid": mid,
+                "smart_limit.tick": tick,
+                "smart_limit.final_price": final_price,
+                "smart_limit.final_price_pct": getattr(smart_limit, "final_price_pct", None),
+                "smart_limit.slippage_amount": slippage_amount,
+            }
+            if order.order_class == Order.OrderClass.MULTILEG and order.child_orders:
+                payload["smart_limit.legs"] = legs_audit
+            self._audit_merge(order, payload, overwrite=False)
+            self._audit_merge(order, self._audit_underlying_quote_fields(order), overwrite=False)
         return fill_price, False
 
     def _fill_multileg_smart_limit_children(self, order: Order, strategy, net_fill_price: float) -> bool:
@@ -2442,6 +2826,13 @@ class BacktestingBroker(Broker):
         """
         if not order.child_orders:
             return False
+        audit_enabled = self._audit_enabled()
+        shared_underlying_fields: dict[str, Any] = {}
+        if audit_enabled:
+            try:
+                shared_underlying_fields = self._audit_underlying_quote_fields(order.child_orders[0])
+            except Exception:
+                shared_underlying_fields = {}
 
         side = "buy" if order.is_buy_order() else "sell"
 
@@ -2496,6 +2887,24 @@ class BacktestingBroker(Broker):
 
             leg.trade_slippage = abs(fill_price - leg_mid) * qty * multiplier
             setattr(leg, "_price_source", "smart_limit")
+            if audit_enabled:
+                self._audit_merge(
+                    leg,
+                    {
+                        "fill.model": "smart_limit_leg",
+                        "fill.price": float(fill_price),
+                        "parent.identifier": getattr(order, "identifier", None),
+                        "parent.net_fill_price": float(net_fill_price),
+                        "asset_quote.final_bid": leg_info.get("bid"),
+                        "asset_quote.final_ask": leg_info.get("ask"),
+                        "smart_limit.leg_mid": leg_mid,
+                        "smart_limit.leg_slack": leg_info.get("slack"),
+                        "smart_limit.leg_raw_fill": raw_fill,
+                        "smart_limit.tick": tick,
+                    },
+                    overwrite=False,
+                )
+                self._audit_merge(leg, shared_underlying_fields, overwrite=False)
 
             self._execute_filled_order(
                 order=leg,
@@ -2514,6 +2923,13 @@ class BacktestingBroker(Broker):
         """
         if not order.child_orders:
             return False
+        audit_enabled = self._audit_enabled()
+        shared_underlying_fields: dict[str, Any] = {}
+        if audit_enabled:
+            try:
+                shared_underlying_fields = self._audit_underlying_quote_fields(order.child_orders[0])
+            except Exception:
+                shared_underlying_fields = {}
 
         for leg in order.child_orders:
             asset = leg.asset if getattr(leg.asset, "asset_type", None) != "crypto" else (leg.asset, leg.quote)
@@ -2547,6 +2963,20 @@ class BacktestingBroker(Broker):
 
             leg.trade_slippage = 0.0
             setattr(leg, "_price_source", "market")
+            if audit_enabled:
+                self._audit_merge(
+                    leg,
+                    {
+                        "fill.model": "market_open_fallback_leg",
+                        "fill.price": float(open_price),
+                        "parent.identifier": getattr(order, "identifier", None),
+                        "bar.open": float(open_price),
+                        "data_source": getattr(getattr(self, "data_source", None), "SOURCE", None),
+                        "timestep": getattr(getattr(self, "data_source", None), "_timestep", None),
+                    },
+                    overwrite=False,
+                )
+                self._audit_merge(leg, shared_underlying_fields, overwrite=False)
             self._execute_filled_order(
                 order=leg,
                 price=float(open_price),
