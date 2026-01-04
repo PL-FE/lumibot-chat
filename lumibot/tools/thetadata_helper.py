@@ -2219,7 +2219,7 @@ def get_price_data(
         Coverage failures = cache is valid but doesn't cover requested range - can be extended.
 
         This distinction is critical for cache fidelity:
-        - Integrity failures (unparseable_index, duplicate_index, sidecar_mismatch): DELETE cache
+        - Integrity failures (unparseable_index, duplicate_index): DELETE cache
         - Coverage failures (missing_trading_days, stale_max_date, too_few_rows): KEEP cache, extend it
 
         Added 2025-12-07 to fix cache fidelity bug where valid cache was deleted when
@@ -2261,7 +2261,19 @@ def get_price_data(
             # Checksum validation is intentionally skipped for performance. Parquet corruption is
             # surfaced at read time; the remaining fields catch most logical mismatches cheaply.
             if not all([rows_match, placeholders_match, min_match, max_match]):
-                return False, "sidecar_mismatch", True  # INTEGRITY FAILURE
+                # Sidecar is best-effort metadata; it can become out-of-sync with the parquet
+                # (e.g., non-atomic remote uploads, legacy caches). Treat mismatch as a warning,
+                # not a cache-corruption signal: keep the parquet and avoid unnecessary refetches.
+                logger.debug(
+                    "[THETA][CACHE][SIDECAR_MISMATCH] cache_file=%s rows=%d placeholders=%d min=%s max=%s sidecar=%s",
+                    cache_file.name,
+                    total_rows,
+                    placeholder_rows,
+                    min_ts.isoformat() if hasattr(min_ts, "isoformat") else min_ts,
+                    max_ts.isoformat() if hasattr(max_ts, "isoformat") else max_ts,
+                    sidecar_data,
+                )
+                return True, "sidecar_mismatch", False
 
         if span == "day":
             trading_days = get_trading_dates(asset, requested_start_dt, requested_end_dt)
@@ -3227,6 +3239,163 @@ def build_remote_cache_payload(asset: Asset, timespan: str, datastyle: str = "oh
     return payload
 
 
+def build_snapshot_cache_filename(
+    asset: Asset,
+    *,
+    trading_day: date,
+    interval_label: str,
+    start_time: str,
+    end_time: str,
+    datastyle: str,
+) -> Path:
+    """Build a cache filename for small, point-in-time intraday history windows.
+
+    Why this exists:
+    - `get_quote(snapshot_only=True)` intentionally requests only a tiny intraday window around
+      the simulation timestamp (e.g., 09:30 → 09:35) to avoid downloading full-day quote history
+      for contracts that will never be traded.
+    - Those snapshot requests must still be cacheable (S3 warm-cache invariant) so repeated runs
+      can avoid downloader-queue usage entirely.
+
+    This cache is stored separately from the normal {timespan}/{datastyle} caches to avoid
+    "partial day" coverage being misinterpreted as a full-day cache hit.
+    """
+    provider_root = Path(LUMIBOT_CACHE_FOLDER) / CACHE_SUBFOLDER
+    asset_folder = _resolve_asset_folder(asset)
+    datastyle_folder = _normalize_folder_component(datastyle, "default")
+    base_folder = provider_root / asset_folder / "snapshot" / datastyle_folder
+
+    if asset.asset_type == "option":
+        if asset.expiration is None:
+            raise ValueError(f"Expiration date is required for option {asset} but it is None")
+        expiry_string = asset.expiration.strftime("%y%m%d")
+        uniq_str = f"{asset.symbol}_{expiry_string}_{asset.strike}_{asset.right}"
+    else:
+        uniq_str = asset.symbol
+
+    day_string = trading_day.strftime("%Y%m%d")
+    start_compact = str(start_time).replace(":", "")
+    end_compact = str(end_time).replace(":", "")
+    cache_filename = (
+        f"{asset.asset_type}_{uniq_str}_snapshot_{day_string}_{interval_label}_{start_compact}_{end_compact}_{datastyle}.parquet"
+    )
+    return base_folder / cache_filename
+
+
+def get_historical_data_snapshot_cached(
+    asset: Asset,
+    start_dt: datetime,
+    end_dt: datetime,
+    ivl: int,
+    *,
+    datastyle: str = "quote",
+    include_after_hours: bool = True,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> Optional[pd.DataFrame]:
+    """Cache-backed wrapper for `get_historical_data()` for tiny single-day windows.
+
+    This is primarily used by `ThetaDataBacktestingPandas.get_quote(snapshot_only=True)` to
+    preserve the warm-cache invariant: if S3 is warmed, we must not enqueue downloader work.
+    """
+    trading_days = get_trading_dates(asset, start_dt, end_dt)
+    if len(trading_days) != 1:
+        return get_historical_data(
+            asset,
+            start_dt,
+            end_dt,
+            ivl,
+            datastyle=datastyle,
+            include_after_hours=include_after_hours,
+            username=username,
+            password=password,
+        )
+
+    interval_label = _interval_label_from_ms(ivl)
+    day = trading_days[0]
+    start_local = _normalize_market_datetime(start_dt)
+    end_local = _normalize_market_datetime(end_dt)
+    session_start, session_end = _compute_session_bounds(
+        day,
+        start_local,
+        end_local,
+        include_after_hours,
+        prefer_full_session=False,
+    )
+
+    cache_file = build_snapshot_cache_filename(
+        asset,
+        trading_day=day,
+        interval_label=interval_label,
+        start_time=session_start,
+        end_time=session_end,
+        datastyle=datastyle,
+    )
+    remote_payload = build_remote_cache_payload(asset, "snapshot", datastyle)
+    remote_payload.update(
+        {
+            "trading_day": day.isoformat(),
+            "interval": interval_label,
+            "start_time": session_start,
+            "end_time": session_end,
+        }
+    )
+
+    cache_manager = get_backtest_cache()
+    if cache_manager.enabled:
+        try:
+            cache_manager.ensure_local_file(cache_file, payload=remote_payload)
+        except Exception:
+            pass
+
+    df_existing = None
+    if cache_file.exists():
+        try:
+            df_existing = load_cache(cache_file)
+        except Exception:
+            df_existing = None
+        if df_existing is not None and not df_existing.empty:
+            return df_existing
+
+    try:
+        result_df = get_historical_data(
+            asset,
+            start_dt,
+            end_dt,
+            ivl,
+            datastyle=datastyle,
+            include_after_hours=include_after_hours,
+            username=username,
+            password=password,
+        )
+    except Exception as exc:
+        # Some ThetaTerminal endpoints occasionally return internal 500s for specific historical
+        # option/quote windows (observed for MELI option quote snapshots on expiration day).
+        #
+        # For acceptance backtests we still need the warm-cache invariant to hold: once a run has
+        # observed a terminal "cannot fetch" outcome for a given snapshot window, subsequent runs
+        # should not enqueue downloader work repeatedly. Record a placeholder so the cache can go warm.
+        logger.warning(
+            "[THETA][CACHE][SNAPSHOT] Snapshot history fetch failed; caching placeholder. "
+            "asset=%s day=%s start_time=%s end_time=%s datastyle=%s error=%s",
+            asset,
+            day.isoformat(),
+            session_start,
+            session_end,
+            datastyle,
+            exc,
+        )
+        update_cache(cache_file, df_all=None, df_cached=df_existing, missing_dates=[day], remote_payload=remote_payload)
+        return None
+
+    if result_df is None or getattr(result_df, "empty", True):
+        update_cache(cache_file, df_all=None, df_cached=df_existing, missing_dates=[day], remote_payload=remote_payload)
+        return result_df
+
+    update_cache(cache_file, df_all=result_df, df_cached=df_existing, missing_dates=None, remote_payload=remote_payload)
+    return result_df
+
+
 def get_missing_dates(df_all, asset, start, end):
     """
     Check if we have data for the full range
@@ -3301,9 +3470,9 @@ def get_missing_dates(df_all, asset, start, end):
         df_working["missing"].astype(bool) if "missing" in df_working.columns else pd.Series(False, index=df_working.index)
     )
     placeholder_dates = set(dates_series[placeholder_mask].unique()) if hasattr(placeholder_mask, "__len__") else set()
-    if is_index_asset and hasattr(placeholder_mask, "__len__") and bool(placeholder_mask.all()):
+    if hasattr(placeholder_mask, "__len__") and bool(placeholder_mask.all()):
         logger.info(
-            "[THETA][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only cache detected; skipping refetch for index",
+            "[THETA][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only cache detected; skipping refetch",
             asset.symbol if hasattr(asset, 'symbol') else str(asset),
         )
         return []
@@ -3329,6 +3498,11 @@ def get_missing_dates(df_all, asset, start, end):
     if placeholder_dates and missing_dates:
         today_utc = datetime.now(pytz.UTC).date()
         suppress_dates = {d for d in placeholder_dates if d > today_utc}
+        # If the cache begins with placeholder coverage before the first real date, treat those dates
+        # as "known unavailable" and do not refetch them. This prevents repeated downloader-queue
+        # requests for pre-coverage ranges (common for indicator padding before an asset has data).
+        if cached_first is not None:
+            suppress_dates |= {d for d in placeholder_dates if d < cached_first}
         if suppress_dates:
             missing_dates = [d for d in missing_dates if d not in suppress_dates]
 

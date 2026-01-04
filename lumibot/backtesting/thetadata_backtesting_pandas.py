@@ -3055,7 +3055,7 @@ class ThetaDataBacktestingPandas(PandasData):
                     start_dt = dt - delta_td
                     end_dt = dt
 
-                df_snapshot = thetadata_helper.get_historical_data(
+                df_snapshot = thetadata_helper.get_historical_data_snapshot_cached(
                     asset,
                     start_dt,
                     end_dt,
