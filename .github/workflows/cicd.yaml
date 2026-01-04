@@ -187,10 +187,29 @@ jobs:
           pip install requests
           pip install -r requirements_dev.txt
 
+      - name: Run acceptance smokes (ThetaData warm-cache gate)
+        env:
+          # Run in the same prod-like configuration used for real backtests (S3 cache enabled and
+          # downloader configured), but the smokes must be fully served from the dev S3 cache and
+          # must fail if they try to hit the downloader queue.
+          IS_BACKTESTING: "true"
+          BACKTESTING_DATA_SOURCE: thetadata
+          LUMIBOT_CACHE_BACKEND: s3
+          LUMIBOT_CACHE_MODE: s3_readwrite
+          LUMIBOT_CACHE_S3_BUCKET: ${{ secrets.LUMIBOT_CACHE_S3_BUCKET }}
+          LUMIBOT_CACHE_S3_PREFIX: ${{ secrets.LUMIBOT_CACHE_S3_PREFIX }}
+          LUMIBOT_CACHE_S3_REGION: ${{ secrets.LUMIBOT_CACHE_S3_REGION }}
+          LUMIBOT_CACHE_S3_VERSION: ${{ secrets.LUMIBOT_CACHE_S3_VERSION }}
+          LUMIBOT_CACHE_S3_ACCESS_KEY_ID: ${{ secrets.LUMIBOT_CACHE_S3_ACCESS_KEY_ID }}
+          LUMIBOT_CACHE_S3_SECRET_ACCESS_KEY: ${{ secrets.LUMIBOT_CACHE_S3_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          timeout 1500 python -m pytest -q -m acceptance_smoke tests/backtest/test_theta_strategies_integration.py --tb=short --durations=30 -x
+
       - name: Run backtest tests
         run: |
           set -euo pipefail
-          PYTEST_MARKERS='not apitest and not downloader'
+          PYTEST_MARKERS='not apitest and not downloader and not acceptance_smoke'
           timeout 1500 python -m pytest tests/backtest/ -m "${PYTEST_MARKERS}" --tb=short -q --durations=30 -x
 
   LintAndTest:
