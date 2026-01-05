@@ -465,7 +465,8 @@ OPTION_LIST_ENDPOINTS = {
 
 # Bump this to invalidate old chain cache files when the chain schema/normalization changes.
 # v3 (2025-12-21): SPX index options need SPXW expirations for 0DTE strategies.
-THETADATA_CHAIN_CACHE_VERSION = 4
+# v5 (2026-01-05): Bound default expiration range to reduce strike-list fanout in cold backtests.
+THETADATA_CHAIN_CACHE_VERSION = 5
 
 DEFAULT_SESSION_HOURS = {
     True: ("04:00:00", "20:00:00"),   # include extended hours
@@ -5135,9 +5136,49 @@ def build_historical_chain(
 
     as_of_int = int(as_of_date.strftime("%Y%m%d"))
 
-    constraints = chain_constraints or {}
+    constraints = dict(chain_constraints or {})
     min_hint_date = constraints.get("min_expiration_date")
     max_hint_date = constraints.get("max_expiration_date")
+
+    # PERF/SAFETY: Theta's expirations payload is not truly point-in-time and can include expirations
+    # years into the future for historical backtest dates. A naive "build the entire chain" approach
+    # forces one strike-list request per expiration, which explodes request volume on cold S3
+    # namespaces and makes long-window backtests unusably slow.
+    #
+    # Default to a bounded max-expiration window unless the caller explicitly provides one.
+    if max_hint_date is None:
+        try:
+            default_days_out = int(os.environ.get("THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT", "730"))
+        except Exception:
+            default_days_out = 730
+
+        try:
+            index_days_out = int(os.environ.get("THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT_INDEX", "180"))
+        except Exception:
+            index_days_out = 180
+
+        symbol_upper = str(getattr(asset, "symbol", "") or "").upper()
+        asset_type = str(getattr(asset, "asset_type", "") or "").lower()
+        is_index_like = asset_type == "index" or symbol_upper in {
+            "SPX",
+            "SPXW",
+            "NDX",
+            "NDXP",
+            "RUT",
+            "RUTW",
+            "VIX",
+            "VIXW",
+            "XSP",
+            "DJX",
+            "OEX",
+            "XEO",
+        }
+        days_out = index_days_out if is_index_like else default_days_out
+
+        if isinstance(days_out, int) and days_out > 0:
+            base_date = min_hint_date if isinstance(min_hint_date, date) else as_of_date
+            max_hint_date = base_date + timedelta(days=days_out)
+            constraints["max_expiration_date"] = max_hint_date
 
     min_hint_int = (
         int(min_hint_date.strftime("%Y%m%d"))

@@ -76,6 +76,37 @@ This page documents environment variables used by LumiBot, with an emphasis on *
 ### `DATADOWNLOADER_SKIP_LOCAL_START`
 - Purpose: Prevents any local downloader/ThetaTerminal bootstrap logic from running (backtests must use the remote downloader in production workflows).
 
+## ThetaData option chain building (performance)
+
+These env vars are used by the ThetaData chain cache/builder in `lumibot/tools/thetadata_helper.py`.
+
+### `THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT`
+- Purpose: Bounds the default option-chain expiration window for equity underlyings to reduce strike-list fanout in cold caches/backtests.
+- Values: integer days.
+- Default: `730` (2 years).
+- Notes: set to `0` to disable the default bound (fetch all expirations).
+
+### `THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT_INDEX`
+- Purpose: Same as `THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT`, but for index-like underlyings (SPX/NDX/VIX/etc) with dense expiration schedules.
+- Values: integer days.
+- Default: `180`.
+- Notes: set to `0` to disable the default bound.
+
+### `THETADATA_CHAIN_RECENT_FILE_TOLERANCE_DAYS`
+- Purpose: Local chain cache file reuse window (equities) when no chain hints are in effect.
+- Values: integer days.
+- Default: `7`.
+
+### `THETADATA_CHAIN_STRIKES_TIMEOUT`
+- Purpose: Downloader wait timeout per strike-list request when building chains.
+- Values: seconds (float).
+- Default: `300`.
+
+### `THETADATA_CHAIN_STRIKES_BATCH_SIZE`
+- Purpose: Number of in-flight strike-list requests when building chains.
+- Values: integer.
+- Default: `0` (use queue client concurrency).
+
 ## Remote cache (S3)
 
 ### `LUMIBOT_CACHE_BACKEND` / `LUMIBOT_CACHE_MODE`
@@ -100,4 +131,3 @@ This page documents environment variables used by LumiBot, with an emphasis on *
 - Values: **never commit**.
 
 For cache key layout and validation workflow, see `docs/remote_cache.md`.
-
