@@ -3646,8 +3646,28 @@ def get_missing_dates(df_all, asset, start, end):
 
     # It is possible to have full day gap in the data if previous queries were far apart
     # Example: Query for 8/1/2023, then 8/31/2023, then 8/7/2023
-    # Whole days are easy to check for because we can just check the dates in the index
-    dates_series = pd.Series(df_working.index.date, index=df_working.index)
+    # Whole days are easy to check for because we can just check the dates in the index.
+    #
+    # IMPORTANT: Use the *market-local* trading day when computing coverage.
+    #
+    # Intraday ThetaData caches are stored with UTC timestamps (by design), and we typically request
+    # extended-hours bars (04:00-20:00 ET). Those after-hours bars cross midnight in UTC, which
+    # means `df.index.date` can "leak" into the next calendar day even when the market-local trading
+    # day has not advanced yet.
+    #
+    # If we use UTC `.date` here, we can incorrectly conclude that the *next* trading day is already
+    # covered and skip downloading it. This was observed in NVDA backtests where every other trading
+    # day was missing (e.g., ET days present: Feb 3 + Feb 5; but UTC dates included Feb 4 + Feb 6 via
+    # after-hours spillover), which then caused forward-filled prices and extreme slowness.
+    try:
+        idx = pd.to_datetime(df_working.index)
+        if getattr(idx, "tz", None) is None:
+            idx = idx.tz_localize(pytz.UTC)
+        idx_local = idx.tz_convert(LUMIBOT_DEFAULT_PYTZ)
+        dates_series = pd.Series(idx_local.date, index=df_working.index)
+    except Exception:
+        # Fall back to the index-native dates if timezone conversion fails for any reason.
+        dates_series = pd.Series(df_working.index.date, index=df_working.index)
     placeholder_mask = (
         df_working["missing"].astype(bool) if "missing" in df_working.columns else pd.Series(False, index=df_working.index)
     )
