@@ -194,12 +194,17 @@ def _download_artifacts(
 
     # Best-effort; not all runs emit all files.
     #
-    # NOTE: BotManager `/backtest_results` only supports a fixed set of file types.
-    # If this list drifts, update it to match the API (BotManager returns a 400 with the allowed set).
+    # NOTE: BotManager `/backtest_results` only supports a fixed set of `file` values.
+    # Keep this list in sync with BotManager's source of truth:
+    # - bot_manager/BotManager.py: `BotManager.BACKTEST_RESULTS_ARTIFACT_FILENAMES`
+    # - bot_manager/flask_app.py: `/api/backtest_results` validation
     for file_type, suffix in (
+        ("logs_csv", "logs.csv"),
+        ("settings_json", "settings.json"),
         ("trades_csv", "trades.csv"),
         ("stats_csv", "stats.csv"),
         ("tearsheet_html", "tearsheet.html"),
+        ("tearsheet_csv", "tearsheet.csv"),
         ("trades_html", "trades.html"),
         ("indicators_html", "indicators.html"),
         ("indicators_csv", "indicators.csv"),
