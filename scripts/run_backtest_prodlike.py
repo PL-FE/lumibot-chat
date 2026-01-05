@@ -31,19 +31,39 @@ def _bool_str(v: bool) -> str:
     return "true" if v else "false"
 
 
-def find_latest_artifacts(log_dir: Path, started_at: float) -> tuple[Path | None, str | None]:
-    candidates = []
-    for p in log_dir.glob("*_tearsheet.html"):
-        try:
-            if p.stat().st_mtime >= started_at - 1.0:
-                candidates.append(p)
-        except FileNotFoundError:
-            continue
+def find_latest_prefix(log_dir: Path, started_at: float) -> str | None:
+    """Best-effort resolve the run prefix from the newest artifact in `logs/`.
+
+    Why: when backtests are stopped early (timeout) or crash mid-run, they often still emit
+    `*_logs.csv` but may not reach tearsheet generation. We still want the runner to surface and
+    copy whatever artifacts exist, and to loudly warn when the tearsheet is missing.
+    """
+
+    suffixes = (
+        "_logs.csv",
+        "_settings.json",
+        "_trades.csv",
+        "_tearsheet.html",
+        "_tearsheet.csv",
+    )
+
+    candidates: list[Path] = []
+    for suffix in suffixes:
+        for p in log_dir.glob(f"*{suffix}"):
+            try:
+                if p.stat().st_mtime >= started_at - 1.0:
+                    candidates.append(p)
+            except FileNotFoundError:
+                continue
+
     if not candidates:
-        return None, None
+        return None
+
     latest = max(candidates, key=lambda p: p.stat().st_mtime)
-    prefix = latest.name.removesuffix("_tearsheet.html")
-    return latest, prefix
+    for suffix in suffixes:
+        if latest.name.endswith(suffix):
+            return latest.name.removesuffix(suffix)
+    return None
 
 
 def count_queue_submits(log_csv: Path) -> int | None:
@@ -230,15 +250,26 @@ def main() -> int:
     elapsed_s = time.time() - started_at
     print(f"[run] exit_code={proc.returncode} elapsed_s={elapsed_s:.1f}")
 
-    tearsheet, prefix = find_latest_artifacts(log_dir, started_at)
-    if tearsheet and prefix:
-        print(f"[artifacts] tearsheet={tearsheet}")
+    prefix = find_latest_prefix(log_dir, started_at)
+    if prefix:
         trades = log_dir / f"{prefix}_trades.csv"
         logs = log_dir / f"{prefix}_logs.csv"
         settings = log_dir / f"{prefix}_settings.json"
+        tearsheet_html = log_dir / f"{prefix}_tearsheet.html"
+        tearsheet_csv = log_dir / f"{prefix}_tearsheet.csv"
+
+        if tearsheet_html.exists():
+            print(f"[artifacts] tearsheet_html={tearsheet_html}")
+        else:
+            print(f"[warn] tearsheet_html missing (prefix={prefix}); backtest may have crashed or been stopped early")
+
+        if tearsheet_csv.exists():
+            print(f"[artifacts] tearsheet_csv={tearsheet_csv}")
+
         print(f"[artifacts] trades={trades if trades.exists() else '(missing)'}")
         print(f"[artifacts] logs={logs if logs.exists() else '(missing)'}")
         print(f"[artifacts] settings={settings if settings.exists() else '(missing)'}")
+
         submits = count_queue_submits(logs)
         if submits is not None:
             print(f"[metrics] queue_submits={submits}")
@@ -246,7 +277,7 @@ def main() -> int:
         if args.copy_artifacts_to:
             dest_root = Path(args.copy_artifacts_to).resolve()
             dest_root.mkdir(parents=True, exist_ok=True)
-            for src in (tearsheet, trades, logs, settings):
+            for src in (tearsheet_html, tearsheet_csv, trades, logs, settings, subprocess_log):
                 if not src.exists():
                     continue
                 dst = dest_root / src.name
@@ -255,6 +286,8 @@ def main() -> int:
                 except Exception as exc:
                     print(f"[warn] failed to copy {src} -> {dst}: {exc}")
             print(f"[artifacts] copied_to={dest_root}")
+    else:
+        print(f"[warn] no artifacts found in {log_dir}; see subprocess_log={subprocess_log}")
 
     return proc.returncode
 
