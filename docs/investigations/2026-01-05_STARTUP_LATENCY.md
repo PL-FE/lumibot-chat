@@ -77,15 +77,46 @@ Bootstrap timing:
 - `Executing user code` at `2026-01-05T13:15:40.945Z`
 - **User code → first progress: ~25.5s**
 
+### Additional measurements (cold node pulls + provisioning stalls)
+
+These runs were launched via `scripts/run_backtest_prod.py` and illustrate that startup latency is not a single bucket.
+
+#### NVDA (2025-01-11 → 2025-12-31): cold node pull dominates
+
+- Bot ID: `nvda_2025_prod-20250111-20251231-f03cvdft`
+- Submit: `2026-01-05T16:13:14.579024Z`
+
+ECS task timing (from BotManager status payload):
+- `createdAt=2026-01-05T16:13:16.267Z`
+- `pullStartedAt=2026-01-05T16:13:17.838Z`
+- `pullStoppedAt=2026-01-05T16:13:47.683Z` (**~30s pull**)
+- `startedAt=2026-01-05T16:13:48.843Z`
+
+Interpretation:
+- This run landed on a node without the backtest image cached, so **image pull** was the dominant startup component.
+
+#### NVDA (2013-01-10 → 2025-12-30): provisioning dominates
+
+- Bot ID: `nvda_full_prod-20130110-20251230-zqxyqj49`
+
+ECS task timing (from BotManager status payload):
+- `createdAt=2026-01-05T16:15:05.955Z`
+- `pullStartedAt=2026-01-05T16:23:16.225Z`
+- `pullStoppedAt=2026-01-05T16:23:16.281Z` (**~0.06s pull**)
+- `startedAt=2026-01-05T16:23:16.332Z`
+
+Interpretation:
+- The image was cached (near-zero pull), but the task spent ~8 minutes in **PROVISIONING** (capacity/scheduling).
+
 ---
 
 ## Conclusion (root cause bucket)
 
-For these warm-cache runs:
+Startup latency is **multi-modal**:
 
-- ECS scheduling + image pull is **not** the dominant factor (task starts in ~1–2s, pull is ~0.05s).
-- BotManager bootstrap overhead is ~8–9s (time from submit to “Executing user code”).
-- The remaining 12–25s is inside LumiBot before it creates `logs/progress.csv` and/or advances enough to write the first row.
+- **Warm node:** ECS startup can be fast (1–2s), and then LumiBot boot/progress-init dominates.
+- **Cold node:** ECS **image pull** can dominate (~30s).
+- **Capacity constrained:** ECS **PROVISIONING** can dominate (minutes).
 
 This is why fast backtests “feel slow”: the simulation is running, but **the UI has no progress row yet**.
 
@@ -102,7 +133,10 @@ Why it helps:
 - BotManager will upload a progress record almost immediately (next 1s poll), cutting time-to-first-progress for short runs.
 
 Follow-ups (optional):
-- If we want even earlier progress (before datasource init), we can add a similar “progress bootstrap row” in:
-  - strategy executor startup, or
+- Infra (ECS) improvements are required to reduce cold-node pull/provisioning:
+  - reduce backtest image size and layer churn (faster pulls),
+  - add capacity headroom or a capacity provider (fewer provisioning stalls),
+  - consider warming nodes/agents (keep the image cached).
+- If we want even earlier progress (before datasource init), add a “progress bootstrap row” in:
+  - strategy executor startup, and/or
   - BotSpot Node’s injected log patch (runs before importing LumiBot)
-
