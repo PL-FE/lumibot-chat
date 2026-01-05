@@ -80,10 +80,15 @@ class DataSourceBacktesting(DataSource, ABC):
         # Subtract one minute from ``datetime_end`` for most providers so backtests stop
         # *just before* the configured end bound.
         #
-        # NOTE: PandasDataBacktesting uses explicit bar timestamps provided by callers/tests.
+        # NOTE: *Pure* PandasDataBacktesting uses explicit bar timestamps provided by callers/tests.
         # Making the end bound exclusive there commonly drops the final bar and breaks
         # deterministic unit tests (fees/brackets/multileg cash, crypto cash regressions).
-        if self.datetime_end is not None and getattr(self, "SOURCE", None) != "PANDAS":
+        #
+        # Do NOT treat derived providers that inherit from PandasData (e.g., ThetaDataBacktestingPandas)
+        # as "pure pandas" here; those providers rely on the end-exclusive behavior for
+        # production-like backtests.
+        is_pure_pandas = type(self).__name__ in ("PandasData", "PandasDataBacktesting")
+        if self.datetime_end is not None and not is_pure_pandas:
             self.datetime_end -= timedelta(minutes=1)
 
         # Legacy strategy.backtest code will always pass in a config even for DataSources that don't need it, so

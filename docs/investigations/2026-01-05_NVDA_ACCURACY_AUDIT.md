@@ -78,3 +78,28 @@ This run is short but includes a real order and fill so the audit telemetry is c
 - A longer continuous run through **option expiry (2025-04-17)** is required to fully audit the lifecycle (expiry/exit behavior) in a single backtest run.
 - Cold-cache hydrating runs can exceed a 20m leash; warm-cache proof runs should be much faster once S3 is fully hydrated for the full window.
 
+## Warm-cache proof (short window; tearsheet present; queue-free)
+
+This validates the intended caching semantics for NVDA backtests:
+
+- Cold run (fresh S3 namespace) may enqueue downloader work.
+- Warm run (same S3 namespace, fresh local cache folder) should be **queue-free** and materially faster.
+
+### Run details
+
+- Window: `2015-02-02 -> 2015-03-02`
+- Strategy: NVDA customer repro main.py (read-only)
+
+Cold run (hydrates S3):
+
+- Workdir: `/Users/robertgrzesik/Documents/Development/backtest_runs/20260105_103005_nvda_cache_smoke_cold`
+- S3 cache version: `nvda_cache_smoke_20260105_103005`
+- Result: ✅ completed, tearsheet produced
+- `queue_submits`: **24**
+
+Warm run (fresh local disk, warm S3):
+
+- Workdir: `/Users/robertgrzesik/Documents/Development/backtest_runs/20260105_103200_nvda_cache_smoke_warm`
+- S3 cache version: `nvda_cache_smoke_20260105_103005` (same as cold)
+- Result: ✅ completed, tearsheet produced
+- `queue_submits`: **0**
