@@ -1766,7 +1766,13 @@ class ThetaDataBacktestingPandas(PandasData):
             return frame.sort_index()
 
         def _process_frame(frame: pd.DataFrame):
-            metadata_frame_local = frame.copy()
+            # NOTE: `frame` can be very large for long-window minute backtests (e.g. multi-year
+            # equity OHLC caches). Avoid unconditional deep copies here or we can exceed the ECS
+            # task memory limit in production backtests (observed as exit code -9 / OOMKilled).
+            #
+            # `metadata_frame_local` is treated as read-only and used only for coverage/placeholder
+            # diagnostics, so it is safe to reference `frame` directly.
+            metadata_frame_local = frame
             cleaned_df_local = frame
             placeholder_mask_local = None
             placeholder_rows_local = 0
@@ -1776,10 +1782,19 @@ class ThetaDataBacktestingPandas(PandasData):
                 placeholder_rows_local = int(placeholder_mask_local.sum())
                 if placeholder_rows_local and len(placeholder_mask_local):
                     leading_placeholder_local = bool(placeholder_mask_local.iloc[0])
-                cleaned_df_local = cleaned_df_local.loc[~placeholder_mask_local].copy()
+                # PERF: avoid copying the entire dataframe when the "missing" column is present but
+                # contains no placeholders (common on warm caches). Dropping a column is a cheap
+                # metadata operation; boolean row filtering is not.
+                if placeholder_rows_local:
+                    # Drop placeholder rows but avoid an extra deep copy. `.loc[...]` already
+                    # returns a new frame; calling `.copy()` here can double peak RSS.
+                    cleaned_df_local = cleaned_df_local.loc[~placeholder_mask_local]
                 cleaned_df_local = cleaned_df_local.drop(columns=["missing"], errors="ignore")
             else:
-                cleaned_df_local = cleaned_df_local.copy()
+                # Create a new DataFrame object without deep-copying the underlying blocks. The
+                # Data() constructor mutates columns/index in-place, so we want an owned frame,
+                # but we don't need to duplicate the raw numeric arrays.
+                cleaned_df_local = cleaned_df_local.copy(deep=False)
 
             if cleaned_df_local.empty:
                 logger.debug(
@@ -1787,7 +1802,7 @@ class ThetaDataBacktestingPandas(PandasData):
                     asset_separated,
                     quote_asset,
                 )
-                cleaned_df_local = metadata_frame_local.drop(columns=["missing"], errors="ignore").copy()
+                cleaned_df_local = metadata_frame_local.drop(columns=["missing"], errors="ignore").copy(deep=False)
 
             metadata_start_override_local = None
             if leading_placeholder_local and len(metadata_frame_local):

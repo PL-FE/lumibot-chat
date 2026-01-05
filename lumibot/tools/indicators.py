@@ -971,8 +971,20 @@ def _prepare_tearsheet_returns(strategy_df: pd.DataFrame, benchmark_df: pd.DataF
     if strategy_df.empty or benchmark_df.empty:
         return None
 
-    _strategy_df = strategy_df.copy()
-    _benchmark_df = benchmark_df.copy()
+    # PERF/MEMORY: Backtests can carry very wide `strategy_df` frames (positions, orders, debug
+    # columns, etc.). QuantStats only needs the portfolio value series and the benchmark cumprod.
+    # Copying the full frame can spike RSS and has caused production backtests to OOM (exit code -9).
+    try:
+        _strategy_df = strategy_df.loc[:, ["portfolio_value"]].copy()
+    except Exception:
+        return None
+
+    if "symbol_cumprod" in benchmark_df.columns:
+        _benchmark_df = benchmark_df.loc[:, ["symbol_cumprod"]].copy()
+    else:
+        # Maintain backward-compat for benchmark frames that don't include `symbol_cumprod`.
+        _benchmark_df = pd.DataFrame(index=benchmark_df.index)
+        _benchmark_df["symbol_cumprod"] = 1
 
     _strategy_df.index = pd.to_datetime(_strategy_df.index)
     _benchmark_df.index = pd.to_datetime(_benchmark_df.index)
