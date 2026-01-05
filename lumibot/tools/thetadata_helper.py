@@ -160,6 +160,54 @@ def set_download_status(
         _download_status["timeout_at"] = (time.time() + timeout_s) if (timeout_s is not None and timeout_s > 0) else None
 
 
+def advance_download_status_progress(
+    *,
+    asset: Optional[Asset] = None,
+    data_type: Optional[str] = None,
+    timespan: Optional[str] = None,
+    step: int = 1,
+) -> None:
+    """Increment download progress counters without resetting queue diagnostics."""
+    if step <= 0:
+        return
+
+    with _download_status_lock:
+        if not _download_status.get("active"):
+            return
+
+        if data_type is not None and _download_status.get("data_type") != data_type:
+            return
+        if timespan is not None and _download_status.get("timespan") != timespan:
+            return
+
+        if asset is not None:
+            try:
+                status_symbol = (_download_status.get("asset") or {}).get("symbol")
+                asset_symbol = getattr(asset, "symbol", None)
+                if status_symbol is not None and asset_symbol is not None and str(status_symbol) != str(asset_symbol):
+                    return
+            except Exception:
+                pass
+
+        total = _download_status.get("total") or 0
+        try:
+            total_int = int(total)
+        except Exception:
+            total_int = 0
+        if total_int <= 0:
+            return
+
+        current = _download_status.get("current") or 0
+        try:
+            current_int = int(current)
+        except Exception:
+            current_int = 0
+
+        new_current = min(current_int + step, total_int)
+        _download_status["current"] = new_current
+        _download_status["progress"] = int((new_current / max(total_int, 1)) * 100)
+
+
 def update_download_status_queue_info(
     *,
     request_id: str,
@@ -183,14 +231,24 @@ def update_download_status_queue_info(
             return
 
         existing_request_id = _download_status.get("request_id")
-        if existing_request_id is not None and existing_request_id != request_id:
-            return
+        switching_requests = existing_request_id != request_id
+        existing_submitted_at = _download_status.get("submitted_at")
+        if switching_requests and existing_request_id is not None:
+            # We only switch tracked request_ids on a submit event (submitted_at is present).
+            if submitted_at is None:
+                return
+            try:
+                if existing_submitted_at is not None and float(submitted_at) < float(existing_submitted_at):
+                    return
+            except Exception:
+                pass
 
         # Avoid hammering the lock/payload. The queue poll interval can be 200ms;
         # UI only needs coarse updates.
-        last_poll_at = _download_status.get("last_poll_at")
-        if last_poll_at is not None and (now - float(last_poll_at)) < 1.0:
-            return
+        if not switching_requests:
+            last_poll_at = _download_status.get("last_poll_at")
+            if last_poll_at is not None and (now - float(last_poll_at)) < 1.0:
+                return
 
         _download_status["request_id"] = request_id
         if correlation_id is not None:
@@ -234,6 +292,19 @@ def clear_download_status() -> None:
         _download_status["attempts"] = None
         _download_status["last_error"] = None
         _download_status["submitted_at"] = None
+        _download_status["last_poll_at"] = None
+        _download_status["timeout_at"] = None
+
+
+def finalize_download_status() -> None:
+    """Mark download inactive while keeping last progress payload.
+
+    Some UIs poll progress at multi-second intervals; fully resetting to 0 can make
+    completed downloads appear as "0/1 then vanished". This keeps the final
+    `current/total/progress` visible for at least one subsequent progress.csv read.
+    """
+    with _download_status_lock:
+        _download_status["active"] = False
         _download_status["last_poll_at"] = None
         _download_status["timeout_at"] = None
 
@@ -394,7 +465,8 @@ OPTION_LIST_ENDPOINTS = {
 
 # Bump this to invalidate old chain cache files when the chain schema/normalization changes.
 # v3 (2025-12-21): SPX index options need SPXW expirations for 0DTE strategies.
-THETADATA_CHAIN_CACHE_VERSION = 4
+# v5 (2026-01-05): Bound default expiration range to reduce strike-list fanout in cold backtests.
+THETADATA_CHAIN_CACHE_VERSION = 5
 
 DEFAULT_SESSION_HOURS = {
     True: ("04:00:00", "20:00:00"),   # include extended hours
@@ -872,6 +944,19 @@ def _event_cache_paths(asset: Asset, event_type: str) -> Tuple[Path, Path]:
 
 
 def _load_event_cache_frame(cache_path: Path) -> pd.DataFrame:
+    # CI runners (and production-like backtest containers) start with empty disks.
+    # If the S3 backtest cache is enabled, hydrate the on-disk event cache before deciding it
+    # doesn't exist, so local == CI and we don't re-hit the downloader for warm-cache runs.
+    try:
+        from lumibot.tools.backtest_cache import get_backtest_cache
+
+        cache_manager = get_backtest_cache()
+        if cache_manager is not None and not cache_path.exists():
+            cache_manager.ensure_local_file(cache_path)
+    except Exception:
+        # Ignore remote cache hydrate failures and fall back to local-only behavior.
+        pass
+
     if not cache_path.exists():
         return pd.DataFrame()
     try:
@@ -890,9 +975,25 @@ def _save_event_cache_frame(cache_path: Path, df: pd.DataFrame) -> None:
     if "event_date" in df_to_save.columns:
         df_to_save["event_date"] = pd.to_datetime(df_to_save["event_date"], utc=True)
     df_to_save.to_parquet(cache_path, index=False)
+    try:
+        from lumibot.tools.backtest_cache import get_backtest_cache
+
+        get_backtest_cache().on_local_update(cache_path)
+    except Exception:
+        logger.debug("[THETA][EVENT_CACHE] Remote cache upload failed for %s", cache_path, exc_info=True)
 
 
 def _load_event_metadata(meta_path: Path) -> List[Tuple[date, date]]:
+    # See `_load_event_cache_frame`: hydrate event metadata from remote cache when available.
+    try:
+        from lumibot.tools.backtest_cache import get_backtest_cache
+
+        cache_manager = get_backtest_cache()
+        if cache_manager is not None and not meta_path.exists():
+            cache_manager.ensure_local_file(meta_path)
+    except Exception:
+        pass
+
     if not meta_path.exists():
         return []
     try:
@@ -921,6 +1022,12 @@ def _write_event_metadata(meta_path: Path, ranges: List[Tuple[date, date]]) -> N
     }
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    try:
+        from lumibot.tools.backtest_cache import get_backtest_cache
+
+        get_backtest_cache().on_local_update(meta_path)
+    except Exception:
+        logger.debug("[THETA][EVENT_CACHE] Remote cache upload failed for %s", meta_path, exc_info=True)
 
 
 def _merge_coverage_ranges(ranges: List[Tuple[date, date]]) -> List[Tuple[date, date]]:
@@ -1253,6 +1360,121 @@ def _ensure_event_cache(
     return cache_df.loc[mask].copy()
 
 
+# ==============================================================================
+# In-memory corporate actions cache (per-process / per-backtest)
+# ==============================================================================
+#
+# Corporate actions (splits/dividends) are used in multiple hot paths:
+# - option strike reverse-split adjustments (_get_option_query_strike)
+# - OHLC corporate action normalization (_apply_corporate_actions_to_frame)
+#
+# In production backtests, the strategy code may trigger these helpers many times
+# per simulated bar. The on-disk cache prevents repeated network downloads, but
+# repeatedly loading/merging/filtering the disk cache can still be expensive and
+# creates noisy logs (e.g. "[THETA][SPLITS] Got 1 splits..." on every call).
+#
+# This in-memory cache ensures we only execute the expensive cache load/refresh
+# once per symbol/event_type/range per process (a backtest container runs one
+# strategy), and it also rate-limits repeated retries after transient failures.
+# ==============================================================================
+
+_event_cache_memory: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+
+def _event_cache_failure_ttl_s() -> float:
+    """How long to suppress repeated event-cache refresh attempts after a failure."""
+    try:
+        ttl_s = float(os.environ.get("THETADATA_EVENT_CACHE_FAILURE_TTL_S", "60"))
+        return max(ttl_s, 0.0)
+    except Exception:
+        return 60.0
+
+
+def _get_theta_events_cached(
+    asset: Asset,
+    event_type: str,
+    start_date: date,
+    end_date: date,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> pd.DataFrame:
+    """Return Theta corporate actions using an in-memory memoization layer."""
+    if not asset.symbol:
+        return pd.DataFrame()
+
+    normalized_event_type = str(event_type).lower().strip()
+    if normalized_event_type not in {"dividends", "splits"}:
+        return pd.DataFrame()
+
+    range_start = min(start_date, end_date)
+    range_end = max(start_date, end_date)
+    symbol_key = str(asset.symbol).upper()
+    cache_key = (normalized_event_type, symbol_key)
+
+    entry = _event_cache_memory.get(cache_key)
+    if entry is not None:
+        entry_start = entry.get("range_start")
+        entry_end = entry.get("range_end")
+        cached_df = entry.get("df")
+        if (
+            isinstance(entry_start, date)
+            and isinstance(entry_end, date)
+            and isinstance(cached_df, pd.DataFrame)
+            and entry_start <= range_start
+            and entry_end >= range_end
+        ):
+            if cached_df.empty:
+                return pd.DataFrame()
+            date_series = cached_df["event_date"].dt.date
+            mask = (date_series >= range_start) & (date_series <= range_end)
+            return cached_df.loc[mask].copy()
+
+        last_error_ts = entry.get("last_error_ts")
+        if isinstance(last_error_ts, (int, float)):
+            ttl_s = _event_cache_failure_ttl_s()
+            if ttl_s > 0 and (time.time() - float(last_error_ts)) < ttl_s:
+                return pd.DataFrame()
+
+    try:
+        events = _ensure_event_cache(asset, normalized_event_type, range_start, range_end, username, password)
+    except Exception as exc:
+        now = time.time()
+        prev_ts = entry.get("last_error_ts") if isinstance(entry, dict) else None
+        ttl_s = _event_cache_failure_ttl_s()
+        if not isinstance(prev_ts, (int, float)) or ttl_s <= 0 or (now - float(prev_ts)) >= ttl_s:
+            logger.warning(
+                "[THETA][%s] ThetaData %s fetch failed for %s: %s",
+                normalized_event_type.upper(),
+                normalized_event_type,
+                asset.symbol,
+                exc,
+            )
+        _event_cache_memory[cache_key] = {
+            "range_start": entry.get("range_start") if isinstance(entry, dict) else None,
+            "range_end": entry.get("range_end") if isinstance(entry, dict) else None,
+            "df": entry.get("df") if isinstance(entry, dict) else pd.DataFrame(),
+            "last_error_ts": now,
+            "last_error": str(exc),
+        }
+        return pd.DataFrame()
+
+    # Cache the fetched window in-memory (even when empty).
+    _event_cache_memory[cache_key] = {
+        "range_start": range_start,
+        "range_end": range_end,
+        "df": events if isinstance(events, pd.DataFrame) else pd.DataFrame(),
+        "last_error_ts": None,
+        "last_error": None,
+    }
+
+    if events is None or events.empty:
+        return pd.DataFrame()
+
+    date_series = events["event_date"].dt.date
+    mask = (date_series >= range_start) & (date_series <= range_end)
+    return events.loc[mask].copy()
+
+
 def _get_theta_dividends(
     asset: Asset,
     start_date: date,
@@ -1262,7 +1484,11 @@ def _get_theta_dividends(
 ) -> pd.DataFrame:
     if str(getattr(asset, "asset_type", "stock")).lower() != "stock":
         return pd.DataFrame()
-    return _ensure_event_cache(asset, "dividends", start_date, end_date, username, password)
+    events = _get_theta_events_cached(asset, "dividends", start_date, end_date, username, password)
+    if events is not None and not events.empty:
+        logger.debug("[THETA][DIVIDENDS] Loaded %d dividend events for %s", len(events), asset.symbol)
+        return events
+    return pd.DataFrame()
 
 
 def _get_theta_splits(
@@ -1272,21 +1498,22 @@ def _get_theta_splits(
     username: Optional[str] = None,
     password: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Fetch split data from ThetaData only. No fallback to other data sources."""
+    """Fetch split data from ThetaData only. No fallback to other data sources.
+
+    Note: this function is called from several hot paths (including option strike
+    reverse-split adjustments). It uses an in-memory memoization layer to avoid
+    repeatedly loading/refreshing the on-disk cache and to suppress retry storms
+    after transient downloader/Theta failures.
+    """
     if str(getattr(asset, "asset_type", "stock")).lower() != "stock":
         return pd.DataFrame()
 
-    try:
-        splits = _ensure_event_cache(asset, "splits", start_date, end_date, username, password)
-        if splits is not None and not splits.empty:
-            logger.info("[THETA][SPLITS] Got %d splits from ThetaData for %s", len(splits), asset.symbol)
-            return splits
-        else:
-            logger.debug("[THETA][SPLITS] No splits found in ThetaData for %s", asset.symbol)
-            return pd.DataFrame()
-    except Exception as e:
-        logger.warning("[THETA][SPLITS] ThetaData split fetch failed for %s: %s", asset.symbol, e)
-        return pd.DataFrame()
+    splits = _get_theta_events_cached(asset, "splits", start_date, end_date, username, password)
+    if splits is not None and not splits.empty:
+        # Avoid log spam in tight loops: emit this at DEBUG level.
+        logger.debug("[THETA][SPLITS] Loaded %d split events for %s", len(splits), asset.symbol)
+        return splits
+    return pd.DataFrame()
 
 
 def _get_option_query_strike(option_asset: Asset, sim_datetime: datetime = None) -> float:
@@ -1551,7 +1778,9 @@ def _apply_corporate_actions_to_frame(
         # This makes historical prices comparable to current prices.
         # IMPORTANT: Only apply splits that have actually occurred (split_date <= data_end_date)
         # Don't adjust for future splits that haven't happened yet.
-        price_columns = ["open", "high", "low", "close"]
+        # Apply split adjustment to any price-like columns we may have (OHLC, NBBO, etc).
+        # Intraday quote requests may return bid/ask instead of OHLC; keep those consistent too.
+        price_columns = ["open", "high", "low", "close", "bid", "ask", "mid_price"]
         available_price_cols = [col for col in price_columns if col in frame.columns]
 
         if available_price_cols:
@@ -1909,6 +2138,21 @@ def get_price_data(
     if return_polars:
         raise ValueError("ThetaData polars output is not available; pass return_polars=False.")
 
+    def _truthy_env(name: str, default: str = "true") -> bool:
+        value = os.environ.get(name, default)
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    # Corporate-action normalization for intraday frames is primarily needed for *backtests*:
+    # option chains (and day bars) are split-normalized to today's share count, and intraday
+    # stock OHLC must match that scale or options strategies can select invalid strikes.
+    #
+    # Default: enabled when `IS_BACKTESTING` is truthy, disabled otherwise. Can be overridden via
+    # `THETADATA_APPLY_CORPORATE_ACTIONS_INTRADAY` for debugging/backwards compatibility.
+    if os.environ.get("THETADATA_APPLY_CORPORATE_ACTIONS_INTRADAY") is None:
+        apply_intraday_corporate_actions = _truthy_env("IS_BACKTESTING", "false")
+    else:
+        apply_intraday_corporate_actions = _truthy_env("THETADATA_APPLY_CORPORATE_ACTIONS_INTRADAY", "false")
+
     # Preserve original bounds for final filtering
     requested_start = start
     requested_end = end
@@ -2028,7 +2272,7 @@ def get_price_data(
         Coverage failures = cache is valid but doesn't cover requested range - can be extended.
 
         This distinction is critical for cache fidelity:
-        - Integrity failures (unparseable_index, duplicate_index, sidecar_mismatch): DELETE cache
+        - Integrity failures (unparseable_index, duplicate_index): DELETE cache
         - Coverage failures (missing_trading_days, stale_max_date, too_few_rows): KEEP cache, extend it
 
         Added 2025-12-07 to fix cache fidelity bug where valid cache was deleted when
@@ -2070,7 +2314,19 @@ def get_price_data(
             # Checksum validation is intentionally skipped for performance. Parquet corruption is
             # surfaced at read time; the remaining fields catch most logical mismatches cheaply.
             if not all([rows_match, placeholders_match, min_match, max_match]):
-                return False, "sidecar_mismatch", True  # INTEGRITY FAILURE
+                # Sidecar is best-effort metadata; it can become out-of-sync with the parquet
+                # (e.g., non-atomic remote uploads, legacy caches). Treat mismatch as a warning,
+                # not a cache-corruption signal: keep the parquet and avoid unnecessary refetches.
+                logger.debug(
+                    "[THETA][CACHE][SIDECAR_MISMATCH] cache_file=%s rows=%d placeholders=%d min=%s max=%s sidecar=%s",
+                    cache_file.name,
+                    total_rows,
+                    placeholder_rows,
+                    min_ts.isoformat() if hasattr(min_ts, "isoformat") else min_ts,
+                    max_ts.isoformat() if hasattr(max_ts, "isoformat") else max_ts,
+                    sidecar_data,
+                )
+                return True, "sidecar_mismatch", False
 
         if span == "day":
             trading_days = get_trading_dates(asset, requested_start_dt, requested_end_dt)
@@ -2371,9 +2627,17 @@ def get_price_data(
                 result_frame.index.max().isoformat()
             )
 
-        # Apply split adjustments to cached data (the adjustment logic is idempotent)
-        # This ensures cached data from before the split adjustment fix is properly adjusted
-        if result_frame is not None and not result_frame.empty and timespan == "day":
+        # Corporate actions: day bars have always been split-adjusted (Yahoo-style "Adj Close" behavior).
+        #
+        # Critical bugfix (NVDA 2022 backtests): option chain strikes are split-normalized using *daily*
+        # split-adjusted reference prices, but intraday stock OHLC was previously returned unadjusted.
+        # That created a 10x mismatch after NVDA's 2024-06-10 10:1 split (e.g., underlying ~300 vs
+        # strikes ~30), causing options strategies to find "no valid strike".
+        #
+        # Fix: apply the same corporate action normalization to intraday frames during backtests
+        # (or when explicitly enabled).
+        should_apply_corporate_actions = timespan == "day" or apply_intraday_corporate_actions
+        if result_frame is not None and not result_frame.empty and should_apply_corporate_actions:
             start_day = start.date() if hasattr(start, "date") else start
             end_day = end.date() if hasattr(end, "date") else end
             result_frame = _apply_corporate_actions_to_frame(
@@ -2383,7 +2647,13 @@ def get_price_data(
             result_frame = _align_day_index_to_market_close_utc(result_frame)
         return result_frame
 
-    logger.info("ThetaData cache MISS for %s %s %s; fetching %d interval(s) from ThetaTerminal.", asset, timespan, datastyle, len(missing_dates))
+    logger.info(
+        "ThetaData cache MISS for %s %s %s; fetching %d interval(s) from ThetaTerminal.",
+        asset,
+        timespan,
+        datastyle,
+        len(missing_dates),
+    )
 
     # DEBUG-LOG: Cache miss
     logger.debug(
@@ -2692,15 +2962,29 @@ def get_price_data(
         disable=disable_progress,
     )
 
-    # Track completed chunks for download status (thread-safe counter)
-    completed_chunks = [0]  # Use list to allow mutation in nested scope
-    completed_chunks_lock = threading.Lock()
+    total_download_units = total_queries
+    if str(getattr(asset, "asset_type", "")).lower() != "index" or str(datastyle).lower() != "ohlc":
+        # Intraday history endpoints issue one queued request per trading day. Surface that
+        # granularity to the UI so downloads don't look like "0/1 then done".
+        try:
+            total_download_units = len(get_trading_dates(asset, fetch_start, fetch_end))
+        except Exception:
+            total_download_units = total_queries
+    try:
+        total_download_units = int(total_download_units)
+    except Exception:
+        total_download_units = total_queries
+    total_download_units = max(1, total_download_units)
 
     # Set initial download status
-    set_download_status(asset, quote_asset, datastyle, timespan, 0, total_queries)
+    set_download_status(asset, quote_asset, datastyle, timespan, 0, total_download_units)
 
     def _fetch_chunk(chunk_start: datetime, chunk_end: datetime):
-        kwargs = {"datastyle": datastyle, "include_after_hours": include_after_hours}
+        kwargs = {
+            "datastyle": datastyle,
+            "include_after_hours": include_after_hours,
+            "download_timespan": timespan,
+        }
         if username is not None:
             kwargs["username"] = username
         if password is not None:
@@ -2752,9 +3036,6 @@ def get_price_data(
             )
             df_all = append_missing_markers(df_all, missing_chunk)
             pbar.update(1)
-            with completed_chunks_lock:
-                completed_chunks[0] += 1
-                set_download_status(asset, quote_asset, datastyle, timespan, completed_chunks[0], total_queries)
             return
 
         df_all = update_df(df_all, result_df)
@@ -2781,9 +3062,6 @@ def get_price_data(
             elapsed,
         )
         pbar.update(1)
-        with completed_chunks_lock:
-            completed_chunks[0] += 1
-            set_download_status(asset, quote_asset, datastyle, timespan, completed_chunks[0], total_queries)
 
     # Avoid ThreadPoolExecutor overhead (and potential deadlocks) when there's only a single chunk.
     if total_queries == 1:
@@ -2834,8 +3112,8 @@ def get_price_data(
                     result_df=result_df,
                 )
 
-    # Clear download status when fetch completes
-    clear_download_status()
+    # Mark download complete (keep final progress payload for UI polling)
+    finalize_download_status()
     update_cache(cache_file, df_all, df_cached, remote_payload=remote_payload)
     if df_all is not None:
         logger.debug("[THETA][DEBUG][THETADATA-CACHE-WRITE] wrote %s rows=%d", cache_file, len(df_all))
@@ -2849,6 +3127,25 @@ def get_price_data(
         else:
             df_all = _strip_placeholder_rows(df_all)
 
+    # Apply corporate actions to intraday frames by default so underlying prices live in the same
+    # split-adjusted space as option-chain strike normalization (see comment in cache-hit path).
+    if (
+        apply_intraday_corporate_actions
+        and df_all is not None
+        and not df_all.empty
+        and timespan != "day"
+    ):
+        try:
+            start_day = requested_start.date() if hasattr(requested_start, "date") else requested_start
+            end_day = requested_end.date() if hasattr(requested_end, "date") else requested_end
+            df_all = _apply_corporate_actions_to_frame(asset, df_all, start_day, end_day, username, password)
+        except Exception:
+            logger.debug(
+                "[THETA][SPLIT_ADJUST] Failed to apply corporate actions to intraday frame for %s",
+                asset,
+                exc_info=True,
+            )
+
     if (
         not preserve_full_history
         and df_all is not None
@@ -2860,6 +3157,33 @@ def get_price_data(
         dates = pd.to_datetime(df_all.index).date
         df_all = df_all[(dates >= start_date) & (dates <= end_date)]
 
+    # Cache-miss path parity: intraday requests must be trimmed to [requested_start, requested_end]
+    # just like the cache-hit path. Otherwise, callers (and tests) can receive bars outside the
+    # requested window when the on-disk cache contains additional days.
+    if (
+        not preserve_full_history
+        and df_all is not None
+        and not df_all.empty
+        and timespan != "day"
+    ):
+        import datetime as datetime_module  # Avoid shadowing `dt` parameter.
+
+        start_bound = requested_start
+        end_bound = requested_end
+        if isinstance(start_bound, datetime_module.date) and not isinstance(start_bound, datetime_module.datetime):
+            start_bound = datetime_module.datetime.combine(start_bound, datetime_module.time.min)
+        if isinstance(end_bound, datetime_module.date) and not isinstance(end_bound, datetime_module.datetime):
+            end_bound = datetime_module.datetime.combine(end_bound, datetime_module.time.max)
+        if isinstance(end_bound, datetime_module.datetime) and end_bound.time() == datetime_module.time.min:
+            end_bound = datetime_module.datetime.combine(end_bound.date(), datetime_module.time.max)
+
+        if hasattr(start_bound, "tzinfo") and start_bound.tzinfo is None:
+            start_bound = LUMIBOT_DEFAULT_PYTZ.localize(start_bound).astimezone(pytz.UTC)
+        if hasattr(end_bound, "tzinfo") and end_bound.tzinfo is None:
+            end_bound = LUMIBOT_DEFAULT_PYTZ.localize(end_bound).astimezone(pytz.UTC)
+
+        df_all = df_all[(df_all.index >= start_bound) & (df_all.index <= end_bound)]
+
     return df_all
 
 
@@ -2867,7 +3191,13 @@ def get_price_data(
 
 # PERFORMANCE FIX (2025-12-07): Cache calendar objects to avoid rebuilding them.
 # mcal.get_calendar() is slow; caching the calendar objects saves significant time.
-_CALENDAR_CACHE: Dict[str, object] = {}
+#
+# NOTE: We intentionally use a single cache dict for both:
+#   - calendar objects (key: calendar_name: str)
+#   - full-year schedules (key: (calendar_name: str, year: int))
+# so that tests (and any debugging code) can clear *all* calendar-related caches by calling
+# `_CALENDAR_CACHE.clear()` once.
+_CALENDAR_CACHE: Dict[object, object] = {}
 
 
 def _get_cached_calendar(name: str):
@@ -2875,6 +3205,33 @@ def _get_cached_calendar(name: str):
     if name not in _CALENDAR_CACHE:
         _CALENDAR_CACHE[name] = mcal.get_calendar(name)
     return _CALENDAR_CACHE[name]
+
+
+# PERFORMANCE (2026-01-03): Cache full-year schedules and slice for sub-ranges.
+#
+# Why: backtests frequently request trading dates for many overlapping (start, end) pairs
+# (e.g., per-bar alignment, session-close alignment). Even with an LRU cache on the exact
+# (start_date, end_date) tuple, production can still see hundreds of unique ranges in a
+# single backtest, causing repeated `calendar.schedule(...)` calls (expensive holiday logic).
+#
+# Strategy: cache `schedule()` results per (calendar_name, year) and slice cheaply for the
+# requested range. This preserves correctness (NYSE holidays/half-days) while drastically
+# reducing calendar.schedule churn.
+#
+# NOTE: We store these schedules in `_CALENDAR_CACHE` so clearing that dict also clears
+# schedule caching (important for legacy tests that monkeypatch the calendar impl).
+def _cached_year_schedule(calendar_name: str, year: int) -> pd.DataFrame:
+    key = (calendar_name, year)
+    schedule = _CALENDAR_CACHE.get(key)
+    if schedule is not None:
+        return schedule  # type: ignore[return-value]
+
+    cal = _get_cached_calendar(calendar_name)
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
+    schedule = cal.schedule(start_date=start, end_date=end)
+    _CALENDAR_CACHE[key] = schedule
+    return schedule
 
 
 @functools.lru_cache(maxsize=2048)  # Increased from 512 for longer backtests
@@ -2886,13 +3243,27 @@ def _cached_trading_dates(asset_type: str, start_date: date, end_date: date) -> 
     if asset_type == "crypto":
         return [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
     if asset_type == "stock" or asset_type == "option" or asset_type == "index":
-        cal = _get_cached_calendar("NYSE")
+        calendar_name = "NYSE"
     elif asset_type == "forex":
-        cal = _get_cached_calendar("CME_FX")
+        calendar_name = "CME_FX"
     else:
         raise ValueError(f"Unsupported asset type for thetadata: {asset_type}")
-    df = cal.schedule(start_date=start_date, end_date=end_date)
-    return df.index.date.tolist()
+
+    def _slice_year(year: int, start: date, end: date) -> List[date]:
+        schedule = _cached_year_schedule(calendar_name, year)
+        # DatetimeIndex slicing accepts ISO date strings.
+        df_slice = schedule.loc[str(start) : str(end)]
+        return df_slice.index.date.tolist()
+
+    if start_date.year == end_date.year:
+        return _slice_year(start_date.year, start_date, end_date)
+
+    dates_out: List[date] = []
+    for year in range(start_date.year, end_date.year + 1):
+        year_start = start_date if year == start_date.year else date(year, 1, 1)
+        year_end = end_date if year == end_date.year else date(year, 12, 31)
+        dates_out.extend(_slice_year(year, year_start, year_end))
+    return dates_out
 
 
 def get_trading_dates(asset: Asset, start: datetime, end: datetime):
@@ -2975,6 +3346,163 @@ def build_remote_cache_payload(asset: Asset, timespan: str, datastyle: str = "oh
     return payload
 
 
+def build_snapshot_cache_filename(
+    asset: Asset,
+    *,
+    trading_day: date,
+    interval_label: str,
+    start_time: str,
+    end_time: str,
+    datastyle: str,
+) -> Path:
+    """Build a cache filename for small, point-in-time intraday history windows.
+
+    Why this exists:
+    - `get_quote(snapshot_only=True)` intentionally requests only a tiny intraday window around
+      the simulation timestamp (e.g., 09:30 → 09:35) to avoid downloading full-day quote history
+      for contracts that will never be traded.
+    - Those snapshot requests must still be cacheable (S3 warm-cache invariant) so repeated runs
+      can avoid downloader-queue usage entirely.
+
+    This cache is stored separately from the normal {timespan}/{datastyle} caches to avoid
+    "partial day" coverage being misinterpreted as a full-day cache hit.
+    """
+    provider_root = Path(LUMIBOT_CACHE_FOLDER) / CACHE_SUBFOLDER
+    asset_folder = _resolve_asset_folder(asset)
+    datastyle_folder = _normalize_folder_component(datastyle, "default")
+    base_folder = provider_root / asset_folder / "snapshot" / datastyle_folder
+
+    if asset.asset_type == "option":
+        if asset.expiration is None:
+            raise ValueError(f"Expiration date is required for option {asset} but it is None")
+        expiry_string = asset.expiration.strftime("%y%m%d")
+        uniq_str = f"{asset.symbol}_{expiry_string}_{asset.strike}_{asset.right}"
+    else:
+        uniq_str = asset.symbol
+
+    day_string = trading_day.strftime("%Y%m%d")
+    start_compact = str(start_time).replace(":", "")
+    end_compact = str(end_time).replace(":", "")
+    cache_filename = (
+        f"{asset.asset_type}_{uniq_str}_snapshot_{day_string}_{interval_label}_{start_compact}_{end_compact}_{datastyle}.parquet"
+    )
+    return base_folder / cache_filename
+
+
+def get_historical_data_snapshot_cached(
+    asset: Asset,
+    start_dt: datetime,
+    end_dt: datetime,
+    ivl: int,
+    *,
+    datastyle: str = "quote",
+    include_after_hours: bool = True,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> Optional[pd.DataFrame]:
+    """Cache-backed wrapper for `get_historical_data()` for tiny single-day windows.
+
+    This is primarily used by `ThetaDataBacktestingPandas.get_quote(snapshot_only=True)` to
+    preserve the warm-cache invariant: if S3 is warmed, we must not enqueue downloader work.
+    """
+    trading_days = get_trading_dates(asset, start_dt, end_dt)
+    if len(trading_days) != 1:
+        return get_historical_data(
+            asset,
+            start_dt,
+            end_dt,
+            ivl,
+            datastyle=datastyle,
+            include_after_hours=include_after_hours,
+            username=username,
+            password=password,
+        )
+
+    interval_label = _interval_label_from_ms(ivl)
+    day = trading_days[0]
+    start_local = _normalize_market_datetime(start_dt)
+    end_local = _normalize_market_datetime(end_dt)
+    session_start, session_end = _compute_session_bounds(
+        day,
+        start_local,
+        end_local,
+        include_after_hours,
+        prefer_full_session=False,
+    )
+
+    cache_file = build_snapshot_cache_filename(
+        asset,
+        trading_day=day,
+        interval_label=interval_label,
+        start_time=session_start,
+        end_time=session_end,
+        datastyle=datastyle,
+    )
+    remote_payload = build_remote_cache_payload(asset, "snapshot", datastyle)
+    remote_payload.update(
+        {
+            "trading_day": day.isoformat(),
+            "interval": interval_label,
+            "start_time": session_start,
+            "end_time": session_end,
+        }
+    )
+
+    cache_manager = get_backtest_cache()
+    if cache_manager.enabled:
+        try:
+            cache_manager.ensure_local_file(cache_file, payload=remote_payload)
+        except Exception:
+            pass
+
+    df_existing = None
+    if cache_file.exists():
+        try:
+            df_existing = load_cache(cache_file)
+        except Exception:
+            df_existing = None
+        if df_existing is not None and not df_existing.empty:
+            return df_existing
+
+    try:
+        result_df = get_historical_data(
+            asset,
+            start_dt,
+            end_dt,
+            ivl,
+            datastyle=datastyle,
+            include_after_hours=include_after_hours,
+            username=username,
+            password=password,
+        )
+    except Exception as exc:
+        # Some ThetaTerminal endpoints occasionally return internal 500s for specific historical
+        # option/quote windows (observed for MELI option quote snapshots on expiration day).
+        #
+        # For acceptance backtests we still need the warm-cache invariant to hold: once a run has
+        # observed a terminal "cannot fetch" outcome for a given snapshot window, subsequent runs
+        # should not enqueue downloader work repeatedly. Record a placeholder so the cache can go warm.
+        logger.warning(
+            "[THETA][CACHE][SNAPSHOT] Snapshot history fetch failed; caching placeholder. "
+            "asset=%s day=%s start_time=%s end_time=%s datastyle=%s error=%s",
+            asset,
+            day.isoformat(),
+            session_start,
+            session_end,
+            datastyle,
+            exc,
+        )
+        update_cache(cache_file, df_all=None, df_cached=df_existing, missing_dates=[day], remote_payload=remote_payload)
+        return None
+
+    if result_df is None or getattr(result_df, "empty", True):
+        update_cache(cache_file, df_all=None, df_cached=df_existing, missing_dates=[day], remote_payload=remote_payload)
+        return result_df
+
+    update_cache(cache_file, df_all=result_df, df_cached=df_existing, missing_dates=None, remote_payload=remote_payload)
+    return result_df
+
+
 def get_missing_dates(df_all, asset, start, end):
     """
     Check if we have data for the full range
@@ -3049,9 +3577,9 @@ def get_missing_dates(df_all, asset, start, end):
         df_working["missing"].astype(bool) if "missing" in df_working.columns else pd.Series(False, index=df_working.index)
     )
     placeholder_dates = set(dates_series[placeholder_mask].unique()) if hasattr(placeholder_mask, "__len__") else set()
-    if is_index_asset and hasattr(placeholder_mask, "__len__") and bool(placeholder_mask.all()):
+    if hasattr(placeholder_mask, "__len__") and bool(placeholder_mask.all()):
         logger.info(
-            "[THETA][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only cache detected; skipping refetch for index",
+            "[THETA][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only cache detected; skipping refetch",
             asset.symbol if hasattr(asset, 'symbol') else str(asset),
         )
         return []
@@ -3077,6 +3605,11 @@ def get_missing_dates(df_all, asset, start, end):
     if placeholder_dates and missing_dates:
         today_utc = datetime.now(pytz.UTC).date()
         suppress_dates = {d for d in placeholder_dates if d > today_utc}
+        # If the cache begins with placeholder coverage before the first real date, treat those dates
+        # as "known unavailable" and do not refetch them. This prevents repeated downloader-queue
+        # requests for pre-coverage ranges (common for indicator padding before an asset has data).
+        if cached_first is not None:
+            suppress_dates |= {d for d in placeholder_dates if d < cached_first}
         if suppress_dates:
             missing_dates = [d for d in missing_dates if d not in suppress_dates]
 
@@ -4378,6 +4911,7 @@ def get_historical_data(
     datastyle: str = "ohlc",
     include_after_hours: bool = True,
     session_time_override: Optional[Tuple[str, str]] = None,
+    download_timespan: Optional[str] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
 ):
@@ -4435,6 +4969,19 @@ def get_historical_data(
         include_after_hours,
     )
 
+    def _advance_download_progress() -> None:
+        if download_timespan is None:
+            return
+        try:
+            advance_download_status_progress(
+                asset=asset,
+                data_type=datastyle,
+                timespan=download_timespan,
+                step=1,
+            )
+        except Exception:
+            return
+
     def build_option_params() -> Dict[str, str]:
         if not asset.expiration:
             raise ValueError(f"Expiration date missing for option asset {asset}")
@@ -4444,9 +4991,10 @@ def get_historical_data(
         # FIX (2025-12-12): Convert split-adjusted strike back to original for ThetaData API query
         # Uses start_dt from enclosing scope as the simulation datetime
         query_strike = _get_option_query_strike(asset, sim_datetime=start_dt)
+        query_expiration = _thetadata_option_query_expiration(asset.expiration)
         return {
             "symbol": _thetadata_option_root_symbol(asset),
-            "expiration": asset.expiration.strftime("%Y-%m-%d"),
+            "expiration": query_expiration.strftime("%Y-%m-%d"),
             "strike": _format_option_strike(query_strike),
             "right": "call" if right.startswith("C") else "put",
         }
@@ -4465,6 +5013,7 @@ def get_historical_data(
             headers=headers,
             querystring=querystring,
         )
+        _advance_download_progress()
         if not json_resp:
             return None
         df = pd.DataFrame(json_resp["response"], columns=json_resp["header"]["format"])
@@ -4513,6 +5062,7 @@ def get_historical_data(
             headers=headers,
             querystring=querystring,
         )
+        _advance_download_progress()
         if not json_resp:
             continue
 
@@ -4553,6 +5103,31 @@ def _normalize_expiration_value(raw_value: object) -> Optional[str]:
     if len(text_value.split("-")) == 3:
         return text_value
     return None
+
+
+def _thetadata_option_query_expiration(expiration: date) -> date:
+    """Map LumiBot's tradable option expiry to the value expected by ThetaData endpoints.
+
+    Background:
+    - Many strategies (and LumiBot's internal trading model) treat the *last tradable day* as the
+      option "expiration" (usually Friday).
+    - ThetaData chain payloads can represent standard monthly expirations using the OCC "Saturday"
+      date (with last trading on Friday). Weeklies are often represented as Friday; some holiday
+      expirations are represented as Thursday.
+
+    For ThetaData history endpoints we need the provider's expiry representation, not necessarily
+    the tradable session date, or requests can return placeholder-only (status_code=472, size=0).
+    """
+    if isinstance(expiration, datetime):
+        expiration = expiration.date()
+
+    # Standard monthly options: 3rd Friday last-trading-date, OCC expiration is Saturday.
+    # Heuristic: if the provided expiry is a Friday between the 15th and 21st (inclusive), treat it
+    # as a "monthly" trading expiry and map to the OCC Saturday.
+    if expiration.weekday() == 4 and 15 <= expiration.day <= 21:
+        return expiration + timedelta(days=1)
+
+    return expiration
 
 
 def _normalize_strike_value(raw_value: object) -> Optional[float]:
@@ -4693,9 +5268,49 @@ def build_historical_chain(
 
     as_of_int = int(as_of_date.strftime("%Y%m%d"))
 
-    constraints = chain_constraints or {}
+    constraints = dict(chain_constraints or {})
     min_hint_date = constraints.get("min_expiration_date")
     max_hint_date = constraints.get("max_expiration_date")
+
+    # PERF/SAFETY: Theta's expirations payload is not truly point-in-time and can include expirations
+    # years into the future for historical backtest dates. A naive "build the entire chain" approach
+    # forces one strike-list request per expiration, which explodes request volume on cold S3
+    # namespaces and makes long-window backtests unusably slow.
+    #
+    # Default to a bounded max-expiration window unless the caller explicitly provides one.
+    if max_hint_date is None:
+        try:
+            default_days_out = int(os.environ.get("THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT", "730"))
+        except Exception:
+            default_days_out = 730
+
+        try:
+            index_days_out = int(os.environ.get("THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT_INDEX", "180"))
+        except Exception:
+            index_days_out = 180
+
+        symbol_upper = str(getattr(asset, "symbol", "") or "").upper()
+        asset_type = str(getattr(asset, "asset_type", "") or "").lower()
+        is_index_like = asset_type == "index" or symbol_upper in {
+            "SPX",
+            "SPXW",
+            "NDX",
+            "NDXP",
+            "RUT",
+            "RUTW",
+            "VIX",
+            "VIXW",
+            "XSP",
+            "DJX",
+            "OEX",
+            "XEO",
+        }
+        days_out = index_days_out if is_index_like else default_days_out
+
+        if isinstance(days_out, int) and days_out > 0:
+            base_date = min_hint_date if isinstance(min_hint_date, date) else as_of_date
+            max_hint_date = base_date + timedelta(days=days_out)
+            constraints["max_expiration_date"] = max_hint_date
 
     min_hint_int = (
         int(min_hint_date.strftime("%Y%m%d"))
@@ -5146,15 +5761,20 @@ def get_chains_cached(
     try:
         from lumibot.tools.backtest_cache import get_backtest_cache
 
+        cache_manager = get_backtest_cache()
         if not cache_file.exists():
-            get_backtest_cache().ensure_local_file(cache_file)
+            try:
+                cache_manager.ensure_local_file(cache_file)
+            except Exception:
+                logger.debug(
+                    "[THETA][CHAIN_CACHE] Remote cache hydrate failed for %s on %s",
+                    asset.symbol,
+                    current_date,
+                    exc_info=True,
+                )
     except Exception:
-        logger.debug(
-            "[THETA][CHAIN_CACHE] Remote cache hydrate failed for %s on %s",
-            asset.symbol,
-            current_date,
-            exc_info=True,
-        )
+        # Ignore remote cache hydrate failures.
+        pass
 
     constraints = chain_constraints or {}
     hint_present = any(
@@ -5238,11 +5858,39 @@ def get_chains_cached(
                 for exp_date in data["Chains"][right]:
                     data["Chains"][right][exp_date] = list(data["Chains"][right][exp_date])
 
+            # Best-effort: ensure locally-present chain cache files are also present in the remote
+            # S3 cache. CI runners start from empty disks; without this, a "warm local" run can
+            # look healthy while CI rebuilds chains via the downloader (and fails acceptance).
+            try:
+                from lumibot.tools.backtest_cache import get_backtest_cache
+
+                cache_manager = get_backtest_cache()
+                remote_key = cache_manager.remote_key_for(fpath)
+                if remote_key:
+                    marker_path = fpath.with_suffix(fpath.suffix + ".s3key")
+                    marker_value = ""
+                    if marker_path.exists():
+                        try:
+                            marker_value = marker_path.read_text(encoding="utf-8").strip()
+                        except Exception:
+                            marker_value = ""
+                    if marker_value != remote_key:
+                        cache_manager.on_local_update(fpath)
+            except Exception:
+                logger.debug(
+                    "[THETA][CHAIN_CACHE] Remote cache upload (reuse) failed for %s on %s",
+                    asset.symbol,
+                    current_date,
+                    exc_info=True,
+                )
+
             return data
 
     # 4) No suitable file => fetch from ThetaData using exp=0 chain builder
     logger.debug(
-        f"No suitable cache file found for {asset.symbol} on {current_date}; building historical chain."
+        "No suitable cache file found for %s on %s; building historical chain.",
+        asset.symbol,
+        current_date,
     )
     print(
         f"\nDownloading option chain for {asset} on {current_date}. This will be cached for future use."

@@ -1,0 +1,174 @@
+{
+  "cases": [
+    {
+      "backtest_time_seconds": 30.623295542027336,
+      "baseline_run_id": "AAPLDeepDipCalls_2026-01-04_19-52_w1yl8v",
+      "data_source": "thetadata",
+      "end_date": "2025-12-01",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 300,
+      "metrics_centipercent": {
+        "cagr": 4865,
+        "max_drawdown": -3430,
+        "total_return": 86300
+      },
+      "metrics_raw": {
+        "cagr": "48.65%",
+        "max_drawdown": "-34.3%",
+        "total_return": "863%"
+      },
+      "script_filename": "AAPL Deep Dip Calls (Copy 4).py",
+      "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
+      "settings_backtesting_start": "2020-01-01 00:00:00-05:00",
+      "slug": "aapl_deep_dip_calls",
+      "start_date": "2020-01-01",
+      "strategy_name": "AAPLDeepDipCalls"
+    },
+    {
+      "backtest_time_seconds": 5.37428645795444,
+      "baseline_run_id": "LeapsCallDebitSpread_2026-01-04_11-20_vXE88y",
+      "data_source": "thetadata",
+      "end_date": "2025-10-15",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 120,
+      "metrics_centipercent": {
+        "cagr": 1181,
+        "max_drawdown": -116,
+        "total_return": 0
+      },
+      "metrics_raw": {
+        "cagr": "11.81%",
+        "max_drawdown": "-1.16%",
+        "total_return": "0%"
+      },
+      "script_filename": "Leaps Buy Hold (Alpha Picks).py",
+      "settings_backtesting_end": "2025-10-14 23:59:00-04:00",
+      "settings_backtesting_start": "2025-10-01 00:00:00-04:00",
+      "slug": "leaps_alpha_picks_short",
+      "start_date": "2025-10-01",
+      "strategy_name": "LeapsCallDebitSpread"
+    },
+    {
+      "backtest_time_seconds": 13.78326225001365,
+      "baseline_run_id": "TqqqSma200Strategy_2026-01-04_11-10_Wa65DX",
+      "data_source": "thetadata",
+      "end_date": "2025-12-01",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 180,
+      "metrics_centipercent": {
+        "cagr": 4216,
+        "max_drawdown": -4840,
+        "total_return": 858500
+      },
+      "metrics_raw": {
+        "cagr": "42.16%",
+        "max_drawdown": "-48.4%",
+        "total_return": "8,585%"
+      },
+      "script_filename": "TQQQ 200-Day MA.py",
+      "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
+      "settings_backtesting_start": "2013-01-01 00:00:00-05:00",
+      "slug": "tqqq_sma200_thetadata",
+      "start_date": "2013-01-01",
+      "strategy_name": "TqqqSma200Strategy"
+    },
+    {
+      "backtest_time_seconds": 235.24646108300658,
+      "baseline_run_id": "BackdoorButterfly0DTE_2026-01-04_17-14_Dg5NJR",
+      "data_source": "thetadata",
+      "end_date": "2025-12-01",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 600,
+      "metrics_centipercent": {
+        "cagr": -2312,
+        "max_drawdown": -2642,
+        "total_return": -2100
+      },
+      "metrics_raw": {
+        "cagr": "-23.12%",
+        "max_drawdown": "-26.42%",
+        "total_return": "-21%"
+      },
+      "script_filename": "Backdoor Butterfly 0 DTE (Copy).py",
+      "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
+      "settings_backtesting_start": "2025-01-01 00:00:00-05:00",
+      "slug": "backdoor_butterfly_full_year",
+      "start_date": "2025-01-01",
+      "strategy_name": "BackdoorButterfly0DTE"
+    },
+    {
+      "backtest_time_seconds": 38.28466554201441,
+      "baseline_run_id": "MeliDeepDrawdownCalls_2026-01-04_11-05_y7Ap6O",
+      "data_source": "thetadata",
+      "end_date": "2025-12-18",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 300,
+      "metrics_centipercent": {
+        "cagr": -1683,
+        "max_drawdown": -9896,
+        "total_return": -8900
+      },
+      "metrics_raw": {
+        "cagr": "-16.83%",
+        "max_drawdown": "-98.96%",
+        "total_return": "-89%"
+      },
+      "script_filename": "Meli Deep Drawdown Calls.py",
+      "settings_backtesting_end": "2025-12-17 23:59:00-05:00",
+      "settings_backtesting_start": "2013-01-01 00:00:00-05:00",
+      "slug": "meli_deep_drawdown",
+      "start_date": "2013-01-01",
+      "strategy_name": "MeliDeepDrawdownCalls"
+    },
+    {
+      "backtest_time_seconds": 273.12517324998043,
+      "baseline_run_id": "BackdoorButterfly0DTESmartLimit_2026-01-04_20-26_qtvxlf",
+      "data_source": "thetadata",
+      "end_date": "2025-12-01",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 600,
+      "metrics_centipercent": {
+        "cagr": -643,
+        "max_drawdown": -1341,
+        "total_return": -600
+      },
+      "metrics_raw": {
+        "cagr": "-6.43%",
+        "max_drawdown": "-13.41%",
+        "total_return": "-6%"
+      },
+      "script_filename": "Backdoor Butterfly 0 DTE (Copy) - with SMART LIMITS.py",
+      "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
+      "settings_backtesting_start": "2025-01-01 00:00:00-05:00",
+      "slug": "backdoor_smartlimit",
+      "start_date": "2025-01-01",
+      "strategy_name": "BackdoorButterfly0DTESmartLimit"
+    },
+    {
+      "backtest_time_seconds": 76.11424808303127,
+      "baseline_run_id": "SPXShortStraddle_2026-01-04_06-41_B1jF98",
+      "data_source": "thetadata",
+      "end_date": "2025-12-26",
+      "lumibot_version": "4.4.24",
+      "max_backtest_time_seconds": 600,
+      "metrics_centipercent": {
+        "cagr": -1750,
+        "max_drawdown": -3351,
+        "total_return": -1700
+      },
+      "metrics_raw": {
+        "cagr": "-17.5%",
+        "max_drawdown": "-33.51%",
+        "total_return": "-17%"
+      },
+      "script_filename": "SPX Short Straddle Intraday (Copy).py",
+      "settings_backtesting_end": "2025-12-25 23:59:00-05:00",
+      "settings_backtesting_start": "2025-01-06 00:00:00-05:00",
+      "slug": "spx_short_straddle_repro",
+      "start_date": "2025-01-06",
+      "strategy_name": "SPXShortStraddle"
+    }
+  ],
+  "notes": "Percent metrics are stored as centipercent integers (0.01% units) for strict comparisons.",
+  "schema_version": 1
+}

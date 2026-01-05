@@ -32,6 +32,48 @@ from requests import exceptions as requests_exceptions
 
 logger = logging.getLogger(__name__)
 
+# Lightweight, non-secret telemetry for backtest audit/debugging.
+#
+# These counters are intended to be recorded into `*_settings.json` at the end of a backtest
+# (see Strategy.write_backtest_settings) so we can answer questions like:
+# - Did this run touch the Data Downloader at all?
+# - How many submit/status/result calls were made?
+#
+# IMPORTANT: This must never include secret values (API keys). Query params are safe to record
+# as key names only.
+_TELEMETRY_LOCK = threading.Lock()
+_TELEMETRY: Dict[str, Any] = {
+    "requests_total": 0,
+    "submit_requests": 0,
+    "status_requests": 0,
+    "result_requests": 0,
+    "stats_requests": 0,
+    "first_request_at_unix": None,
+    "first_request_kind": None,
+    "first_request_path": None,
+    "first_request_param_keys": None,
+}
+
+
+def _record_telemetry(kind: str, path: str, query_params: Optional[Dict[str, Any]] = None) -> None:
+    with _TELEMETRY_LOCK:
+        _TELEMETRY["requests_total"] = int(_TELEMETRY.get("requests_total") or 0) + 1
+        key = f"{kind}_requests"
+        if key in _TELEMETRY:
+            _TELEMETRY[key] = int(_TELEMETRY.get(key) or 0) + 1
+        if _TELEMETRY.get("first_request_at_unix") is None:
+            _TELEMETRY["first_request_at_unix"] = float(time.time())
+            _TELEMETRY["first_request_kind"] = str(kind)
+            _TELEMETRY["first_request_path"] = str(path)
+            if query_params:
+                _TELEMETRY["first_request_param_keys"] = sorted(str(k) for k in query_params.keys())
+
+
+def queue_telemetry_snapshot() -> Dict[str, Any]:
+    """Return a copy of current queue client telemetry (numbers only; safe for settings/logs)."""
+    with _TELEMETRY_LOCK:
+        return dict(_TELEMETRY)
+
 # Configuration from environment
 # Queue mode is ALWAYS enabled - it's the only way to connect to ThetaData
 # NOTE: Extremely fast polling can overwhelm the downloader (and CloudWatch) when many requests
@@ -277,6 +319,7 @@ class QueueClient:
             Server-side queue statistics
         """
         try:
+            _record_telemetry("stats", "/queue/stats")
             resp = self._get_session().get(
                 f"{self.base_url}/queue/stats",
                 headers={self.api_key_header: self.api_key},
@@ -407,6 +450,7 @@ class QueueClient:
                 ) from last_error
 
             try:
+                _record_telemetry("submit", path, query_params=query_params)
                 resp = self._get_session().post(
                     submit_url,
                     json=payload,
@@ -507,11 +551,20 @@ class QueueClient:
             self._pending_requests[correlation_id] = info
             self._request_id_to_correlation[request_id] = correlation_id
 
+        try:
+            params_json = json.dumps(query_params, sort_keys=True, default=str)
+        except Exception:
+            params_json = str(query_params)
+        if len(params_json) > 500:
+            params_json = params_json[:500] + "…"
+
         logger.info(
-            "Submitted to queue: request_id=%s correlation=%s position=%s",
+            "Submitted to queue: request_id=%s correlation=%s position=%s path=%s params=%s",
             request_id,
             correlation_id,
             queue_position,
+            path,
+            params_json,
         )
         # Best-effort: surface request_id into the progress UI so a "stall" is diagnosable.
         try:  # pragma: no cover - UI plumbing
@@ -531,6 +584,7 @@ class QueueClient:
     def _refresh_status(self, request_id: str) -> Optional[QueuedRequestInfo]:
         """Refresh status of a request from the server."""
         try:
+            _record_telemetry("status", f"/queue/status/{request_id}")
             resp = self._get_session().get(
                 f"{self.base_url}/queue/status/{request_id}",
                 headers={self.api_key_header: self.api_key},
@@ -589,6 +643,7 @@ class QueueClient:
     def get_result(self, request_id: str) -> Tuple[Optional[Any], int, str]:
         """Get the result of a request."""
         try:
+            _record_telemetry("result", f"/queue/{request_id}/result")
             resp = self._get_session().get(
                 f"{self.base_url}/queue/{request_id}/result",
                 headers={self.api_key_header: self.api_key},
@@ -702,25 +757,37 @@ class QueueClient:
                     last_log_time = time.time()
 
                 # Check terminal states
-                if status == "completed":
-                    result, status_code, _ = self.get_result(request_id)
-                    # Log successful receipt from queue (fills logging gap for individual pieces)
-                    elapsed = time.time() - start_time
-                    result_size = len(result) if isinstance(result, (list, dict)) else 0
-                    logger.info(
-                        "[THETA][QUEUE] Received result: request_id=%s elapsed=%.1fs status_code=%d size=%d",
-                        request_id,
-                        elapsed,
-                        status_code,
-                        result_size,
-                    )
-                    # Update local tracking
-                    with self._lock:
-                        if info.correlation_id in self._pending_requests:
-                            self._pending_requests[info.correlation_id].status = "completed"
-                            self._pending_requests[info.correlation_id].result = result
-                            self._pending_requests[info.correlation_id].result_status_code = status_code
-                    return result, status_code
+                if status in ("completed", "failed"):
+                    # IMPORTANT: The downloader may surface "no data" (ThetaData 472) or other
+                    # non-200 terminal outcomes as status=failed. We must treat those as terminal
+                    # once the result endpoint is available, otherwise callers can stall until a timeout
+                    # and never record a cache placeholder (breaking the warm-cache invariant).
+                    result, status_code, result_state = self.get_result(request_id)
+                    if status_code == 202:
+                        # Result not ready yet; keep polling.
+                        pass
+                    elif result_state == "dead" or status_code == 500:
+                        with self._lock:
+                            if info.correlation_id in self._pending_requests:
+                                self._pending_requests[info.correlation_id].status = "dead"
+                        raise Exception(f"Request {request_id} permanently failed: {info.error}")
+                    else:
+                        elapsed = time.time() - start_time
+                        result_size = len(result) if isinstance(result, (list, dict)) else 0
+                        logger.info(
+                            "[THETA][QUEUE] Received result: request_id=%s status=%s elapsed=%.1fs status_code=%d size=%d",
+                            request_id,
+                            status,
+                            elapsed,
+                            status_code,
+                            result_size,
+                        )
+                        with self._lock:
+                            if info.correlation_id in self._pending_requests:
+                                self._pending_requests[info.correlation_id].status = status
+                                self._pending_requests[info.correlation_id].result = result
+                                self._pending_requests[info.correlation_id].result_status_code = status_code
+                        return result, status_code
 
                 elif status == "dead":
                     with self._lock:

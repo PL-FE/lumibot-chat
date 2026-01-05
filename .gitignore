@@ -59,3 +59,10 @@ AGENTS.md
 
 # Allow scoped agent instructions for the test suite.
 !tests/AGENTS.md
+
+# Acceptance backtest run artifacts (local + CI)
+tests/backtest/_acceptance_runs/
+
+# Local tool configs (untracked, user-specific)
+context*.json
+!context7.json

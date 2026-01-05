@@ -34,7 +34,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="lumibot",
-    version="4.4.24",
+    version="4.4.25",
     author="Robert Grzesik",
     author_email="rob@lumiwealth.com",
     description="Backtesting and Trading Library, Made by Lumiwealth",
@@ -75,7 +75,7 @@ setuptools.setup(
         # PyArrow 15.0.0+ supports NumPy 2.x
         "pyarrow>=15.0.0",
         "tqdm",
-        "lumiwealth-tradier>=0.1.17",
+        "lumiwealth-tradier>=0.1.18",
         "pytz",
         "psycopg2-binary",
         # Exchange calendars 4.6.0+ supports NumPy 2.x

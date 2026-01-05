@@ -6,6 +6,109 @@
 1. `docs/BACKTESTING_ARCHITECTURE.md` - Understand the backtesting data flow
 2. `AGENTS.md` - Critical rules for ThetaData (DO NOT SKIP)
 
+## Multi-Agent Collaboration (CRITICAL)
+This repo is often worked on by **multiple AI sessions** at the same time.
+
+- Branch etiquette: if a task mandates a specific version branch (e.g., `4.4.25`), treat it as the shared branch—stay on it and do not create new branches/PRs unless explicitly instructed. Otherwise, start new work branches from a stable base branch (e.g., `dev`/`main`/`master`), and avoid chaining feature/WIP branches.
+- No “feature branch chaining”: if you’re already on a feature/WIP or version branch (e.g., `feature/*`, `fix/*`, `wip/*`, `version/*`, `release/*`, or a version-named branch like `X.Y.Z`), keep working there; don’t create another feature branch from it unless explicitly instructed.
+- Branch naming (LumiBot convention): prefer version-scoped branches so multiple agents can collaborate without “feature branch naming drift”.
+  - Default for active release work: the shared version branch (e.g., `4.4.25` or `version/X.Y.Z`).
+  - Avoid `feature/*` and `fix/*` here unless explicitly requested.
+  - If you truly need isolation and are explicitly instructed to branch, use a scoped suffix (e.g., `4.4.25/<topic>` or `version/X.Y.Z/<topic>`)—but don’t chain off that unless explicitly instructed.
+- Never run `git checkout`; avoid destructive commands (`git reset --hard`, `git clean -f`, `git stash`).
+- Dirty-tree safety: if you need to branch with uncommitted changes, create the new branch from the current working tree so the changes come with you; avoid `git stash`. Verify with `git status --porcelain=v1`.
+- Before committing: `git status` must be clean/understood; read diffs for changes you didn’t personally create.
+- Coordinate via `docs/handoffs/` when touching shared areas (CI/baselines/backtest harnesses).
+- Any behavioral change must include docs updates + regression tests, with comments explaining “why/invariants”.
+
+## AGENTS.md / CLAUDE.md Best Practices (how we keep instructions useful)
+- These instruction files are loaded automatically at session start, so keep guidance here **universal** and avoid dumping long, task-specific walls of text here.
+- Prefer **progressive disclosure**:
+  - Architecture + runbooks: `docs/` (start with `docs/BACKTESTING_ARCHITECTURE.md`).
+  - Investigations and full trade audits: `docs/investigations/`.
+  - Cross-session coordination: `docs/handoffs/`.
+  - One-off helpers: `scripts/` (safe-timeout friendly).
+  - **Public docs (Sphinx):** `docsrc/` is the source for the public documentation site; keep docstrings and Sphinx pages up to date for user-facing behaviors.
+- When a workflow changes (env vars, cache semantics, harness flags), update the relevant `docs/*` page in the same change set.
+- **AI Navigation:** See `llms.txt` in repo root for structured documentation index
+- **File naming convention (MANDATORY):** All docs use **UPPERCASE** names with underscores:
+  - Root docs: `TOPIC_NAME.md` (e.g., `BACKTESTING_ARCHITECTURE.md`)
+  - Handoffs: `YYYY-MM-DD_TOPIC_NAME.md` (e.g., `2026-01-04_THETADATA_HANDOFF.md`)
+  - Investigations: `YYYY-MM-DD_TOPIC_NAME.md` (e.g., `2026-01-02_ACCURACY_AUDIT.md`)
+  - Date-first for chronological sorting; UPPERCASE for consistency
+- **File header (REQUIRED):** New docs must start with: Title, one-line description, Last Updated date, Status, Audience, and Overview section
+- Interop note: `AGENTS.md` is the cross-tool convention; `CLAUDE.md` is Claude Code’s native file. If you want a single source of truth, Claude Code supports importing:
+  - `@AGENTS.md`
+
+## Env var documentation (REQUIRED)
+- If you add or change an environment variable, update:
+  - `docsrc/environment_variables.rst` (public docs), and
+  - `docs/ENV_VARS.md` when engineering notes help contributors.
+
+## Changelog Maintenance (MANDATORY)
+
+**Location:** `CHANGELOG.md`
+
+**CRITICAL:** The changelog MUST be updated for every deployment, release, or significant change. This is NOT optional.
+
+### When to Update the Changelog
+
+Update the changelog when ANY of these occur:
+1. **Deployments** - Any code deployed to production
+2. **Version bumps** - New version tags or releases
+3. **Bug fixes** - Especially data source, split adjustment, or dividend fixes
+4. **New features** - New brokers, data sources, or strategy capabilities
+5. **Breaking changes** - API changes, env var changes, config changes
+6. **Performance improvements** - Cache optimizations, query efficiency
+7. **Dependency updates** - Major library version changes
+
+### Changelog Format
+
+```markdown
+## X.Y.Z - YYYY-MM-DD
+
+### Added
+- New feature description
+
+### Changed
+- Modified behavior description
+
+### Fixed
+- Bug fix description
+
+### Deprecated
+- Feature being phased out
+
+### Removed
+- Removed feature
+
+### Security
+- Security-related changes
+```
+
+### Pre-Deployment Checklist
+
+Before any deployment:
+- [ ] Changelog entry added with current date
+- [ ] Version number updated (if applicable)
+- [ ] All significant changes documented
+- [ ] Breaking changes clearly marked with ⚠️
+
+### Example Entry
+
+```markdown
+## 4.4.25 - 2025-01-04
+
+### Fixed
+- ThetaData split adjustment idempotency - prevents multiple applications
+- Dividend deduplication for same ex_date events
+
+### Changed
+- Cache version bumped to v8 for split adjustment fixes
+```
+
+**If you forget to update the changelog, you MUST add a retroactive entry before the next deployment.**
+
 ## Documentation Layout
 
 - `docs/` = hand-authored markdown (architecture, investigations, handoffs, ops notes)

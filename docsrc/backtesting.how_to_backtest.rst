@@ -193,6 +193,11 @@ Below is a short example showing how you might rely *entirely* on environment va
 
 For more information about running backtests, refer to the :ref:`Backtesting Function <backtesting.backtesting_function>` section.
 
+.. tip::
+
+   For a full list of supported configuration environment variables (audit telemetry, remote cache, profiling, etc.),
+   see :ref:`Environment Variables <environment_variables>`.
+
 Files Generated from Backtesting
 ===================================
 

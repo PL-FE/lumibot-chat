@@ -2716,22 +2716,94 @@ class ThetaDataBacktestingPandas(PandasData):
             raise ValueError("ThetaData backtesting currently supports pandas output only.")
 
         current_dt = self.get_datetime()
+        # PandasData handles str->Asset coercion in its public API; our fast-path bypasses that,
+        # so normalize here to preserve behaviour.
+        asset_obj: Asset
+        if isinstance(asset, str):
+            asset_obj = Asset(symbol=asset)
+        else:
+            asset_obj = asset
+
         start_requirement, ts_unit = self.get_start_datetime_and_ts_unit(
             length,
             timestep,
             current_dt,
             start_buffer=START_BUFFER,
         )
-        bars = super().get_historical_prices(
-            asset=asset,
-            length=length,
-            timestep=timestep,
-            timeshift=timeshift,
-            quote=quote,
-            exchange=exchange,
-            include_after_hours=include_after_hours,
-            return_polars=False,
-        )
+
+        # PERFORMANCE: Avoid calling `_update_pandas_data()` for every `get_historical_prices()` call
+        # when we already have a cached Data object that covers the requested dt.
+        #
+        # Why this matters:
+        # - Some strategies call `get_historical_prices()` thousands of times per backtest (RSI/EMA
+        #   every bar, multi-leg scanners, etc.).
+        # - ThetaDataBacktestingPandas overrides `_pull_source_symbol_bars()` and *always* calls
+        #   `_update_pandas_data()` before slicing. That is correct but can be extremely slow when
+        #   the in-memory cache already covers the requested window.
+        #
+        # Fast-path:
+        # - If the requested asset/timestep exists in `_data_store` and the cached dataframe already
+        #   extends through `current_dt`, slice directly via PandasData._pull_source_symbol_bars()
+        #   (which does not refresh) and skip the expensive update/merge logic.
+        bars = None
+        try:
+            tuple_key = self.find_asset_in_data_store(asset_obj, quote, ts_unit)
+            data_obj = self._data_store.get(tuple_key) if tuple_key is not None else None
+            df_existing = getattr(data_obj, "df", None) if data_obj is not None else None
+            if df_existing is not None and not df_existing.empty:
+                try:
+                    data_end = getattr(data_obj, "date_end", None) or df_existing.index.max()
+                except Exception:
+                    data_end = None
+                try:
+                    data_start = getattr(data_obj, "date_start", None) or df_existing.index.min()
+                except Exception:
+                    data_start = None
+                if data_end is not None:
+                    # Normalize timezone for safe comparisons.
+                    try:
+                        normalized_end = self._normalize_default_timezone(data_end)
+                        normalized_now = self._normalize_default_timezone(current_dt)
+                        normalized_start = self._normalize_default_timezone(data_start) if data_start is not None else None
+                        normalized_required_start = self._normalize_default_timezone(start_requirement) if start_requirement is not None else None
+                    except Exception:
+                        normalized_end = None
+                        normalized_now = None
+                        normalized_start = None
+                        normalized_required_start = None
+                    if normalized_end is not None and normalized_now is not None and normalized_now <= normalized_end:
+                        # Only apply the fast-path when the cached frame already covers the
+                        # requested lookback window. This preserves existing behavior where we
+                        # prefetch additional history (START_BUFFER) to seed indicators.
+                        if normalized_required_start is not None and normalized_start is not None:
+                            if normalized_start > normalized_required_start:
+                                raise ValueError("cached frame missing required lookback; refresh needed")
+                        response = PandasData._pull_source_symbol_bars(
+                            self,
+                            asset_obj,
+                            length,
+                            timestep=timestep,
+                            timeshift=timeshift,
+                            quote=quote,
+                            exchange=exchange,
+                            include_after_hours=include_after_hours,
+                        )
+                        if response is not None:
+                            bars = self._parse_source_symbol_bars(response, asset_obj, quote=quote, length=length, return_polars=False)
+        except Exception:
+            bars = None
+
+        if bars is None:
+            bars = super().get_historical_prices(
+                asset=asset_obj,
+                length=length,
+                timestep=timestep,
+                timeshift=timeshift,
+                quote=quote,
+                exchange=exchange,
+                include_after_hours=include_after_hours,
+                return_polars=False,
+            )
         if bars is not None and hasattr(bars, "df") and bars.df is not None:
             try:
                 # Drop any future bars to avoid lookahead when requesting intraday data
@@ -2980,10 +3052,18 @@ class ThetaDataBacktestingPandas(PandasData):
                     start_dt = dt
                     end_dt = dt + window_td
                 else:
+                    # ThetaData minute-aggregated quote bars are often timestamped at the END of the
+                    # minute. At the session open this means the first "09:30" quote bar can appear
+                    # at 09:31, so a strict backward-only window (dt-1m -> dt) frequently returns an
+                    # empty/placeholder response and causes option scanners to conclude "no quotes".
+                    #
+                    # Use a small forward buffer so we can still find the first valid bar for the
+                    # current dt without needing to download a full day of quotes.
+                    window_td = delta_td * 5
                     start_dt = dt - delta_td
-                    end_dt = dt
+                    end_dt = dt + window_td
 
-                df_snapshot = thetadata_helper.get_historical_data(
+                df_snapshot = thetadata_helper.get_historical_data_snapshot_cached(
                     asset,
                     start_dt,
                     end_dt,
@@ -3034,11 +3114,17 @@ class ThetaDataBacktestingPandas(PandasData):
                     row = df_snapshot.iloc[0]
                     row_ts = df_snapshot.index[0]
                 else:
-                    # Prefer the last bar at/before dt.
+                    # Prefer the last bar at/before dt. If none exist (common at the open due to
+                    # end-of-minute timestamping), fall forward to the first bar after dt.
                     try:
                         df_slice = df_snapshot.loc[:dt]
-                        row = df_slice.iloc[-1] if not df_slice.empty else df_snapshot.iloc[-1]
-                        row_ts = df_slice.index[-1] if not df_slice.empty else df_snapshot.index[-1]
+                        if not df_slice.empty:
+                            row = df_slice.iloc[-1]
+                            row_ts = df_slice.index[-1]
+                        else:
+                            df_future = df_snapshot.loc[dt:]
+                            row = df_future.iloc[0] if not df_future.empty else df_snapshot.iloc[-1]
+                            row_ts = df_future.index[0] if not df_future.empty else df_snapshot.index[-1]
                     except Exception:
                         row = df_snapshot.iloc[-1]
                         row_ts = df_snapshot.index[-1]

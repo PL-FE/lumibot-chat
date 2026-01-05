@@ -1,4 +1,5 @@
 import datetime
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 import pandas as pd
@@ -111,6 +112,69 @@ class TestBacktestingBroker:
         price = broker._try_fill_with_quote(order, strategy=None, open_=None, high_=None, low_=None)
 
         assert price == 101.0
+
+    def test_quote_fill_attaches_audit_fields_when_enabled(self):
+        broker = BacktestingBroker.__new__(BacktestingBroker)
+        broker.logger = MagicMock()
+        broker.data_source = type("StubSource", (), {"_timestep": "minute"})()
+        broker.get_quote = MagicMock(
+            return_value=Quote(
+                asset=Asset("SPY"),
+                bid=99.0,
+                ask=101.0,
+            )
+        )
+
+        order = Order(
+            asset=Asset("SPY"),
+            quantity=10,
+            side="buy",
+            order_type=Order.OrderType.MARKET,
+            strategy="test",
+        )
+        order.quote = Asset("USD", asset_type="forex")
+
+        with patch.dict(os.environ, {"LUMIBOT_BACKTEST_AUDIT": "1"}):
+            price = broker._try_fill_with_quote(order, strategy=None, open_=None, high_=None, low_=None)
+
+        assert price == 101.0
+        assert hasattr(order, "_audit")
+        assert order._audit.get("fill.model") == "quote_fallback"
+        assert order._audit.get("asset_quote.bid") == 99.0
+        assert order._audit.get("asset_quote.ask") == 101.0
+
+    def test_trade_event_log_includes_audit_columns_when_enabled(self):
+        broker = BacktestingBroker.__new__(BacktestingBroker)
+        broker.logger = MagicMock()
+        broker.logger.isEnabledFor.return_value = False
+        broker.name = "backtesting"
+        broker._hold_trade_events = False
+        broker._held_trades = []
+        broker._trade_event_log_enabled = True
+        broker._trade_event_log_rows = []
+        broker._get_subscriber = MagicMock(return_value=None)
+        broker._process_filled_order = MagicMock(return_value=None)
+        broker.data_source = type(
+            "StubSource",
+            (),
+            {"get_datetime": lambda self: pytz.UTC.localize(dt(2025, 1, 2, 10, 0))},
+        )()
+
+        order = Order(
+            asset=Asset("SPY"),
+            quantity=1,
+            side="buy",
+            order_type=Order.OrderType.MARKET,
+            strategy="test",
+        )
+        order._audit = {"hello": "world"}
+
+        with patch.dict(os.environ, {"LUMIBOT_BACKTEST_AUDIT": "1"}):
+            broker._process_trade_event(order, broker.FILLED_ORDER, price=101.0, filled_quantity=1)
+
+        row = broker._trade_event_log_rows[-1]
+        assert row["audit.hello"] == "world"
+        assert not hasattr(order, "_audit")
 
     def test_get_next_trading_day_marks_end_of_trading_days(self):
         """Regression: reaching end of trading calendar should stop backtest (no infinite loop)."""

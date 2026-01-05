@@ -191,6 +191,15 @@ class Trader:
                         base_filename=base_filename,
                     )
 
+                # Emit a single cache summary line so production runs can quantify S3 hydration
+                # cost without guessing or relying solely on profiler artifacts.
+                try:
+                    from lumibot.tools.backtest_cache import get_backtest_cache
+
+                    get_backtest_cache().log_summary()
+                except Exception:
+                    pass
+
             return result
         finally:
             if _yappi is not None and profiling is not None and profiling.enabled:
@@ -292,7 +301,7 @@ class Trader:
     def _set_logger(self):
         """Setting Logging to both console and a file if logfile is specified"""
         # Import here to avoid circular imports
-        from lumibot.tools.lumibot_logger import set_log_level, set_console_log_level, add_file_handler
+        from lumibot.tools.lumibot_logger import add_file_handler, set_log_level
         
         # Set external library log levels to reduce noise
         # NOTE: lumilogger.get_logger doesn't work with non-lumibot loggers, so we use logging.getLogger directly
