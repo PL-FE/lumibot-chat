@@ -9,8 +9,12 @@
 ## Multi-Agent Collaboration (CRITICAL)
 This repo is often worked on by **multiple AI sessions** at the same time.
 
-- Branch etiquette: it’s OK to create/switch branches and open PRs when needed. Start new work branches from a stable base branch (e.g., `dev`/`main`/`master`), and avoid chaining feature/WIP branches.
+- Branch etiquette: if a task mandates a specific version branch (e.g., `4.4.25`), treat it as the shared branch—stay on it and do not create new branches/PRs unless explicitly instructed. Otherwise, start new work branches from a stable base branch (e.g., `dev`/`main`/`master`), and avoid chaining feature/WIP branches.
 - No “feature branch chaining”: if you’re already on a feature/WIP or version branch (e.g., `feature/*`, `fix/*`, `wip/*`, `version/*`, `release/*`, or a version-named branch like `X.Y.Z`), keep working there; don’t create another feature branch from it unless explicitly instructed.
+- Branch naming (LumiBot convention): prefer version-scoped branches so multiple agents can collaborate without “feature branch naming drift”.
+  - Default for active release work: the shared version branch (e.g., `4.4.25` or `version/X.Y.Z`).
+  - Avoid `feature/*` and `fix/*` here unless explicitly requested.
+  - If you truly need isolation and are explicitly instructed to branch, use a scoped suffix (e.g., `4.4.25/<topic>` or `version/X.Y.Z/<topic>`)—but don’t chain off that unless explicitly instructed.
 - Never run `git checkout`; avoid destructive commands (`git reset --hard`, `git clean -f`, `git stash`).
 - Dirty-tree safety: if you need to branch with uncommitted changes, create the new branch from the current working tree so the changes come with you; avoid `git stash`. Verify with `git status --porcelain=v1`.
 - Before committing: `git status` must be clean/understood; read diffs for changes you didn’t personally create.
