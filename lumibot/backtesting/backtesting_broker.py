@@ -1966,16 +1966,21 @@ class BacktestingBroker(Broker):
                 ):
                     ohlc = None
                 else:
+                    timestep = getattr(self.data_source, "_timestep", "minute")
                     # PandasData's bar slicing is already careful about day-vs-minute lookahead
-                    # (see Data._get_bars_dict). Using a negative `timeshift` here can accidentally
-                    # *advance* the slice into future bars for daily data. Keep this at 0 so we
-                    # never fill using data beyond the current backtest clock.
+                    # (see Data._get_bars_dict). For daily bars, a negative `timeshift` can
+                    # accidentally *advance* the slice into future sessions.
+                    #
+                    # For intraday bars, we still need the current bar available for order fills
+                    # at `self.datetime` (e.g., crypto backtests on the first bar). Use `-1` to
+                    # include the current bar without pulling future bars.
+                    timeshift = 0 if str(timestep) == "day" else -1
                     ohlc = self.data_source.get_historical_prices(
                         asset=asset,
                         length=2,
                         quote=order.quote,
-                        timeshift=0,
-                        timestep=self.data_source._timestep,
+                        timeshift=timeshift,
+                        timestep=timestep,
                     )
                 # Check if we got any ohlc data
                 if ohlc is None or ohlc.empty:
@@ -3043,7 +3048,7 @@ class BacktestingBroker(Broker):
                     asset=asset,
                     length=2,
                     quote=leg.quote,
-                    timeshift=0,
+                    timeshift=0 if str(getattr(self.data_source, "_timestep", "minute")) == "day" else -1,
                     timestep=getattr(self.data_source, "_timestep", "minute"),
                 )
             except Exception:
