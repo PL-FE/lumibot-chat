@@ -560,7 +560,9 @@ def test_get_historical_data_uses_v3_option_params(mock_get_trading_dates, mock_
 
     query = mock_get_request.call_args.kwargs["querystring"]
     assert query["symbol"] == "CVNA"
-    assert query["expiration"] == "2026-01-16"
+    # NOTE(legacy): ThetaData v3 option queries expect OCC-style monthly expirations on Saturday.
+    # CVNA 2026-01-16 is the 3rd-Friday monthly; the query uses 2026-01-17.
+    assert query["expiration"] == "2026-01-17"
     assert query["strike"] == "210"
     assert query["right"] == "call"
     assert query["date"] == "2024-10-16"
