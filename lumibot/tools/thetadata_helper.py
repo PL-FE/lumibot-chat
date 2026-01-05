@@ -3397,6 +3397,7 @@ def get_historical_data_snapshot_cached(
     *,
     datastyle: str = "quote",
     include_after_hours: bool = True,
+    prefer_full_session: bool = True,
     username: Optional[str] = None,
     password: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
@@ -3427,7 +3428,7 @@ def get_historical_data_snapshot_cached(
         start_local,
         end_local,
         include_after_hours,
-        prefer_full_session=False,
+        prefer_full_session=prefer_full_session,
     )
 
     cache_file = build_snapshot_cache_filename(

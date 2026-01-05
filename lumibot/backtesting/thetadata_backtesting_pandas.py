@@ -3070,6 +3070,10 @@ class ThetaDataBacktestingPandas(PandasData):
                     ivl_ms,
                     datastyle="quote",
                     include_after_hours=True,
+                    # PERF: Cache a stable full-session file per (asset, trading_day) instead of a
+                    # unique file per dt-window. Long-window backtests (NVDA/SPX) otherwise generate
+                    # thousands of tiny snapshot files and spend most of their time in downloader IO.
+                    prefer_full_session=True,
                 )
 
                 def _negative_ttl() -> timedelta:
