@@ -25,21 +25,21 @@
       "strategy_name": "AAPLDeepDipCalls"
     },
     {
-      "backtest_time_seconds": 5.37428645795444,
-      "baseline_run_id": "LeapsCallDebitSpread_2026-01-04_11-20_vXE88y",
+      "backtest_time_seconds": 33.25622420798754,
+      "baseline_run_id": "LeapsCallDebitSpread_2026-01-04_22-07_IhWXKY",
       "data_source": "thetadata",
       "end_date": "2025-10-15",
-      "lumibot_version": "4.4.24",
+      "lumibot_version": "4.4.25",
       "max_backtest_time_seconds": 120,
       "metrics_centipercent": {
-        "cagr": 1181,
-        "max_drawdown": -116,
-        "total_return": 0
+        "cagr": 1800,
+        "max_drawdown": -143,
+        "total_return": 100
       },
       "metrics_raw": {
-        "cagr": "11.81%",
-        "max_drawdown": "-1.16%",
-        "total_return": "0%"
+        "cagr": "18.0%",
+        "max_drawdown": "-1.43%",
+        "total_return": "1%"
       },
       "script_filename": "Leaps Buy Hold (Alpha Picks).py",
       "settings_backtesting_end": "2025-10-14 23:59:00-04:00",

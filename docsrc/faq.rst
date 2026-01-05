@@ -3,10 +3,6 @@ Frequently Asked Questions (FAQ)
 
 This page answers common questions about Lumibot. If you're new to Lumibot, start with the :doc:`getting_started` guide.
 
-.. contents:: Questions
-   :local:
-   :depth: 2
-
 DateTime and Timing
 -------------------
 

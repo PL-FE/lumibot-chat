@@ -331,6 +331,17 @@ class OptionsHelper:
             # ThetaData historical options can have sparse coverage; scanning too many expirations
             # with network-backed quote probes can dominate long-window backtests.
             max_expirations_to_try = 5
+            # NVDA-style hourly backtests can end up walking deep into the expiration list when
+            # nearby expiries have missing/placeholder quote history (472). That produces many
+            # downloader submits per trading day and can turn a single backtest into hours.
+            #
+            # Keep index underlyings slightly higher (dense expiry schedules), but for equities
+            # cap the probe depth more aggressively.
+            try:
+                if not self._is_index_like_underlying(underlying_asset, getattr(underlying_asset, "symbol", None)):
+                    max_expirations_to_try = 2
+            except Exception:
+                max_expirations_to_try = 2
         for exp_date in expirations:
             if attempts >= max_expirations_to_try:
                 break

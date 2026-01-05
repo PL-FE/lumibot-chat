@@ -1,10 +1,10 @@
 """
-CI acceptance backtests (ThetaData) — runs the *same 7 demo scripts* we use locally.
+CI acceptance backtests (ThetaData) — runs the *same Strategy Library demo scripts* we use locally.
 
 User requirement (non-negotiable):
-- These tests must execute the *same 7* Strategy Library acceptance demos (copied verbatim into
+- These tests must execute the Strategy Library acceptance demos (copied verbatim into
   `tests/backtest/acceptance_strategies/`) in a subprocess, with the same prod-like env flags.
-- They must FAIL if any run tries to enqueue a ThetaData downloader request (cache miss / fallback).
+- They must FAIL if any run tries to use the remote Data Downloader / queue (warm S3 cache invariant).
 
 Implementation notes:
 - We run each script in an isolated run directory so that `logs/` is clean and parseable.
@@ -313,6 +313,19 @@ def _run_script(case: _BaselineCase) -> tuple[Path, dict[str, int]]:
             tail = "(failed to read stdout/stderr tail)"
         raise AssertionError(f"{case.slug} failed (exit={returncode}). run_dir={run_dir}\n--- tail ---\n{tail}")
 
+    # Defensive: even if the subprocess exits 0, never allow a downloader attempt to be "swallowed"
+    # by strategy-level exception handling. The tripwire prints a stable marker string.
+    combined = ""
+    try:
+        combined = (stderr_path.read_text(errors="ignore") + "\n" + stdout_path.read_text(errors="ignore"))[-20000:]
+    except Exception:
+        combined = ""
+    if "[ACCEPTANCE][TRIPWIRE]" in combined:
+        raise AssertionError(
+            f"{case.slug} attempted to call the Data Downloader (tripwire marker detected) but still exited 0. "
+            f"Downloader usage is forbidden in acceptance tests.\nrun_dir={run_dir}"
+        )
+
     logs_dir = run_dir / "logs"
     settings = _find_single(
         sorted(logs_dir.glob(f"{case.strategy_name}_*_settings.json")),
@@ -343,6 +356,34 @@ def _run_script(case: _BaselineCase) -> tuple[Path, dict[str, int]]:
 
     payload = json.loads(settings.read_text(encoding="utf-8"))
     _assert_settings_match_window(case, payload)
+
+    # Structural (non-log-based) validation: acceptance backtests must not touch the downloader/queue
+    # because S3 is expected to already be warm for these canonical windows.
+    if case.data_source == "thetadata":
+        queue = payload.get("thetadata_queue_telemetry") or {}
+        try:
+            submit_requests = int(queue.get("submit_requests") or 0)
+        except Exception:
+            submit_requests = 0
+        if submit_requests:
+            first_path = queue.get("first_request_path")
+            raise AssertionError(
+                f"{case.slug} attempted {submit_requests} downloader queue submission(s) "
+                f"(first_request_path={first_path!r}). Expected fully warm S3 cache.\n"
+                f"settings={settings}\nrun_dir={run_dir}"
+            )
+
+        remote_stats = payload.get("remote_cache_stats") or {}
+        try:
+            misses = int(remote_stats.get("misses") or 0)
+        except Exception:
+            misses = 0
+        if misses:
+            raise AssertionError(
+                f"{case.slug} had {misses} remote cache miss(es) (S3 missing object(s)); "
+                "this indicates the cache is not fully warm for the canonical acceptance window.\n"
+                f"settings={settings}\nrun_dir={run_dir}"
+            )
 
     inner_s = payload.get("backtest_time_seconds")
     if isinstance(inner_s, (int, float)) and inner_s > max_inner_s:

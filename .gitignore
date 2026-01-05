@@ -12,6 +12,7 @@ lumibot/cache
 !tests/test_backtest_cache_manager.py
 !docs/remote_cache.md
 generated-docs/
+docsrc/_build/
 **/*.pkl
 .pytest*
 

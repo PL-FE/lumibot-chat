@@ -252,7 +252,7 @@ Replit is a versatile platform that allows you to deploy applications quickly. F
       **Note:** Monitor the bot's performance regularly to ensure that it is functioning correctly and making profitable trades.
 
 Secrets Configuration
-=====================
+---------------------
 
 Proper configuration of environment variables is crucial for the successful deployment of your application. The most important secrets are those related to your chosen broker. First, set up the secrets for your broker, then add any additional general secrets if needed.
 
@@ -265,7 +265,7 @@ Proper configuration of environment variables is crucial for the successful depl
    **The secrets required for your chosen broker are mandatory, you only need to pick one. Also, depending on the strategy you are running, you might also need to set the `LIVE_CONFIG` environment variable.**
 
 Broker Configuration
-====================
+--------------------
 
 To support different brokers, we have separate sections. Choose the one that corresponds to the broker you are using.
 
@@ -990,7 +990,7 @@ Demo/Testing
      - Practice Account 1
 
 General Environment Variables
-=============================
+-----------------------------
 
 In addition to broker-specific secrets, the following environment variables are required for the strategy to function correctly:
 

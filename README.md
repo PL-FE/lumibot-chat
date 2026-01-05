@@ -15,8 +15,17 @@ Lumibot is a backtesting and trading library for stocks, options, crypto, future
 - `docs/BACKTESTING_ARCHITECTURE.md` - Detailed documentation of the backtesting data flow (Yahoo, ThetaData, Polygon data sources, caching, and data flow diagrams)
 - `docs/ACCEPTANCE_BACKTESTS.md` - Manual end-to-end acceptance backtest suite + performance gate (ThetaData)
 - `docsrc/environment_variables.rst` - Public documentation page for environment variables (update when env vars change)
+- `CHANGELOG.md` - Deployment/release notes (keep this updated)
 - `CLAUDE.md` - AI assistant instructions for working with the codebase
 - `AGENTS.md` - Critical rules for ThetaData and production safety
+
+## Releases / Deployments (internal)
+
+For production deployments (BotSpot / BotManager), keep releases traceable:
+
+- Update `CHANGELOG.md` for every deploy (include the deploy commit hash)
+- Tag the deploy commit as `vX.Y.Z` and push the tag
+- Create a GitHub Release from that tag using the `CHANGELOG.md` entry
 
 ## Documentation - 👇 Start Here 👇
 

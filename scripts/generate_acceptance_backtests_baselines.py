@@ -58,7 +58,7 @@ CASES: List[Case] = [
         start_date="2025-10-01",
         end_date="2025-10-15",
         data_source="thetadata",
-        baseline_run_id="LeapsCallDebitSpread_2026-01-04_11-20_vXE88y",
+        baseline_run_id="LeapsCallDebitSpread_2026-01-04_22-07_IhWXKY",
         max_backtest_time_seconds=120,
     ),
     Case(

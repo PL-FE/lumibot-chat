@@ -49,7 +49,39 @@ This repo is often worked on by **multiple AI sessions** at the same time.
 
 **Location:** `CHANGELOG.md`
 
-**CRITICAL:** The changelog MUST be updated for every deployment, release, or significant change. This is NOT optional.
+**CRITICAL:** The changelog MUST be updated for every deployment, release, or significant change. The changelog documents ALL changes in a version, not just what the current AI session worked on.
+
+### Version Source of Truth
+
+The **authoritative version** is in `setup.py` (look for the `version=` line):
+```python
+version="X.Y.Z",  # e.g., "4.4.25", "4.5.0", etc.
+```
+
+When this version changes and is committed, it signals a deploy/release is happening or imminent.
+
+### How to Find Changes for a Version
+
+Before updating the changelog, **gather ALL commits** since the last version change:
+
+```bash
+# Find the current version
+grep 'version=' setup.py
+
+# Find when setup.py version was last changed
+git log --oneline -p setup.py | grep -A2 -B2 'version=' | head -30
+
+# Get commits since a specific commit/tag (replace X.Y.Z with actual previous version)
+git log --oneline <last-version-commit>..HEAD
+
+# Get commits since last version bump - replace X.Y.Z with the PREVIOUS version
+git log --oneline $(git log --oneline -1 --all -S 'version="X.Y.Z"' -- setup.py | cut -d' ' -f1)..HEAD
+
+# Or use the tag if available (replace X.Y.Z with previous version)
+git log --oneline vX.Y.Z..HEAD
+```
+
+**IMPORTANT:** The changelog should include changes from ALL contributors (multiple AI agents, human developers), not just the current session. Read through ALL commits to capture the full picture.
 
 ### When to Update the Changelog
 
@@ -89,25 +121,22 @@ Update the changelog when ANY of these occur:
 ### Pre-Deployment Checklist
 
 Before any deployment:
+- [ ] Reviewed git commits since last version (`git log <last-version>..HEAD`)
 - [ ] Changelog entry added with current date
-- [ ] Version number updated (if applicable)
-- [ ] All significant changes documented
+- [ ] Version number updated in setup.py (if applicable)
+- [ ] All significant changes documented (from ALL contributors)
 - [ ] Breaking changes clearly marked with ⚠️
 
-### Example Entry
-
-```markdown
-## 4.4.25 - 2025-01-04
-
-### Fixed
-- ThetaData split adjustment idempotency - prevents multiple applications
-- Dividend deduplication for same ex_date events
-
-### Changed
-- Cache version bumped to v8 for split adjustment fixes
-```
-
 **If you forget to update the changelog, you MUST add a retroactive entry before the next deployment.**
+
+## GitHub Release Markers (RECOMMENDED)
+
+To keep deployments traceable (and easy to diff):
+
+- Tag the deploy commit with the semantic version (annotated tag): `vX.Y.Z`
+- Push the tag to GitHub
+- Create a GitHub Release from that tag and paste the corresponding `CHANGELOG.md` entry
+- PR title convention: `X.Y.Z` (or `Release X.Y.Z`) so the version is visible in the PR list
 
 ## Documentation Layout
 
@@ -117,6 +146,94 @@ Before any deployment:
 - `docsrc/` = Sphinx source for the public docs site
 - `generated-docs/` = local build output from `docsrc/` (gitignored)
 - Docs publishing should happen via GitHub Actions on `dev` (avoid committing generated HTML)
+
+## Public Documentation Updates (MANDATORY)
+
+**Location:** `docsrc/` (Sphinx source files)
+
+The public documentation at lumibot.lumiwealth.com is a critical resource for users. **Always update it when making user-facing changes.**
+
+### When to Update Which File
+
+| Change Type | Update This File |
+|-------------|------------------|
+| New broker added | `docsrc/brokers.*.rst` (create new file following existing pattern) |
+| New strategy method | `docsrc/strategy_methods.*.rst` (add to appropriate category) |
+| New strategy property | `docsrc/strategy_properties.rst` |
+| New lifecycle method | `docsrc/lifecycle_methods.*.rst` |
+| New entity class | `docsrc/entities.*.rst` |
+| New backtesting data source | `docsrc/backtesting.*.rst` |
+| New environment variable | `docsrc/environment_variables.rst` |
+| Bug fix users hit often | `docsrc/common_mistakes.rst` |
+| Common user question | `docsrc/faq.rst` |
+| New feature (general) | `docsrc/getting_started.rst` or relevant section |
+| Deployment changes | `docsrc/deployment.rst` |
+
+### AI Agent Documentation Responsibility (CRITICAL)
+
+**Every time you work on LumiBot code, you MUST check and update BOTH documentation locations:**
+
+| Location | Purpose | Audience |
+|----------|---------|----------|
+| `docs/` | Architecture, investigations, handoffs, engineering notes | AI agents & contributors |
+| `docsrc/` | Public Sphinx documentation | End users & customers |
+
+**When working on LumiBot, AI agents MUST:**
+1. **Proactively update docs** - Don't wait to be asked; update both `docs/` and `docsrc/` as needed
+2. **Check for doc gaps** - If you notice missing docs while working, flag or fix them in BOTH locations
+3. **Keep examples current** - If you change API, update example code in both folders
+4. **Add to FAQ/Common Mistakes** - When fixing user-reported bugs, document the fix
+5. **Update engineering docs** - When you learn something about the codebase, add it to `docs/` so future AI sessions benefit
+
+**Workflow for every code change:**
+```
+1. Identify relevant files in BOTH docs/ and docsrc/
+2. Read them - are they accurate? Complete? Up to date?
+3. If NO → Update them as part of your changes
+4. If feature is undocumented → Add documentation to both locations
+5. Build docsrc locally to verify customer-facing changes render correctly
+```
+
+**For `docs/` (AI/Engineering documentation):**
+- Update `docs/BACKTESTING_ARCHITECTURE.md` when changing data flow
+- Add to `docs/investigations/` when debugging complex issues
+- Use `docs/handoffs/` for cross-session coordination
+- Document "why" decisions and gotchas that future AI sessions need to know
+
+**For `docsrc/` (Customer-facing documentation):**
+- Update the relevant `.rst` file when changing user-facing behavior
+- Add code examples that customers can copy-paste
+- Document all parameters, return values, and edge cases
+- Keep Getting Started guide accessible to beginners
+
+**Examples of proactive documentation:**
+- Working on `get_historical_prices()`? Check `strategy_methods.data.rst` AND `docs/BACKTESTING_ARCHITECTURE.md`
+- Fixing a bug in Alpaca broker? Check `brokers.alpaca.rst` - does it mention this edge case?
+- Adding a new order type? Update `strategy_methods.orders.rst` AND add an example to `examples.rst`
+- Discovered a tricky caching behavior? Add it to `docs/` so future AI sessions don't rediscover it
+
+**Do NOT:**
+- Assume docs are complete because they exist
+- Skip doc updates because "it's a small change"
+- Leave doc updates for "later" or "another PR"
+- Only update one location when both need updating
+- Forget that `docs/` helps future AI sessions be more effective
+
+**Remember:** If you touch code, check BOTH doc locations. If docs are incomplete, fix them. This is part of the definition of done for any task.
+
+### Periodic Documentation Audits
+
+**Frequency:** At least once per major release or quarterly
+
+**Audit checklist:**
+- [ ] All public methods in Strategy class are documented
+- [ ] All brokers have complete documentation
+- [ ] All environment variables are listed
+- [ ] Examples are up-to-date and working
+- [ ] FAQ reflects recent user questions (check Discord/GitHub issues)
+- [ ] Common Mistakes reflects recent bug reports
+- [ ] Getting Started guide works for new users
+- [ ] No broken links or missing images
 
 ## Project Overview
 

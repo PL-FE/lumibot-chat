@@ -3,10 +3,6 @@ Code Examples
 
 This page contains practical code examples for common Lumibot tasks. These examples cover stocks, options, crypto, futures, and advanced features like the PerplexityHelper for AI-powered trading decisions.
 
-.. contents:: Examples by Category
-   :local:
-   :depth: 2
-
 Stocks
 ------
 
