@@ -3697,6 +3697,29 @@ def get_missing_dates(df_all, asset, start, end):
 
     missing_dates = sorted(set(trading_dates) - set(real_dates))
 
+    # Tail-placeholder suppression (options):
+    #
+    # For many options (especially far OTM/illiquid contracts), ThetaData can legitimately return
+    # no quotes/trades on the final trading day(s). In those cases we may record placeholders at
+    # the *tail* of the cache to preserve trading-day coverage, but we must not repeatedly refetch
+    # those same tail days on every run (it causes endless downloader queue submissions).
+    #
+    # If a day is represented only by placeholders *after* the last real cached trading day, treat
+    # it as "known unavailable" for refetch purposes.
+    if placeholder_dates and missing_dates and asset.asset_type == "option" and cached_last is not None:
+        tail_placeholder_dates = {d for d in placeholder_dates if d > cached_last}
+        if tail_placeholder_dates:
+            suppress_tail = tail_placeholder_dates & set(missing_dates)
+            if suppress_tail:
+                logger.debug(
+                    "[THETA][DEBUG][CACHE][TAIL_PLACEHOLDER_SUPPRESS] asset=%s | "
+                    "suppressing %d tail placeholder day(s) beyond last_real=%s",
+                    asset.symbol if hasattr(asset, 'symbol') else str(asset),
+                    len(suppress_tail),
+                    cached_last,
+                )
+                missing_dates = [d for d in missing_dates if d not in suppress_tail]
+
     if placeholder_dates and missing_dates:
         today_utc = datetime.now(pytz.UTC).date()
         suppress_dates = {d for d in placeholder_dates if d > today_utc}
