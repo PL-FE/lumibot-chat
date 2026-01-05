@@ -3624,8 +3624,10 @@ def get_missing_dates(df_all, asset, start, end):
 
     logger.debug(
         "[THETA][DEBUG][CACHE][TRADING_DATES] asset=%s | "
+        "is_index_asset=%s | "
         "trading_dates_count=%d first=%s last=%s",
         asset.symbol if hasattr(asset, 'symbol') else str(asset),
+        is_index_asset,
         len(trading_dates),
         trading_dates[0] if trading_dates else None,
         trading_dates[-1] if trading_dates else None
