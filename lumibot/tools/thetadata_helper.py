@@ -1605,7 +1605,10 @@ def _get_option_query_strike(option_asset: Asset, sim_datetime: datetime = None)
                     # Multiply current strike by factor to get original pre-split strike
                     original_strike = original_strike * cumulative_split_factor
 
-                    logger.info(
+                    # PERF: Strike conversion can happen many times in option-heavy backtests.
+                    # Keep this at DEBUG so production backtests don't pay the logging cost unless
+                    # explicitly enabled.
+                    logger.debug(
                         "[ThetaData] Split adjustment for option query: %s strike $%.2f -> $%.2f "
                         "(factor %.4f from %d splits)",
                         option_asset.symbol,
@@ -3673,11 +3676,24 @@ def get_missing_dates(df_all, asset, start, end):
     )
     placeholder_dates = set(dates_series[placeholder_mask].unique()) if hasattr(placeholder_mask, "__len__") else set()
     if hasattr(placeholder_mask, "__len__") and bool(placeholder_mask.all()):
-        logger.info(
-            "[THETA][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only cache detected; skipping refetch",
+        # If the cache is *only* placeholders:
+        # - For stocks/indices this almost always indicates a bad/incomplete cache (e.g., outage) and we
+        #   should refetch for full coverage.
+        # - For options it can legitimately mean "no prints/quotes for this contract" across the entire
+        #   window; repeatedly refetching would cause endless downloader submissions. Treat as "no
+        #   missing dates" only for options.
+        if asset.asset_type == "option":
+            logger.info(
+                "[THETA][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only option cache detected; skipping refetch",
+                asset.symbol if hasattr(asset, 'symbol') else str(asset),
+            )
+            return []
+
+        logger.debug(
+            "[THETA][DEBUG][CACHE][PLACEHOLDER_ONLY] asset=%s | placeholder-only cache detected; treating as missing coverage",
             asset.symbol if hasattr(asset, 'symbol') else str(asset),
         )
-        return []
+        return trading_dates
     # Placeholder rows should be treated as missing coverage for past dates so we can refetch real data
     # (e.g. when caches were populated during an outage). We suppress future/expired-placeholder refetch
     # later when computing missing_dates.
@@ -5140,9 +5156,9 @@ def get_historical_data(
     frames: List[pd.DataFrame] = []
     option_params = build_option_params() if asset_type == "option" else None
 
-    # DEBUG: Log option params to verify strike conversion
+    # DEBUG: Log option params to verify strike conversion (gated at DEBUG for perf).
     if option_params:
-        logger.info(
+        logger.debug(
             "[THETA][OPTION_PARAMS] asset=%s option_params=%s",
             asset,
             option_params,

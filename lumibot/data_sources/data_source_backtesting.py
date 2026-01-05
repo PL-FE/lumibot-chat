@@ -77,8 +77,14 @@ class DataSourceBacktesting(DataSource, ABC):
         self._eta_calibration_seconds = 25
         self._eta_calibration_progress = 4  # percent
 
-        # Subtract one minute from the datetime_end so that the strategy stops right before the datetime_end
-        self.datetime_end -= timedelta(minutes=1)
+        # Subtract one minute from ``datetime_end`` for most providers so backtests stop
+        # *just before* the configured end bound.
+        #
+        # NOTE: PandasDataBacktesting uses explicit bar timestamps provided by callers/tests.
+        # Making the end bound exclusive there commonly drops the final bar and breaks
+        # deterministic unit tests (fees/brackets/multileg cash, crypto cash regressions).
+        if self.datetime_end is not None and getattr(self, "SOURCE", None) != "PANDAS":
+            self.datetime_end -= timedelta(minutes=1)
 
         # Legacy strategy.backtest code will always pass in a config even for DataSources that don't need it, so
         # catch it here and ignore it in this class. Child classes that need it should error check it themselves.
