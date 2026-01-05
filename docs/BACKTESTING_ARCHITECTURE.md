@@ -255,6 +255,13 @@ These are **manual acceptance backtests** run from the Strategy Library (do not 
 Artifacts are written to:
 - `/Users/robertgrzesik/Documents/Development/Strategy Library/logs/`
 
+These same demo scripts are also executed in GitHub CI as normal `pytest` tests (copies live under
+`tests/backtest/acceptance_strategies/` and are run by `tests/backtest/test_acceptance_backtests_ci.py`).
+
+CI uses the same env-var model as local/prod backtests (ThetaData via the remote Data Downloader + S3 cache enabled),
+but enforces one additional invariant: the dev S3 cache is expected to already be warm for the canonical windows.
+So any downloader/queue usage during the CI acceptance suite is treated as a cache regression and fails the test.
+
 ### 1) Deep Dip Calls (GOOG; file name says AAPL)
 
 - Demo file: `Strategy Library/Demos/AAPL Deep Dip Calls (Copy 4).py`

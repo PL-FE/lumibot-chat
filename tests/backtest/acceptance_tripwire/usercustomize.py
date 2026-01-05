@@ -17,18 +17,20 @@ We intentionally use `usercustomize` (not `sitecustomize`) so we do **not** shad
 own `sitecustomize.py`, which configures the interpreter's prefix and global site-packages.
 
 When `LUMIBOT_ACCEPTANCE_TRIPWIRE=1` and `DATADOWNLOADER_BASE_URL` is set, this module patches
-common HTTP entry points and raises a RuntimeError as soon as a request targets the downloader.
+common HTTP entry points and aborts the subprocess as soon as a request targets the downloader.
 
 Notes
 -----
 - This must not change production LumiBot behavior. It only applies to the subprocesses spawned
   by `tests/backtest/test_acceptance_backtests_ci.py`.
-- The raised error message is careful to avoid printing secret headers (API keys).
+- The exit message is careful to avoid printing secret headers (API keys).
 """
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from urllib.parse import urlparse
 
 
@@ -82,19 +84,34 @@ def _install_tripwire() -> None:
     if not normalized_base_url:
         return
 
-    def _raise(method: str, url: str) -> None:
+    def _raise(method: str, url: str, *, payload: object | None = None) -> None:
         parsed = urlparse(url)
         safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         if parsed.query:
             safe_url = f"{safe_url}?{parsed.query}"
-        # Fail-fast in the subprocess. Many LumiBot code paths catch `Exception` and continue
-        # (treating missing remote data as a placeholder), which can turn a "cache miss" into a
-        # multi-minute hang. `SystemExit` is not caught by `except Exception`, so any downloader
-        # call immediately aborts the run and surfaces the regression.
-        raise SystemExit(
+        message = (
             "[ACCEPTANCE][TRIPWIRE] Attempted to call Data Downloader "
             f"({method} {safe_url}). Expected fully warm S3 cache; downloader usage is forbidden in acceptance tests."
         )
+        if payload is not None:
+            try:
+                rendered = json.dumps(payload, sort_keys=True, default=str)
+            except Exception:
+                rendered = repr(payload)
+            if len(rendered) > 2000:
+                rendered = rendered[:2000] + "…"
+            message = f"{message}\n[ACCEPTANCE][TRIPWIRE] request_payload={rendered}"
+        # Fail-fast in the subprocess.
+        #
+        # Some Strategy Library demos (and occasionally framework code) use broad exception handling.
+        # Even `SystemExit` can be swallowed by a bare `except:`; use a hard process-exit so the
+        # acceptance subprocess cannot "continue with missing data" and produce misleading results.
+        sys.stderr.write(message + "\n")
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(86)  # non-zero exit code so the harness fails reliably
 
     # Patch requests (used by the downloader client).
     try:
@@ -104,7 +121,16 @@ def _install_tripwire() -> None:
 
         def patched_request(self, method, url, *args, **kwargs):  # type: ignore[no-untyped-def]
             if isinstance(url, str) and _matches_downloader(url, normalized_base_url):
-                _raise(str(method), url)
+                body = kwargs.get("json")
+                if isinstance(body, dict):
+                    # Queue submissions are usually of the form {"path": "...", "params": {...}, ...}.
+                    # Only include request-shape metadata (never headers) so the failure is actionable.
+                    body = {
+                        k: body.get(k)
+                        for k in ("path", "query_params", "params", "correlation", "position")
+                        if k in body
+                    }
+                _raise(str(method), url, payload=body)
             return original_request(self, method, url, *args, **kwargs)
 
         requests.sessions.Session.request = patched_request  # type: ignore[assignment]

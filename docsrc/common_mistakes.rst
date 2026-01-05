@@ -3,10 +3,6 @@ Common Mistakes and How to Avoid Them
 
 This page documents the most common mistakes made when writing Lumibot strategies, along with the correct patterns to use instead.
 
-.. contents:: Mistakes by Category
-   :local:
-   :depth: 2
-
 Critical Mistakes (Will Break Your Strategy)
 --------------------------------------------
 

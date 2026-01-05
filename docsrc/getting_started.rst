@@ -1,12 +1,12 @@
-What is Lumibot?
-****************
+Getting Started
+***************
 
 Lumibot is a Python library that allows you to create trading strategies and backtest them. It also allows you to run your strategies live on a paper trading account. You can also use Lumibot to run your strategies live on a real trading account, but we recommend you start with paper trading first.
 
 Lumibot is designed to be easy to use, but also powerful. It is designed to be used by both beginners and advanced users. It is also designed to be flexible, so you can use it to create any kind of trading strategy you want. It is also designed to be fast, so you can backtest your strategies quickly.
 
 Need Help Building Strategies?
-******************************
+==============================
 
 Our **AI agent** was built specifically for LumiBot and can help you create strategies in minutes—no coding required. Just describe your strategy in plain English, and the AI generates the Python code for you.
 
@@ -22,7 +22,7 @@ At `BotSpot <https://www.botspot.trade/?utm_source=documentation&utm_medium=refe
    `Claim your free trial <https://www.botspot.trade/?utm_source=documentation&utm_medium=referral&utm_campaign=lumibot_getting_started>`_ while spots last at BotSpot.trade.
 
 Getting Started With Lumibot
-*****************************
+============================
 
 Welcome to Lumibot! This guide will help you get started with Lumibot. We hope you enjoy it!
 
@@ -212,7 +212,7 @@ Here it is all together:
 Or you can download the file here: `https://github.com/Lumiwealth/lumibot/blob/dev/lumibot/example_strategies/simple_start_single_file.py <https://github.com/Lumiwealth/lumibot/blob/dev/lumibot/example_strategies/simple_start_single_file.py>`_.
 
 Adding Trading Fees
-*******************
+===================
 
 If you want to add trading fees to your backtesting, you can do so by setting up your backtesting like this:
 
@@ -237,7 +237,7 @@ If you want to add trading fees to your backtesting, you can do so by setting up
     )
 
 Profiling to Improve Performance
-********************************
+================================
 
 Sometimes you may want to profile your code to see where it is spending the most time and improve performance.
 

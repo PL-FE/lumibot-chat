@@ -4,16 +4,37 @@
   "projectTitle": "Lumibot",
   "description": "Python trading and backtesting framework for stocks, options, crypto, and futures. Supports Alpaca, Interactive Brokers, Tradier, Schwab, ThetaData, Yahoo Finance, and Polygon.",
   "folders": [
-    "lumibot",
-    "docsrc"
+    ".",
+    "docs"
   ],
   "excludeFolders": [
-    "docsrc/_build",
-    "lumibot/cache",
+    "docsrc",
+    "lumibot",
     "tests",
     "generated-docs",
+    ".github",
     "__pycache__",
-    ".pytest_cache"
+    ".pytest_cache",
+    ".git"
+  ],
+  "excludeFiles": [
+    "*.jar",
+    "*.pyc",
+    "*.pyo",
+    "*.png",
+    "*.webp",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.py",
+    "*.rst",
+    "*.csv",
+    "*.json",
+    "*.toml",
+    "*.cfg",
+    "*.ini",
+    "*.yml",
+    "*.yaml"
   ],
   "rules": [
     "CRITICAL: Never use datetime.now() or datetime.today() in strategies - always use self.get_datetime() for backtesting compatibility",

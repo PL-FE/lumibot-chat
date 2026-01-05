@@ -26,7 +26,13 @@ The acceptance suite lives in:
 
 The canonical acceptance suite definition (strategies, windows, and what to validate) lives in:
 
-- `docs/acceptance/ACCEPTANCE_BACKTESTS.md`
+- `docs/ACCEPTANCE_BACKTESTS.md`
+
+CI runs these same demos (as normal `pytest` tests under `tests/backtest/`) via:
+- `tests/backtest/test_acceptance_backtests_ci.py`
+
+Acceptance CI has one extra invariant beyond “metrics match”: the S3 cache is expected to be warm for the canonical windows,
+so any Data Downloader / queue usage is treated as a failure signal (cache regression).
 
 The latest “why are we changing this?” investigation context (stalls/perf history) lives in the session handoffs:
 

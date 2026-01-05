@@ -24,3 +24,14 @@ help:
 	@rm -rf ../generated-docs
 	@mkdir -p ../generated-docs
 	@cp -a _build/html/. ../generated-docs
+
+# Copy generated llms.txt and llms-full.txt to repo root for Context7/AI discoverability
+llms:
+	@echo "Copying generated llms.txt and llms-full.txt to repo root..."
+	@cp _build/html/llms.txt ../llms.txt
+	@cp _build/html/llms-full.txt ../llms-full.txt
+	@echo "llms.txt and llms-full.txt updated at repo root"
+
+# Build HTML and update llms files in one step
+html-llms: html llms
+	@echo "Docs built and llms files updated"

@@ -1,54 +1,163 @@
-# LumiBot
+# Lumibot
 
-> Trading and backtesting framework supporting multiple data sources (Yahoo, ThetaData, Polygon) and brokers (Alpaca, Interactive Brokers, Tradier).
+> Lumibot is a Python trading and backtesting framework for stocks, options, crypto, and futures.
+> It supports multiple brokers (Alpaca, Interactive Brokers, Tradier, Schwab) and data sources (Yahoo, ThetaData, Polygon).
+> 
+> CRITICAL RULES FOR CODE GENERATION:
+> - NEVER use datetime.now() or datetime.today() - always use self.get_datetime() for backtesting compatibility
+> - NEVER use 'from __future__ import annotations' - it breaks Lumibot's type checking
+> - Use self.vars for persistent variables across lifecycle methods (e.g., self.vars.my_variable = value)
+> - Use self.log_message() instead of print() for proper logging
+> - Get current prices with self.get_last_price(asset) - returns None if unavailable
+> - Submit orders with self.submit_order(order) where order = self.create_order(asset, quantity, side)
+> - Access portfolio with self.portfolio_value, self.cash, self.positions
+> - Implement on_trading_iteration() for main strategy logic - runs once per bar/iteration
+> - For options: Use self.create_asset(symbol, asset_type=Asset.AssetType.OPTION, expiration=date, strike=price, right='call'|'put')
 
-## Getting Started
+## Docs
 
-- [AGENTS.md](./AGENTS.md): AI assistant instructions - ThetaData rules, dev credentials, multi-agent collaboration
-- [CLAUDE.md](./CLAUDE.md): Claude Code-specific instructions with MCP server recommendations
-- [docs/README.md](./docs/README.md): Documentation index - start here for docs navigation
-
-## Core Documentation
-
-- [docs/BACKTESTING_ARCHITECTURE.md](./docs/BACKTESTING_ARCHITECTURE.md): **START HERE** - Data flow diagrams, component relationships, how backtests execute
-- [docs/ENV_VARS.md](./docs/ENV_VARS.md): Complete environment variable reference with defaults and examples
-- [docs/ACCEPTANCE_BACKTESTS.md](./docs/ACCEPTANCE_BACKTESTS.md): Release gate criteria - what must pass before deployment
-
-## Data Sources
-
-- [docs/THETADATA_CACHE_VALIDATION.md](./docs/THETADATA_CACHE_VALIDATION.md): ThetaData caching, cache invalidation, version bumping
-- [docs/REMOTE_CACHE.md](./docs/REMOTE_CACHE.md): S3 remote cache architecture and configuration
-- [docs/DATABENTO_POLARS_OVERVIEW.md](./docs/DATABENTO_POLARS_OVERVIEW.md): Databento integration and Polars dataframe usage
-
-## Operations
-
-- [CHANGELOG.md](./CHANGELOG.md): **DEPLOYMENT HISTORY** - Must be updated every release
-- [docs/PRODLIKE_LOCAL_BACKTEST_RUNS.md](./docs/PRODLIKE_LOCAL_BACKTEST_RUNS.md): Running production-like backtests locally
-- [docs/BACKTESTING_TESTS.md](./docs/BACKTESTING_TESTS.md): Test suite organization and running tests
-
-## Specialized Topics
-
-- [docs/FUTURES_ROLL_POLICY.md](./docs/FUTURES_ROLL_POLICY.md): Futures contract rolling logic and configuration
-
-## Cross-Session Coordination
-
-- [docs/handoffs/](./docs/handoffs/): Handoff notes between AI sessions (YYYY-MM-DD_TOPIC.md format)
-- [docs/investigations/](./docs/investigations/): Deep dives and root-cause analyses (YYYY-MM-DD_TOPIC.md format)
-
-## Key Source Locations
-
-- `lumibot/` - Main library source code
-- `lumibot/backtesting/` - Backtesting engine implementations
-- `lumibot/brokers/` - Broker integrations (Alpaca, IBKR, Tradier, etc.)
-- `lumibot/data_sources/` - Data source implementations (Yahoo, ThetaData, Polygon)
-- `lumibot/tools/thetadata_helper.py` - ThetaData corporate actions, split adjustments
-- `lumibot/strategies/` - Strategy base classes
-- `tests/` - Test suite
-
-## Critical Rules
-
-1. **NEVER run ThetaTerminal locally with production credentials** - kills production connections
-2. **Use Data Downloader** at `http://data-downloader.lumiwealth.com:8080` for backtests
-3. **Update CHANGELOG.md** with every deployment
-4. **File naming**: UPPERCASE with underscores (e.g., `BACKTESTING_ARCHITECTURE.md`)
-5. **Date-first** for handoffs/investigations (e.g., `2026-01-04_TOPIC.md`)
+- [Lumibot: Backtesting and Algorithmic Trading Library](/_sources/index.rst.txt)
+- [Getting Started](/_sources/getting_started.rst.txt)
+- [Lifecycle Methods](/_sources/lifecycle_methods.rst.txt)
+- [Summary](/_sources/lifecycle_methods.summary.rst.txt)
+- [def initialize](/_sources/lifecycle_methods.initialize.rst.txt)
+- [def on_trading_iteration](/_sources/lifecycle_methods.on_trading_iteration.rst.txt)
+- [def before_market_opens](/_sources/lifecycle_methods.before_market_opens.rst.txt)
+- [def before_starting_trading](/_sources/lifecycle_methods.before_starting_trading.rst.txt)
+- [def before_market_closes](/_sources/lifecycle_methods.before_market_closes.rst.txt)
+- [def after_market_closes](/_sources/lifecycle_methods.after_market_closes.rst.txt)
+- [def on_abrupt_closing](/_sources/lifecycle_methods.on_abrupt_closing.rst.txt)
+- [def on_bot_crash](/_sources/lifecycle_methods.on_bot_crash.rst.txt)
+- [def trace_stats](/_sources/lifecycle_methods.trace_stats.rst.txt)
+- [def on_new_order](/_sources/lifecycle_methods.on_new_order.rst.txt)
+- [def on_partially_filled_order](/_sources/lifecycle_methods.on_partially_filled_order.rst.txt)
+- [def on_filled_order](/_sources/lifecycle_methods.on_filled_order.rst.txt)
+- [def on_canceled_order](/_sources/lifecycle_methods.on_canceled_order.rst.txt)
+- [def on_parameters_updated](/_sources/lifecycle_methods.on_parameters_updated.rst.txt)
+- [Strategy Methods](/_sources/strategy_methods.rst.txt)
+- [Order Management](/_sources/strategy_methods.orders.rst.txt)
+- [self.create_order](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.create_order.rst.txt)
+- [self.submit_order](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.submit_order.rst.txt)
+- [self.submit_orders](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.submit_orders.rst.txt)
+- [self.cancel_order](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.cancel_order.rst.txt)
+- [self.cancel_orders](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.cancel_orders.rst.txt)
+- [self.cancel_open_orders](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.cancel_open_orders.rst.txt)
+- [self.get_selling_order](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.get_selling_order.rst.txt)
+- [self.sell_all](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.sell_all.rst.txt)
+- [self.get_order](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.get_order.rst.txt)
+- [self.get_orders](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.get_orders.rst.txt)
+- [self.get_asset_potential_total](/_sources/strategy_methods.orders/lumibot.strategies.strategy.Strategy.get_asset_potential_total.rst.txt)
+- [Account Management](/_sources/strategy_methods.account.rst.txt)
+- [self.get_portfolio_value](/_sources/strategy_methods.account/lumibot.strategies.strategy.Strategy.get_portfolio_value.rst.txt)
+- [self.get_cash](/_sources/strategy_methods.account/lumibot.strategies.strategy.Strategy.get_cash.rst.txt)
+- [self.get_position](/_sources/strategy_methods.account/lumibot.strategies.strategy.Strategy.get_position.rst.txt)
+- [self.get_positions](/_sources/strategy_methods.account/lumibot.strategies.strategy.Strategy.get_positions.rst.txt)
+- [Data](/_sources/strategy_methods.data.rst.txt)
+- [self.get_last_price](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_last_price.rst.txt)
+- [self.get_last_prices](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_last_prices.rst.txt)
+- [self.get_historical_prices](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_historical_prices.rst.txt)
+- [self.get_historical_prices_for_assets](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_historical_prices_for_assets.rst.txt)
+- [self.get_quote](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_quote.rst.txt)
+- [self.get_yesterday_dividend](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_yesterday_dividend.rst.txt)
+- [self.get_next_trading_day](/_sources/strategy_methods.data/lumibot.strategies.strategy.Strategy.get_next_trading_day.rst.txt)
+- [Chart Functions](/_sources/strategy_methods.chart.rst.txt)
+- [self.add_marker](/_sources/strategy_methods.chart/lumibot.strategies.strategy.Strategy.add_marker.rst.txt)
+- [self.add_line](/_sources/strategy_methods.chart/lumibot.strategies.strategy.Strategy.add_line.rst.txt)
+- [self.get_markers_df](/_sources/strategy_methods.chart/lumibot.strategies.strategy.Strategy.get_markers_df.rst.txt)
+- [self.get_lines_df](/_sources/strategy_methods.chart/lumibot.strategies.strategy.Strategy.get_lines_df.rst.txt)
+- [Parameters](/_sources/strategy_methods.parameters.rst.txt)
+- [self.get_parameters](/_sources/strategy_methods.account/lumibot.strategies.strategy.Strategy.get_parameters.rst.txt)
+- [self.set_parameters](/_sources/strategy_methods.account/lumibot.strategies.strategy.Strategy.set_parameters.rst.txt)
+- [Options](/_sources/strategy_methods.options.rst.txt)
+- [self.get_chain](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_chain.rst.txt)
+- [self.get_chains](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_chains.rst.txt)
+- [self.get_greeks](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_greeks.rst.txt)
+- [self.get_strikes](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_strikes.rst.txt)
+- [self.get_expiration](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_expiration.rst.txt)
+- [self.get_multiplier](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_multiplier.rst.txt)
+- [self.options_expiry_to_datetime_date](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.options_expiry_to_datetime_date.rst.txt)
+- [self.get_next_trading_day](/_sources/strategy_methods.options/lumibot.strategies.strategy.Strategy.get_next_trading_day.rst.txt)
+- [DateTime](/_sources/strategy_methods.datetime.rst.txt)
+- [self.get_datetime](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_datetime.rst.txt)
+- [self.get_timestamp](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_timestamp.rst.txt)
+- [self.get_round_minute](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_round_minute.rst.txt)
+- [self.get_last_minute](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_last_minute.rst.txt)
+- [self.get_round_day](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_round_day.rst.txt)
+- [self.get_last_day](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_last_day.rst.txt)
+- [self.get_datetime_range](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.get_datetime_range.rst.txt)
+- [self.localize_datetime](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.localize_datetime.rst.txt)
+- [self.to_default_timezone](/_sources/strategy_methods.datetime/lumibot.strategies.strategy.Strategy.to_default_timezone.rst.txt)
+- [Miscellaneous](/_sources/strategy_methods.misc.rst.txt)
+- [self.log_message](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.log_message.rst.txt)
+- [self.sleep](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.sleep.rst.txt)
+- [self.set_market](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.set_market.rst.txt)
+- [self.update_parameters](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.update_parameters.rst.txt)
+- [self.get_parameters](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.get_parameters.rst.txt)
+- [self.await_market_to_close](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.await_market_to_close.rst.txt)
+- [self.await_market_to_open](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.await_market_to_open.rst.txt)
+- [self.wait_for_order_registration](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.wait_for_order_registration.rst.txt)
+- [self.wait_for_order_execution](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.wait_for_order_execution.rst.txt)
+- [self.wait_for_orders_registration](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.wait_for_orders_registration.rst.txt)
+- [self.wait_for_orders_execution](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.wait_for_orders_execution.rst.txt)
+- [self.register_cron_callback](/_sources/strategy_methods.misc/lumibot.strategies.strategy.Strategy.register_cron_callback.rst.txt)
+- [Strategy Properties](/_sources/strategy_properties.rst.txt)
+- [self.cash](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.cash.rst.txt)
+- [self.portfolio_value](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.portfolio_value.rst.txt)
+- [self.first_iteration](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.first_iteration.rst.txt)
+- [self.is_backtesting](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.is_backtesting.rst.txt)
+- [self.quote_asset](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.quote_asset.rst.txt)
+- [self.name](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.name.rst.txt)
+- [self.initial_budget](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.initial_budget.rst.txt)
+- [self.minutes_before_closing](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.minutes_before_closing.rst.txt)
+- [self.minutes_before_opening](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.minutes_before_opening.rst.txt)
+- [self.sleeptime](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.sleeptime.rst.txt)
+- [self.last_on_trading_iteration_datetime](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.last_on_trading_iteration_datetime.rst.txt)
+- [self.timezone](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.timezone.rst.txt)
+- [self.pytz](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.pytz.rst.txt)
+- [self.unspent_money](/_sources/strategy_properties/lumibot.strategies.strategy.Strategy.unspent_money.rst.txt)
+- [Entities](/_sources/entities.rst.txt)
+- [Asset](/_sources/entities.asset.rst.txt)
+- [Bars](/_sources/entities.bars.rst.txt)
+- [Data](/_sources/entities.data.rst.txt)
+- [Order](/_sources/entities.order.rst.txt)
+- [Position](/_sources/entities.position.rst.txt)
+- [Trading Fee](/_sources/entities.trading_fee.rst.txt)
+- [Trading Slippage](/_sources/entities.trading_slippage.rst.txt)
+- [Smart Limit Config](/_sources/entities.smart_limit.rst.txt)
+- [Chains Entity](/_sources/entities.chains.rst.txt)
+- [Backtesting](/_sources/backtesting.rst.txt)
+- [How To Backtest](/_sources/backtesting.how_to_backtest.rst.txt)
+- [Backtesting Function](/_sources/backtesting.backtesting_function.rst.txt)
+- [Yahoo](/_sources/backtesting.yahoo.rst.txt)
+- [Pandas (CSV or other data)](/_sources/backtesting.pandas.rst.txt)
+- [Polygon.io Backtesting](/_sources/backtesting.polygon.rst.txt)
+- [DataBento Backtesting](/_sources/backtesting.databento.rst.txt)
+- [ThetaData Backtesting](/_sources/backtesting.thetadata.rst.txt)
+- [Tearsheet HTML](/_sources/backtesting.tearsheet_html.rst.txt)
+- [Trades Files](/_sources/backtesting.trades_files.rst.txt)
+- [Indicators Files](/_sources/backtesting.indicators_files.rst.txt)
+- [Logs CSV](/_sources/backtesting.logs_csv.rst.txt)
+- [Brokers](/_sources/brokers.rst.txt)
+- [Alpaca](/_sources/brokers.alpaca.rst.txt)
+- [Bitunix](/_sources/brokers.bitunix.rst.txt)
+- [Crypto Brokers (Using CCXT)](/_sources/brokers.ccxt.rst.txt)
+- [Interactive Brokers](/_sources/brokers.interactive_brokers.rst.txt)
+- [Interactive Brokers Legacy](/_sources/brokers.interactive_brokers_legacy.rst.txt)
+- [ProjectX](/_sources/brokers.projectx.rst.txt)
+- [Schwab](/_sources/brokers.schwab.rst.txt)
+- [Tradier](/_sources/brokers.tradier.rst.txt)
+- [Tradovate](/_sources/brokers.tradovate.rst.txt)
+- [Reference](/_sources/reference.rst.txt)
+- [Variable Backup & Restore](/_sources/vars.rst.txt)
+- [Futures Trading](/_sources/futures.rst.txt)
+- [Smart Limit Orders](/_sources/smart_limit.rst.txt)
+- [Environment Variables](/_sources/environment_variables.rst.txt)
+- [Code Examples](/_sources/examples.rst.txt)
+- [Deployment Guide](/_sources/deployment.rst.txt)
+- [Common Mistakes and How to Avoid Them](/_sources/common_mistakes.rst.txt)
+- [Frequently Asked Questions (FAQ)](/_sources/faq.rst.txt)
+- [Backtesting](/_sources/lumibot.backtesting.rst.txt)
+- [Data Sources](/_sources/lumibot.data_sources.rst.txt)
+- [Strategies](/_sources/lumibot.strategies.rst.txt)
+- [Traders](/_sources/lumibot.traders.rst.txt)
+- [self.pytz](/_sources/strategy_properties/lumibot.strategies.strategy.pytz.rst.txt)

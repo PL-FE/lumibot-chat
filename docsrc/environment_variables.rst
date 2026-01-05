@@ -187,3 +187,351 @@ LUMIBOT_CACHE_S3_ACCESS_KEY_ID / LUMIBOT_CACHE_S3_SECRET_ACCESS_KEY / LUMIBOT_CA
 - Values: provided by your runtime environment (**do not hardcode**).
 
 For cache key layout and validation workflow, see :doc:`Backtesting <backtesting>` and the engineering notes in ``docs/remote_cache.md``.
+
+Strategy configuration
+----------------------
+
+STRATEGY_NAME
+^^^^^^^^^^^^^
+
+- Purpose: Name for the strategy to be used in database logging and identification.
+- Values: Any string.
+
+MARKET
+^^^^^^
+
+- Purpose: Market to be traded (used for market calendar selection).
+- Values: ``NYSE``, ``NASDAQ``, ``24/7`` (crypto), etc.
+
+HIDE_TRADES / HIDE_POSITIONS
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Hide trade and position information in logs/output.
+- Values: ``true`` / ``false`` (string).
+- Default: ``false``.
+
+DISCORD_WEBHOOK_URL
+^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Discord webhook URL for notifications.
+- Values: Full Discord webhook URL (**do not hardcode in public repos**).
+
+Database configuration
+----------------------
+
+DB_CONNECTION_STR
+^^^^^^^^^^^^^^^^^
+
+- Purpose: PostgreSQL connection string for account history and strategy persistence.
+- Values: ``postgresql://user:password@host:port/database`` (**do not hardcode**).
+- Note: Replaces deprecated ``ACCOUNT_HISTORY_DB_CONNECTION_STR``.
+
+LOG_BACKTEST_PROGRESS_TO_FILE
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Log backtest progress to a file instead of stdout.
+- Values: ``true`` / ``false`` (string).
+
+Broker selection
+----------------
+
+TRADING_BROKER
+^^^^^^^^^^^^^^
+
+- Purpose: Explicitly specify which broker to use for live trading.
+- Values (case-insensitive):
+  - ``alpaca``, ``tradier``, ``ccxt``, ``coinbase``, ``kraken``
+  - ``ib``, ``interactivebrokers``, ``ibrest``, ``interactivebrokersrest``
+  - ``tradovate``, ``schwab``, ``bitunix``
+  - ``projectx``, ``projectx-topstepx``, ``projectx-topone``, etc.
+- Note: If not set, broker is auto-detected based on available credentials.
+
+DATA_SOURCE
+^^^^^^^^^^^
+
+- Purpose: Explicitly specify which data source to use.
+- Values (case-insensitive):
+  - ``alpaca``, ``tradier``, ``polygon``, ``yahoo``, ``thetadata``, ``databento``
+  - ``ccxt``, ``coinbase``, ``kraken``, ``schwab``, ``bitunix``, ``projectx``
+- Note: If not set, uses broker's default data source.
+
+Alpaca broker
+-------------
+
+ALPACA_API_KEY / ALPACA_API_SECRET
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Alpaca API credentials for trading.
+- Values: Obtain from Alpaca dashboard (**do not hardcode**).
+
+ALPACA_OAUTH_TOKEN
+^^^^^^^^^^^^^^^^^^
+
+- Purpose: OAuth token (alternative to API key/secret).
+- Values: OAuth token (**do not hardcode**).
+- Note: Either OAuth token OR API key/secret must be provided, not both.
+
+ALPACA_IS_PAPER
+^^^^^^^^^^^^^^^
+
+- Purpose: Toggle between paper and live trading.
+- Values: ``true`` (paper) / ``false`` (live).
+- Default: ``true`` (paper trading).
+
+Tradier broker
+--------------
+
+TRADIER_ACCESS_TOKEN
+^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Tradier API access token.
+- Values: Obtain from Tradier dashboard (**do not hardcode**).
+
+TRADIER_ACCOUNT_NUMBER
+^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Tradier account number for trading.
+- Values: Your Tradier account number.
+
+TRADIER_IS_PAPER
+^^^^^^^^^^^^^^^^
+
+- Purpose: Toggle between paper and live trading.
+- Values: ``true`` (paper) / ``false`` (live).
+- Default: ``true`` (paper trading).
+
+Interactive Brokers
+-------------------
+
+INTERACTIVE_BROKERS_PORT
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Socket port for IB Gateway/TWS connection.
+- Values: Integer (e.g., ``7497`` for paper, ``7496`` for live).
+
+INTERACTIVE_BROKERS_CLIENT_ID
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Client ID for IB connection (must be unique per connection).
+- Values: Integer.
+
+INTERACTIVE_BROKERS_IP
+^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: IP address of IB Gateway/TWS.
+- Values: IP address string.
+- Default: ``127.0.0.1``.
+
+IB_SUBACCOUNT
+^^^^^^^^^^^^^
+
+- Purpose: Sub-account identifier for IB multi-account setups.
+- Values: Account identifier string.
+
+Interactive Brokers REST
+------------------------
+
+IB_USERNAME / IB_PASSWORD
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Credentials for IB REST API authentication.
+- Values: IB credentials (**do not hardcode**).
+
+IB_ACCOUNT_ID
+^^^^^^^^^^^^^
+
+- Purpose: Account ID for IB REST API.
+- Values: Account identifier string.
+
+IB_API_URL
+^^^^^^^^^^
+
+- Purpose: Base URL for IB REST API endpoint.
+- Values: URL string.
+
+Schwab broker
+-------------
+
+SCHWAB_ACCOUNT_NUMBER
+^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Schwab account number (required).
+- Values: Account number string.
+
+SCHWAB_APP_KEY / SCHWAB_APP_SECRET
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Schwab API application credentials.
+- Values: Obtain from Schwab developer portal (**do not hardcode**).
+
+SCHWAB_TOKEN
+^^^^^^^^^^^^
+
+- Purpose: Optional pre-existing OAuth token.
+- Values: Token string (**do not hardcode**).
+
+SCHWAB_BACKEND_CALLBACK_URL
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: OAuth callback URL for authentication flow.
+- Values: URL string.
+
+Tradovate broker
+----------------
+
+TRADOVATE_USERNAME / TRADOVATE_DEDICATED_PASSWORD
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Tradovate credentials.
+- Values: Tradovate credentials (**do not hardcode**).
+
+TRADOVATE_APP_ID / TRADOVATE_APP_VERSION
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Application identification for Tradovate API.
+- Values: String identifiers.
+- Default: ``Lumibot`` / ``1.0``.
+
+TRADOVATE_CID / TRADOVATE_SECRET
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Client credentials for Tradovate OAuth.
+- Values: Obtain from Tradovate (**do not hardcode**).
+
+TRADOVATE_IS_PAPER
+^^^^^^^^^^^^^^^^^^
+
+- Purpose: Toggle between paper and live trading.
+- Values: ``true`` (paper) / ``false`` (live).
+- Default: ``true``.
+
+TRADOVATE_MD_URL
+^^^^^^^^^^^^^^^^
+
+- Purpose: Market data URL override.
+- Values: URL string.
+- Default: ``https://md.tradovateapi.com/v1``.
+
+Crypto brokers (CCXT)
+---------------------
+
+KRAKEN_API_KEY / KRAKEN_API_SECRET
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Kraken exchange API credentials.
+- Values: Obtain from Kraken (**do not hardcode**).
+
+COINBASE_API_KEY_NAME / COINBASE_PRIVATE_KEY
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Coinbase Advanced Trade API credentials.
+- Values: Obtain from Coinbase (**do not hardcode**).
+
+COINBASE_API_PASSPHRASE
+^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: API passphrase (if required by Coinbase).
+- Values: Passphrase string (**do not hardcode**).
+
+COINBASE_SANDBOX
+^^^^^^^^^^^^^^^^
+
+- Purpose: Use Coinbase sandbox environment.
+- Values: ``true`` / ``false``.
+- Default: ``false``.
+
+Bitunix broker
+--------------
+
+BITUNIX_API_KEY / BITUNIX_API_SECRET
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Bitunix exchange API credentials.
+- Values: Obtain from Bitunix (**do not hardcode**).
+
+BITUNIX_TRADING_MODE
+^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Trading mode selection.
+- Values: ``FUTURES`` / ``SPOT``.
+- Default: ``FUTURES``.
+
+ProjectX brokers
+----------------
+
+ProjectX supports multiple prop trading firms. Each firm uses a unique prefix pattern.
+
+PROJECTX_FIRM
+^^^^^^^^^^^^^
+
+- Purpose: Select which ProjectX firm to use.
+- Values: ``TOPSTEPX``, ``TOPONE``, ``TICKTICKTRADER``, ``BULENOX``, ``E8X``, etc.
+
+PROJECTX_{FIRM}_API_KEY
+^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: API key for the specified firm.
+- Example: ``PROJECTX_TOPSTEPX_API_KEY``, ``PROJECTX_TOPONE_API_KEY``
+- Values: Obtain from firm's platform (**do not hardcode**).
+
+PROJECTX_{FIRM}_USERNAME
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Username for the specified firm.
+- Example: ``PROJECTX_TOPSTEPX_USERNAME``
+- Values: Your username on the firm's platform.
+
+PROJECTX_{FIRM}_PREFERRED_ACCOUNT_NAME
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Preferred account name when multiple accounts exist.
+- Example: ``PROJECTX_TOPSTEPX_PREFERRED_ACCOUNT_NAME``
+- Values: Account name string.
+
+Data source credentials
+-----------------------
+
+POLYGON_API_KEY
+^^^^^^^^^^^^^^^
+
+- Purpose: Polygon.io API key for market data.
+- Values: Obtain from Polygon.io (**do not hardcode**).
+
+POLYGON_MAX_MEMORY_BYTES
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Hard limit on memory Polygon can use for caching.
+- Values: Integer (bytes).
+
+THETADATA_USERNAME / THETADATA_PASSWORD
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: ThetaData API credentials.
+- Values: Obtain from ThetaData (**do not hardcode**).
+- Note: Required for ThetaData backtesting and live data.
+
+DATABENTO_API_KEY
+^^^^^^^^^^^^^^^^^
+
+- Purpose: DataBento API key for market data.
+- Values: Obtain from DataBento (**do not hardcode**).
+
+DATABENTO_TIMEOUT
+^^^^^^^^^^^^^^^^^
+
+- Purpose: Request timeout for DataBento API calls.
+- Values: Integer (seconds).
+- Default: ``30``.
+
+DATABENTO_MAX_RETRIES
+^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Maximum retry attempts for failed DataBento requests.
+- Values: Integer.
+- Default: ``3``.
+
+LUMIWEALTH_API_KEY
+^^^^^^^^^^^^^^^^^^
+
+- Purpose: LumiWealth platform API key (for enterprise features).
+- Values: Obtain from LumiWealth (**do not hardcode**).
