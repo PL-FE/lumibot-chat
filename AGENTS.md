@@ -123,6 +123,15 @@ Failure to follow these rules will break everyone's workflows—double-check env
 
 **If changelog wasn't updated, add a retroactive entry before the next deployment.**
 
+### GitHub Release Markers (RECOMMENDED)
+
+To keep deployments traceable (and easy to diff):
+
+- **Tag the deploy commit** with the semantic version (annotated tag): `vX.Y.Z`
+- **Push the tag** to GitHub
+- **Create a GitHub Release** from that tag and paste the corresponding `CHANGELOG.md` entry
+- **PR title convention:** `X.Y.Z` (or `Release X.Y.Z`) so the version is visible in the PR list
+
 ## Scoped instruction files
 - `tests/AGENTS.md` — rules for everything under `tests/` (legacy-test authority policy).
 

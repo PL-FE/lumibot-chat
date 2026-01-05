@@ -109,6 +109,15 @@ Before any deployment:
 
 **If you forget to update the changelog, you MUST add a retroactive entry before the next deployment.**
 
+## GitHub Release Markers (RECOMMENDED)
+
+To keep deployments traceable (and easy to diff):
+
+- Tag the deploy commit with the semantic version (annotated tag): `vX.Y.Z`
+- Push the tag to GitHub
+- Create a GitHub Release from that tag and paste the corresponding `CHANGELOG.md` entry
+- PR title convention: `X.Y.Z` (or `Release X.Y.Z`) so the version is visible in the PR list
+
 ## Documentation Layout
 
 - `docs/` = hand-authored markdown (architecture, investigations, handoffs, ops notes)
