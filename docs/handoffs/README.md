@@ -1,6 +1,11 @@
-# Handoffs
+# Handoffs (local/private)
 
-This folder contains session handoffs intended to let a new contributor (human or agent) pick up work without re-discovering context.
+This folder is for **local/private** session handoffs intended to let a new contributor (human or agent) pick up work without re-discovering context.
+
+Going forward, new handoff files should **not** be committed to git (see `docs/handoffs/.gitignore`). If something is worth sharing publicly, convert it into:
+- a canonical doc under `docs/`, or
+- an investigation under `docs/investigations/`, or
+- a test, script, or code comment where it belongs.
 
 ## Naming convention (required)
 
