@@ -13,6 +13,15 @@ This page documents environment variables used by LumiBot, with an emphasis on *
 
 ## Backtesting selection + dates
 
+### `LUMIBOT_DISABLE_DOTENV`
+- Purpose: Disable recursive `.env` discovery (`os.walk`) at startup.
+- Values: truthy enables (`1`, `true`, `yes`); unset/`0` disables.
+- Default: disabled.
+- Why it matters:
+  - Recursive `.env` scanning can add startup latency and can accidentally load the wrong `.env` when running in a directory with nested repos.
+  - In production/BotManager backtests we rely on injected environment variables, so `.env` discovery should be off.
+- Where: `lumibot/credentials.py`
+
 ### `IS_BACKTESTING`
 - Purpose: Signals backtesting mode for certain code paths.
 - Values: `True` / `False` (string).

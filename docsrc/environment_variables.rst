@@ -12,6 +12,16 @@ LumiBot supports configuring many behaviors via environment variables. This page
 Backtesting configuration
 ------------------------
 
+LUMIBOT_DISABLE_DOTENV
+^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Disable recursive ``.env`` discovery (directory scanning) at startup.
+- Values: truthy enables (``1``, ``true``, ``yes``); unset/``0`` disables.
+- Default: disabled.
+- Notes:
+  - Recursive ``.env`` scanning can add startup latency and can accidentally load the wrong ``.env`` when running in a directory with nested repos.
+  - In production/BotManager backtests we rely on injected environment variables, so ``.env`` discovery should be off.
+
 IS_BACKTESTING
 ^^^^^^^^^^^^^^
 
