@@ -1,7 +1,7 @@
 # Production vs Local Parity (Warm S3) — 2026-01-05
 > Evidence-backed comparison of warm-cache wall times (prod vs local) and where the remaining gap comes from.
 
-**Last Updated:** 2026-01-05  
+**Last Updated:** 2026-01-06  
 **Status:** Active  
 **Audience:** Developers + AI Agents  
 
@@ -40,6 +40,11 @@ Production (warm):
 Local (warm):
 - Workdir: `/Users/robertgrzesik/Documents/Development/backtest_runs/parity_nvda_localwarm_20260105_074828`
 - `elapsed_s=28.5`, `queue_submits=0`
+
+Additional (production, larger window):
+- Window: `2025-01-11 -> 2025-12-31`
+- `bot_id=nvda_prod_2025-20250111-20251231-pg4hd3f2`
+- `elapsed=0:22:52`, `queue_submits=204`
 
 ### SPX Copy2
 
@@ -134,4 +139,3 @@ Interpretation:
    - Focus on pandas indexing/merges; yappi points to `pandas_numpy`.
 3. If parity is “good enough”:
    - Treat remaining gap as expected given ECS vCPU limits; document it and move on.
-

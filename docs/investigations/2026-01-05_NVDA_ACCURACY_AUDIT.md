@@ -104,15 +104,30 @@ Warm run (fresh local disk, warm S3):
 - Result: ✅ completed, tearsheet produced
 - `queue_submits`: **0**
 
-## Production verification (2025 window; previously crashed)
+## Production verification (post-4.4.29 deploy)
 
 This reproduces the customer-reported “ERROR_CODE_CRASH with no traceback” class and confirms the run now completes in production.
 
-- Bot ID: `nvda_2025_prod-20250111-20251231-f03cvdft`
+Runs launched via `scripts/run_backtest_prod.py` and artifacts downloaded via BotManager `/backtest_results`.
+
+### Short end-window smoke (fast verification)
+
+- Bot ID: `nvda_prod_endwindow-20251215-20251231-xtwsqacv`
+- Window: `2025-12-15 -> 2025-12-31`
+- Result: ✅ `status=completed` (no crash)
+- `queue_submits`: **2** (from `logs.csv`)
+- Downloaded artifacts saved under:
+  - `/Users/robertgrzesik/Documents/Development/Strategy Library/logs/prod_runs/nvda_prod_endwindow/nvda_prod_endwindow-20251215-20251231-xtwsqacv/`
+
+### Full 2025 window (previously crashed)
+
+- Bot ID: `nvda_prod_2025-20250111-20251231-pg4hd3f2`
 - Window: `2025-01-11 -> 2025-12-31`
 - Result: ✅ `status=completed` (no crash)
-- Downloaded artifacts (BotManager API) saved under:
-  - `/Users/robertgrzesik/Documents/Development/Strategy Library/logs/prod_runs/nvda_2025/nvda_2025_prod-20250111-20251231-f03cvdft/`
+- `elapsed`: **0:22:52** (from final `backtest_progress.elapsed`)
+- `queue_submits`: **204** (from `logs.csv`)
+- Downloaded artifacts saved under:
+  - `/Users/robertgrzesik/Documents/Development/Strategy Library/logs/prod_runs/nvda_prod_2025/nvda_prod_2025-20250111-20251231-pg4hd3f2/`
 
 Artifacts confirmed present via BotManager API:
 
@@ -120,6 +135,9 @@ Artifacts confirmed present via BotManager API:
 - `trades.csv`
 - `stats.csv`
 - `completion.json`
+- `logs.csv`
+- `settings.json`
+- `profile_yappi.csv` (if profiling enabled)
 
 ## Follow-up: OOM-like crashes when refreshing multi-year intraday caches
 

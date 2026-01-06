@@ -1,7 +1,7 @@
 # Backtest Startup Latency (Submit → First Progress) — 2026-01-05
 > Measured breakdown of “nothing happens for ~20–30s” in BotSpot backtests and the fix to reduce it.
 
-**Last Updated:** 2026-01-05  
+**Last Updated:** 2026-01-06  
 **Status:** Active  
 **Audience:** Developers + AI Agents  
 
@@ -81,19 +81,36 @@ Bootstrap timing:
 
 These runs were launched via `scripts/run_backtest_prod.py` and illustrate that startup latency is not a single bucket.
 
-#### NVDA (2025-01-11 → 2025-12-31): cold node pull dominates
+#### NVDA (2025-01-11 → 2025-12-31): cold node pull dominates (first run after deploy)
 
-- Bot ID: `nvda_2025_prod-20250111-20251231-f03cvdft`
-- Submit: `2026-01-05T16:13:14.579024Z`
+- Bot ID: `nvda_prod_2025-20250111-20251231-pg4hd3f2`
+- Submit: `2026-01-06T06:39:56.286085Z`
 
 ECS task timing (from BotManager status payload):
-- `createdAt=2026-01-05T16:13:16.267Z`
-- `pullStartedAt=2026-01-05T16:13:17.838Z`
-- `pullStoppedAt=2026-01-05T16:13:47.683Z` (**~30s pull**)
-- `startedAt=2026-01-05T16:13:48.843Z`
+- `createdAt=2026-01-06T06:39:57.167Z`
+- `pullStartedAt=2026-01-06T06:39:58.171Z`
+- `pullStoppedAt=2026-01-06T06:40:23.768Z` (**~25.6s pull**)
+- `startedAt=2026-01-06T06:40:25.399Z`
 
 Interpretation:
 - This run landed on a node without the backtest image cached, so **image pull** was the dominant startup component.
+
+#### NVDA (2025-12-30 → 2025-12-31): warm node pull is near-zero
+
+- Bot ID: `startup_probe_nvda-20251230-20251231-wq3awmyx`
+- Submit: `2026-01-06T07:05:48.199480Z`
+- First progress row:
+  - `timestamp=2026-01-06T07:06:08.446750`
+- **Submit → first progress: ~20.2s**
+
+ECS task timing (from BotManager status payload):
+- `createdAt=2026-01-06T07:05:49.591Z`
+- `pullStartedAt=2026-01-06T07:05:51.937Z`
+- `pullStoppedAt=2026-01-06T07:05:51.989Z` (**~0.05s pull**)
+- `startedAt=2026-01-06T07:05:51.735Z`
+
+Interpretation:
+- The image was already cached (or `image-pull-behavior=prefer-cached` was effective), so the remaining startup delay is mostly LumiBot boot + progress initialization.
 
 #### NVDA (2013-01-10 → 2025-12-30): provisioning dominates
 
