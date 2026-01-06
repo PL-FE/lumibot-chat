@@ -2229,12 +2229,16 @@ def get_price_data(
             if timespan == "day":
                 # Normalize cached day bars (and placeholders) to market-close timestamps to avoid lookahead.
                 df_cached = _align_day_index_to_market_close_utc(df_cached)
-            df_all = df_cached.copy() # Make a copy so we can check the original later for differences
+            # Memory: avoid deep-copying large cached frames.
+            #
+            # Production backtests can reuse a cache namespace that already contains multi-year
+            # intraday history for a symbol. Deep-copying here can double peak RSS and trigger
+            # ECS OOMKills (which surface as BotManager ERROR_CODE_CRASH with no Python traceback).
+            df_all = df_cached.copy(deep=False)
             # Ensure cached daily data is corporate-action adjusted BEFORE any merge/update.
             # This prevents mixing adjusted and unadjusted rows (and partial `_split_adjusted` markers)
             # when we append new EOD data over time, especially for options that span splits.
             if timespan == "day":
-                df_all = _align_day_index_to_market_close_utc(df_all)
                 try:
                     cache_index_dates = pd.to_datetime(df_all.index, utc=True).date
                     start_for_adjust = min(cache_index_dates) if len(cache_index_dates) else start.date()
@@ -4021,7 +4025,12 @@ def update_cache(cache_file, df_all, df_cached, missing_dates=None, remote_paylo
         )
         df_working = append_missing_markers(None, missing_dates)
     else:
-        df_working = ensure_missing_column(df_all.copy())
+        # Memory: avoid deep-copying large frames when updating cache files.
+        #
+        # `DataFrame.copy()` defaults to deep=True and can double peak RSS for multi-year intraday
+        # frames. We only need an owned DataFrame object here; the underlying numeric blocks can
+        # be shared safely because we don't mutate existing OHLC columns in-place.
+        df_working = ensure_missing_column(df_all.copy(deep=False))
         if missing_dates:
             logger.debug(
                 "[THETA][DEBUG][CACHE][UPDATE_APPEND_PLACEHOLDERS] cache_file=%s | "
@@ -4044,7 +4053,7 @@ def update_cache(cache_file, df_all, df_cached, missing_dates=None, remote_paylo
     # Without this, cache would be overwritten with only new data, losing historical data
     # This is essential for LEAP options where ThetaData may return partial data
     if df_cached is not None and len(df_cached) > 0:
-        df_cached_normalized = ensure_missing_column(df_cached.copy())
+        df_cached_normalized = ensure_missing_column(df_cached.copy(deep=False))
         # Remove rows from cached that will be replaced by new data
         # Keep cached rows whose index is NOT in the new data
         cached_only = df_cached_normalized[~df_cached_normalized.index.isin(df_working.index)]
@@ -4060,7 +4069,11 @@ def update_cache(cache_file, df_all, df_cached, missing_dates=None, remote_paylo
 
     df_cached_cmp = None
     if df_cached is not None and len(df_cached) > 0:
-        df_cached_cmp = ensure_missing_column(df_cached.copy())
+        # Reuse the normalized view if available; avoid another deep copy for large frames.
+        try:
+            df_cached_cmp = df_cached_normalized
+        except NameError:
+            df_cached_cmp = ensure_missing_column(df_cached.copy(deep=False))
 
     if df_cached_cmp is not None and df_working.equals(df_cached_cmp):
         logger.debug(
