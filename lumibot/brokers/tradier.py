@@ -108,6 +108,21 @@ class Tradier(Broker):
         # Override default market setting for Tradier to be NYSE, but still respect config/env if set
         self.market = (config.get("MARKET") if config else None) or os.environ.get("MARKET") or "NYSE"
 
+    def _safe_stream_dispatch(self, event, **kwargs):
+        """Dispatch an event to the stream if it exists.
+
+        Tradier can run in polling mode and/or with `connect_stream=False`. Order submission and polling must not
+        crash purely because a stream is unavailable.
+        """
+
+        stream = getattr(self, "stream", None)
+        if stream is None:
+            return
+        try:
+            stream.dispatch(event, **kwargs)
+        except Exception:
+            return
+
     def cancel_order(self, order: Order):
         """Cancels an order at the broker. Nothing will be done for orders that are already cancelled or filled."""
         # Check if the order is already cancelled or filled
@@ -285,7 +300,7 @@ class Tradier(Broker):
         parent_order.child_orders = orders
         parent_order.update_raw(order_response)  # This marks order as 'transmitted'
         self._unprocessed_orders.append(parent_order)
-        self.stream.dispatch(self.NEW_ORDER, order=parent_order)
+        self._safe_stream_dispatch(self.NEW_ORDER, order=parent_order)
         return parent_order
 
     def _submit_order(self, order: Order):
@@ -375,7 +390,7 @@ class Tradier(Broker):
                     )
                 except TradierApiError as e:
                     msg = colored(f"Error submitting order {order}: {e}", color="red")
-                    self.stream.dispatch(self.ERROR_ORDER, order=order, error_msg=msg)
+                    self._safe_stream_dispatch(self.ERROR_ORDER, order=order, error_msg=msg)
                     return None
 
             elif order.asset is not None and order.asset.asset_type == Asset.AssetType.STOCK:
@@ -425,11 +440,11 @@ class Tradier(Broker):
             order.status = Order.OrderStatus.SUBMITTED
             order.update_raw(order_response)  # This marks order as 'transmitted'
             self._unprocessed_orders.append(order)
-            self.stream.dispatch(self.NEW_ORDER, order=order)
+            self._safe_stream_dispatch(self.NEW_ORDER, order=order)
 
         except TradierApiError as e:
             msg = colored(f"Error submitting order {order}: {e}", color="red")
-            self.stream.dispatch(self.ERROR_ORDER, order=order, error_msg=msg)
+            self._safe_stream_dispatch(self.ERROR_ORDER, order=order, error_msg=msg)
 
         return order
 
@@ -875,7 +890,7 @@ class Tradier(Broker):
                     if not order.equivalent_status(stored_order):
                         match order.status.lower():
                             case "submitted" | "open":
-                                self.stream.dispatch(self.NEW_ORDER, order=stored_order)
+                                self._safe_stream_dispatch(self.NEW_ORDER, order=stored_order)
                             case "partial_filled":
                                 # Not handled for polling, only dispatch completely filled orders
                                 pass
@@ -905,16 +920,18 @@ class Tradier(Broker):
                                 # values will be filled in by Tradier, so do not trigger a 'filled' event until
                                 # all the needed data has been populated.
                                 if fill_price is not None and fill_qty is not None:
-                                    self.stream.dispatch(
-                                        self.FILLED_ORDER, order=stored_order, price=fill_price,
-                                        filled_quantity=fill_qty
+                                    self._safe_stream_dispatch(
+                                        self.FILLED_ORDER,
+                                        order=stored_order,
+                                        price=fill_price,
+                                        filled_quantity=fill_qty,
                                     )
                             case "canceled":
-                                self.stream.dispatch(self.CANCELED_ORDER, order=stored_order)
+                                self._safe_stream_dispatch(self.CANCELED_ORDER, order=stored_order)
                             case "error":
                                 default_msg = f"{self.name} encountered an error with order {order.identifier} | {order}"
                                 msg = order_row["reason_description"] if "reason_description" in order_row else default_msg
-                                self.stream.dispatch(self.ERROR_ORDER, order=stored_order, error_msg=msg)
+                                self._safe_stream_dispatch(self.ERROR_ORDER, order=stored_order, error_msg=msg)
                             case "cash_settled":
                                 # Don't know how to detect this case in Tradier.
                                 # Reference: https://documentation.tradier.com/brokerage-api/reference/response/orders
@@ -941,7 +958,7 @@ class Tradier(Broker):
                 # stopped tracking them. This is particularly true with Paper Trading where orders are not tracked
                 # overnight.
                 if order.is_active():
-                    self.stream.dispatch(self.CANCELED_ORDER, order=order)
+                    self._safe_stream_dispatch(self.CANCELED_ORDER, order=order)
 
     def _get_broker_id_from_raw_orders(self, raw_orders):
         ids = []

@@ -640,11 +640,21 @@ class StrategyExecutor(Thread):
                 state = {
                     "created_at": now,
                     "step_index": 0,
-                    "steps": smart_limit.get_step_count(),
-                    "step_seconds": smart_limit.get_step_seconds(),
+                    "steps": max(1, smart_limit.get_step_count()),
+                    "step_seconds": max(1, smart_limit.get_step_seconds()),
                     "final_hold_seconds": smart_limit.get_final_hold_seconds(),
                 }
                 order._smart_limit_state = state
+            else:
+                # Defensive: older/corrupt state should not crash the executor.
+                try:
+                    if int(state.get("steps", 0)) <= 0:
+                        state["steps"] = max(1, smart_limit.get_step_count())
+                    if int(state.get("step_seconds", 0)) <= 0:
+                        state["step_seconds"] = max(1, smart_limit.get_step_seconds())
+                except Exception:
+                    state["steps"] = max(1, smart_limit.get_step_count())
+                    state["step_seconds"] = max(1, smart_limit.get_step_seconds())
 
             elapsed = now - state["created_at"]
             step_index = min(state["steps"] - 1, int(elapsed // state["step_seconds"]))
@@ -665,9 +675,13 @@ class StrategyExecutor(Thread):
             if order.order_class == Order.OrderClass.MULTILEG and order.child_orders:
                 quote_data: list[tuple[Order, float | None, float | None]] = []
                 for leg in order.child_orders:
-                    quote = self.strategy.get_quote(leg.asset, quote=leg.quote, exchange=leg.exchange)
-                    leg_bid = getattr(quote, "bid", None)
-                    leg_ask = getattr(quote, "ask", None)
+                    try:
+                        quote = self.strategy.get_quote(leg.asset, quote=leg.quote, exchange=leg.exchange)
+                        leg_bid = getattr(quote, "bid", None)
+                        leg_ask = getattr(quote, "ask", None)
+                    except Exception:
+                        leg_bid = None
+                        leg_ask = None
                     quote_data.append((leg, leg_bid, leg_ask))
 
                 if any(b is None or a is None or b < 0 or a <= 0 for _, b, a in quote_data):
@@ -745,7 +759,10 @@ class StrategyExecutor(Thread):
                 continue
 
             side = "buy" if order.is_buy_order() else "sell"
-            quote = self.strategy.get_quote(order.asset, quote=order.quote, exchange=order.exchange)
+            try:
+                quote = self.strategy.get_quote(order.asset, quote=order.quote, exchange=order.exchange)
+            except Exception:
+                quote = None
             bid = getattr(quote, "bid", None)
             ask = getattr(quote, "ask", None)
 
