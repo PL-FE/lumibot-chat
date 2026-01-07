@@ -77,6 +77,19 @@ For **option** assets, snapshot requests are kept strictly aligned to the **regu
 prevents hourly/iterative strategies from creating one cache object per tiny dt-window and keeps
 warm S3 runs from enqueuing repeated downloader work.
 
+### Acceptance backtests and snapshot caches
+
+The ThetaData acceptance backtest suite (see `docs/ACCEPTANCE_BACKTESTS.md`) relies heavily on these
+snapshot quote/history caches for option mark-to-market and quote-based fills. CI enforces a
+warm-cache invariant and will fail the acceptance tests if the Data Downloader is touched.
+
+Operationally:
+
+- If acceptance tests fail with the tripwire (`exit=86`) after a correctness change, it often means
+  the S3 namespace (for example `LUMIBOT_CACHE_S3_VERSION=v44`) is missing some snapshot cache objects.
+- The intended fix is to warm/fill the S3 cache **outside CI** (tripwire OFF) using:
+  - `scripts/warm_acceptance_backtests_cache.py`
+
 ## Implementation Overview
 
 * `BacktestCacheSettings.from_env` validates the env contract and resolves

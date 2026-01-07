@@ -37,6 +37,18 @@ This page documents environment variables used by LumiBot, with an emphasis on *
   - `none` to disable env override and rely on code.
 - Where: `lumibot/strategies/_strategy.py` datasource selection logic.
 
+## Testing / CI guardrails (engineering-only)
+
+### `LUMIBOT_ACCEPTANCE_TRIPWIRE`
+- Purpose: **Acceptance backtests only** — when truthy, a Python startup hook (`tests/backtest/acceptance_tripwire/usercustomize.py`)
+  aborts the subprocess the moment it attempts to call the remote Data Downloader.
+- Values: truthy enables (`1`, `true`, `yes`); unset/`0` disables.
+- Default: disabled outside the acceptance harness.
+- Notes:
+  - This is intentionally test-only behavior and must not change production LumiBot semantics.
+  - CI uses this to enforce the “warm S3 cache invariant” for canonical acceptance windows.
+  - Exit behavior: tripwire prints `[ACCEPTANCE][TRIPWIRE] …` and hard-exits the subprocess with code `86`.
+
 ## Backtest output + UX flags
 
 ### `SHOW_PLOT`, `SHOW_INDICATORS`, `SHOW_TEARSHEET`
