@@ -298,6 +298,8 @@ class TestThetaDataOptions:
 
     def test_atm_call_and_put(self):
         """Test ATM call and put pricing."""
+        if os.environ.get("LUMIBOT_RUN_SLOW_BACKTEST_TESTS") != "1":
+            pytest.skip("Slow ThetaData options integration test is opt-in (set LUMIBOT_RUN_SLOW_BACKTEST_TESTS=1).")
         username = os.environ.get("THETADATA_USERNAME")
         password = os.environ.get("THETADATA_PASSWORD")
 

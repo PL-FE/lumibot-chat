@@ -308,6 +308,10 @@ class TestThetaDataBacktestFull:
         secrets_not_found,
         reason="Skipping test because ThetaData API credentials not found in environment variables",
     )
+    @pytest.mark.skipif(
+        os.environ.get("LUMIBOT_RUN_SLOW_BACKTEST_TESTS") != "1",
+        reason="Slow ThetaData integration test is opt-in (set LUMIBOT_RUN_SLOW_BACKTEST_TESTS=1).",
+    )
     def test_thetadata_restclient(self):
         """
         Test ThetaDataBacktesting with Lumibot Backtesting and real API calls to ThetaData. Using the Amazon stock

@@ -155,6 +155,8 @@ def test_pltr_minute_theta_integration():
 
 
 def test_iron_condor_minute_theta_integration():
+    if os.environ.get("LUMIBOT_RUN_SLOW_BACKTEST_TESTS") != "1":
+        pytest.skip("Slow backtest integration test is opt-in (set LUMIBOT_RUN_SLOW_BACKTEST_TESTS=1).")
     _ensure_env_loaded()
     # Use 3 trading days for minute-level options (much faster than 1 month)
     # Purpose: verify ThetaData SPX index + options data works
