@@ -3872,18 +3872,23 @@ def load_cache(cache_file, *, start=None, end=None, preserve_full_history: bool 
     df = None
     use_arrow_filter = False
     if start is not None and end is not None and not preserve_full_history:
-        # Only use PyArrow filtering for *large* parquet files.
+        # Use PyArrow filtering (predicate pushdown) when callers only need a slice.
         #
-        # Day caches are small and cheap to read in full. Filtering them can be error-prone
-        # when callers pass timezone-local midnight bounds (common in day-cadence backtests),
-        # because parquet day caches often store timestamps at UTC session boundaries.
-        #
-        # The OOM problem this optimization targets is multi-year *intraday* caches, which are
-        # large on disk; gate on size to avoid changing semantics for small caches/tests.
-        try:
-            use_arrow_filter = cache_file.stat().st_size >= 50 * 1024 * 1024
-        except Exception:
-            use_arrow_filter = False
+        # This is primarily a protection against OOM for multi-year *intraday* caches (minute/hour),
+        # but we intentionally avoid filtering day bars by default: day caches are small and cheap to
+        # read in full, and filtering can be error-prone when callers pass timezone-local midnight
+        # bounds (common in day-cadence backtests) while parquet day caches store UTC session
+        # boundary timestamps.
+        cache_name = cache_file.name.lower()
+        is_intraday = any(f"_{unit}_" in cache_name for unit in ("minute", "hour", "second"))
+        if is_intraday:
+            use_arrow_filter = True
+        else:
+            # For non-intraday caches, only use filtering when the file is very large.
+            try:
+                use_arrow_filter = cache_file.stat().st_size >= 50 * 1024 * 1024
+            except Exception:
+                use_arrow_filter = False
 
     if use_arrow_filter:
         try:

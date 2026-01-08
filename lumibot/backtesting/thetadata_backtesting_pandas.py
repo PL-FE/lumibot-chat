@@ -1508,7 +1508,11 @@ class ThetaDataBacktestingPandas(PandasData):
         #
         # Options are handled differently: placeholder rows / negative caching are useful to avoid
         # re-fetch storms, so we continue to preserve full-history semantics there.
-        preserve_full_history = bool(is_option_asset)
+        #
+        # Day bars are small on disk even for multi-year backtests, so preserving full history is
+        # safe and keeps cache/coverage behavior consistent (and avoids surprising truncations when
+        # refreshing cached daily data).
+        preserve_full_history = bool(is_option_asset or ts_unit == "day")
 
         def _fetch_ohlc():
             return thetadata_helper.get_price_data(
