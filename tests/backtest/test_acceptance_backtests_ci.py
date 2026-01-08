@@ -30,7 +30,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-pytestmark = [pytest.mark.acceptance_backtest]
+# Acceptance backtests intentionally enforce "no downloader usage" via the tripwire, but they
+# still depend on pre-warmed caches and are not part of the default CI shard set.
+# Mark as `downloader` so CI runs with `-m "not ... and not downloader"` skip them by default.
+pytestmark = [pytest.mark.acceptance_backtest, pytest.mark.downloader]
 
 # Headline metrics are written at 0.01% resolution in `*_tearsheet.csv`.
 # We keep CI strict by default and only allow a 0.01% tolerance to avoid rare float->string

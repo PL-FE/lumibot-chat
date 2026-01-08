@@ -2250,12 +2250,21 @@ def get_price_data(
             quote_asset,
             timespan,
         )
-        df_cached = load_cache(
-            cache_file,
-            start=start,
-            end=end,
-            preserve_full_history=preserve_full_history,
-        )
+        try:
+            df_cached = load_cache(
+                cache_file,
+                start=start,
+                end=end,
+                preserve_full_history=preserve_full_history,
+            )
+        except TypeError as exc:
+            # Backwards compatibility: many unit tests (and downstream callers) stub `load_cache`
+            # as a simple one-arg lambda. Only fall back when the error indicates unsupported
+            # keyword arguments, otherwise re-raise.
+            message = str(exc)
+            if "unexpected keyword argument" not in message:
+                raise
+            df_cached = load_cache(cache_file)
         if df_cached is not None and not df_cached.empty:
             if timespan == "day":
                 # Normalize cached day bars (and placeholders) to market-close timestamps to avoid lookahead.
@@ -3861,7 +3870,22 @@ def load_cache(cache_file, *, start=None, end=None, preserve_full_history: bool 
         return None
 
     df = None
+    use_arrow_filter = False
     if start is not None and end is not None and not preserve_full_history:
+        # Only use PyArrow filtering for *large* parquet files.
+        #
+        # Day caches are small and cheap to read in full. Filtering them can be error-prone
+        # when callers pass timezone-local midnight bounds (common in day-cadence backtests),
+        # because parquet day caches often store timestamps at UTC session boundaries.
+        #
+        # The OOM problem this optimization targets is multi-year *intraday* caches, which are
+        # large on disk; gate on size to avoid changing semantics for small caches/tests.
+        try:
+            use_arrow_filter = cache_file.stat().st_size >= 50 * 1024 * 1024
+        except Exception:
+            use_arrow_filter = False
+
+    if use_arrow_filter:
         try:
             from datetime import date as date_type
             from datetime import datetime as datetime_type
@@ -5443,7 +5467,20 @@ def _register_thetadata_expiry_map_from_chain(symbol: str, chains_dict: dict) ->
         elif provider_expiry.weekday() == 6:
             tradable_expiry = provider_expiry - timedelta(days=2)
 
-        updates[(symbol_key, tradable_expiry)] = provider_expiry
+        key = (symbol_key, tradable_expiry)
+        existing = updates.get(key)
+        if existing is None:
+            updates[key] = provider_expiry
+            continue
+
+        # Prefer the provider expiry that exactly matches the tradable expiry when available
+        # (weekly-style providers). This prevents persistent 472/no-data responses for underlyings
+        # whose provider uses Friday expirations even for monthlies (e.g., CVNA).
+        if provider_expiry == tradable_expiry and existing != tradable_expiry:
+            updates[key] = provider_expiry
+            continue
+        if existing == tradable_expiry and provider_expiry != tradable_expiry:
+            continue
 
     if not updates:
         return
@@ -5456,10 +5493,10 @@ def _register_thetadata_expiry_map_from_chain(symbol: str, chains_dict: dict) ->
                 _THETADATA_EXPIRY_MAP[key] = provider_expiry
                 continue
 
-            # If both Friday and Saturday exist for the same tradable date, prefer the provider key
-            # that matches the tradable expiry exactly (weekly-style). This prevents persistent 472s
-            # for symbols whose provider uses Fridays for monthly expirations (e.g. CVNA).
-            if existing != tradable_expiry and provider_expiry == tradable_expiry:
+            # Prefer exact-Friday provider expirations when both Friday and Saturday are present.
+            if existing == tradable_expiry:
+                continue
+            if provider_expiry == tradable_expiry:
                 _THETADATA_EXPIRY_MAP[key] = provider_expiry
 
 

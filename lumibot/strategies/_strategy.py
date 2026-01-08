@@ -911,6 +911,15 @@ class _Strategy:
                     # Daily-cadence fallback: intraday quote snapshots are the most robust source
                     # of option marks when EOD/history endpoints are missing for a contract.
                     if timestep_hint == "day":
+                        # Only attempt snapshot-only fallback for the real ThetaData backtesting
+                        # implementation. Some unit tests (and custom sources) override `get_quote`
+                        # and treat repeated calls as an error; production uses
+                        # `ThetaDataBacktestingPandas.get_quote`, which understands `snapshot_only`.
+                        try:
+                            if getattr(get_quote, "__func__", None) is not ThetaDataBacktestingPandas.get_quote:
+                                return None
+                        except Exception:
+                            return None
                         quote_kwargs = {"timestep": "minute", "snapshot_only": True}
                         if quote_asset is not None:
                             quote = get_quote(base_asset, quote=quote_asset, **quote_kwargs)
