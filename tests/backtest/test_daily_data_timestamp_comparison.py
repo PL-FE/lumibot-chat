@@ -51,6 +51,7 @@ class TestDailyDataTimestampComparison:
             min_trading_days=5,
         )
 
+    @pytest.mark.apitest
     def test_daily_data_aapl(self):
         """Smoke test AAPL daily bars (timestamps + OHLC parity)."""
         self._test_symbol_daily_data(
