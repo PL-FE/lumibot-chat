@@ -82,6 +82,9 @@ Failure to follow these rules will break everyone's workflows—double-check env
 ## Env var documentation (REQUIRED)
 - **Do not add new environment variables by default.** Env vars are hard to discover, hard to document, and easy to
   drift across deploy targets. Prefer explicit function parameters, config objects, or stable defaults.
+- **Testing policy:** do not add env vars just to toggle/skip tests. If a test is slow/flaky/non-deterministic in CI,
+  mark it with existing pytest markers like `pytest.mark.apitest` and/or `pytest.mark.downloader` (CI already runs
+  with `-m "not apitest and not downloader"`).
 - Only introduce a new env var when it is genuinely required for deployment/runtime configuration (secrets, endpoints,
   toggles needed for ops/rollout), and keep it narrowly scoped.
 - If you add or change an environment variable, update:

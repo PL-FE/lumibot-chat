@@ -31,15 +31,9 @@ import pandas as pd
 import pytest
 
 # Acceptance backtests intentionally enforce "no downloader usage" via the tripwire, but they
-# still depend on pre-warmed caches + stable baselines. For now, they are opt-in only:
-# set `LUMIBOT_RUN_ACCEPTANCE_BACKTESTS=1` to run them.
-if os.environ.get("LUMIBOT_RUN_ACCEPTANCE_BACKTESTS") == "1":
-    pytestmark = [pytest.mark.acceptance_backtest]
-else:
-    pytestmark = [
-        pytest.mark.acceptance_backtest,
-        pytest.mark.skip(reason="Acceptance backtests are opt-in (set LUMIBOT_RUN_ACCEPTANCE_BACKTESTS=1)."),
-    ]
+# still depend on pre-warmed caches + stable baselines and are non-deterministic in CI.
+# Mark as `apitest` so default CI runs (which use `-m "not apitest"`) skip them by default.
+pytestmark = [pytest.mark.acceptance_backtest, pytest.mark.apitest]
 
 # Headline metrics are written at 0.01% resolution in `*_tearsheet.csv`.
 # We keep CI strict by default and only allow a 0.01% tolerance to avoid rare float->string
