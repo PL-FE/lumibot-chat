@@ -109,7 +109,8 @@ def _base_env(repo_root: Path) -> dict[str, str]:
             "IS_BACKTESTING": "True",
             "SHOW_PLOT": "False",
             "SHOW_INDICATORS": "False",
-            "SHOW_TEARSHEET": "True",
+            # Never open the tearsheet in a browser during tests.
+            "SHOW_TEARSHEET": "False",
             "BACKTESTING_QUIET_LOGS": "false",
             "BACKTESTING_SHOW_PROGRESS_BAR": "false",
             "SAVE_LOGFILE": env.get("SAVE_LOGFILE", "true"),
