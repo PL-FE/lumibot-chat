@@ -6450,7 +6450,6 @@ def get_chains_cached(
     is_index = asset_type == "index"
 
     min_expiration_date = constraints.get("min_expiration_date")
-    max_expiration_date = constraints.get("max_expiration_date")
 
     def _coerce_date(value: Any) -> Optional[date]:
         if value is None:
@@ -6465,7 +6464,6 @@ def get_chains_cached(
             return None
 
     min_expiration_date_coerced = _coerce_date(min_expiration_date)
-    max_expiration_date_coerced = _coerce_date(max_expiration_date)
 
     # Cache reuse policy:
     # - Always scan local/remote chain cache files first.
