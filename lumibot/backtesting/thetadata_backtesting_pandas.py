@@ -752,6 +752,27 @@ class ThetaDataBacktestingPandas(PandasData):
                 end_anchor = self._normalize_default_timezone(start_dt) or current_dt
             except Exception:
                 end_anchor = current_dt
+
+        # Index OHLC is a small surface area (vs option chains) and strategies often request it
+        # repeatedly throughout an intraday run (indicators, settlement, risk checks). If we only
+        # fetch up to the current simulation timestamp, we end up incrementally extending the same
+        # cache thousands of times (O(N^2) merges over a year window).
+        #
+        # Prefetching through the backtest end keeps behavior deterministic while allowing the
+        # Data() accessors to slice by `dt` (no lookahead as long as consumers pass `dt`).
+        if (
+            not snapshot_only
+            and require_ohlc_data
+            and asset_type_value == "index"
+            and asset_separated.asset_type != "option"
+            and self.datetime_end is not None
+        ):
+            try:
+                normalized_end = self._normalize_default_timezone(self.datetime_end)
+                if normalized_end is not None:
+                    end_anchor = normalized_end
+            except Exception:
+                pass
         if end_anchor is not None and self.datetime_end is not None:
             try:
                 normalized_end = self._normalize_default_timezone(self.datetime_end)
@@ -1508,7 +1529,11 @@ class ThetaDataBacktestingPandas(PandasData):
         #
         # Options are handled differently: placeholder rows / negative caching are useful to avoid
         # re-fetch storms, so we continue to preserve full-history semantics there.
-        preserve_full_history = bool(is_option_asset)
+        #
+        # Day bars are small on disk even for multi-year backtests, so preserving full history is
+        # safe and keeps cache/coverage behavior consistent (and avoids surprising truncations when
+        # refreshing cached daily data).
+        preserve_full_history = bool(is_option_asset or ts_unit == "day")
 
         def _fetch_ohlc():
             return thetadata_helper.get_price_data(
@@ -3489,6 +3514,61 @@ class ThetaDataBacktestingPandas(PandasData):
 
         current_date = self.get_datetime().date()
         constraints = getattr(self, "_chain_constraints", None) or {}
+
+        # PERF: intraday option strategies often ask for chains repeatedly (sometimes directly via
+        # Strategy.get_chains, not via OptionsHelper). If we allow ThetaData's default horizon
+        # (up to 2 years for equities) the chain builder will issue one strike-list request per
+        # expiration, which can be thousands of requests (especially for SPX/SPXW daily expirations).
+        #
+        # Apply a conservative default max-expiration bound for intraday backtests unless the
+        # strategy explicitly configured a different max_expiration_date via `_chain_constraints`.
+        try:
+            needs_default_max = not isinstance(constraints, dict) or constraints.get("max_expiration_date") is None
+        except Exception:
+            needs_default_max = True
+
+        if needs_default_max and getattr(self, "_timestep", None) != "day":
+            try:
+                symbol_upper = (getattr(asset, "symbol", "") or "").upper()
+                asset_type = str(getattr(asset, "asset_type", "") or "").lower()
+                is_index_like = asset_type == "index" or symbol_upper in {
+                    "SPX",
+                    "SPXW",
+                    "NDX",
+                    "NDXP",
+                    "RUT",
+                    "RUTW",
+                    "VIX",
+                    "VIXW",
+                    "XSP",
+                    "DJX",
+                    "OEX",
+                    "XEO",
+                }
+                # Intraday backtests are especially sensitive to chain build fanout. Keep the
+                # default horizon bounded (vs Theta's multi-year default), but conservative enough
+                # not to break common 30-60DTE strategies. Strategies that truly need a different
+                # horizon should set `_chain_constraints["max_expiration_date"]`.
+                max_days_out = 45 if is_index_like else 60
+
+                base_date = current_date
+                try:
+                    min_dt = constraints.get("min_expiration_date") if isinstance(constraints, dict) else None
+                    if isinstance(min_dt, datetime):
+                        min_dt = min_dt.date()
+                    if isinstance(min_dt, date) and min_dt > base_date:
+                        base_date = min_dt
+                except Exception:
+                    base_date = current_date
+
+                max_expiration = base_date + timedelta(days=max_days_out)
+                if isinstance(constraints, dict):
+                    constraints = dict(constraints)
+                else:
+                    constraints = {}
+                constraints["max_expiration_date"] = max_expiration
+            except Exception:
+                pass
 
         # PERF: `get_chains_cached()` hits parquet (local/S3) and `Chains(...)` normalizes expiry keys.
         # Option-heavy strategies can call `get_chains()` hundreds of times per trading day, which
