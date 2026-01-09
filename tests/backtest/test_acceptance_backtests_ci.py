@@ -30,8 +30,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-# Acceptance backtests intentionally enforce "no downloader usage" via the tripwire.
-# These are required correctness gates for ThetaData parity and should run in CI.
+# Acceptance backtests are regular backtests that must be queue-free (warm S3 invariant)
+# and run in CI.
 pytestmark = [pytest.mark.acceptance_backtest]
 
 # Headline metrics are written at 0.01% resolution in `*_tearsheet.csv`.
