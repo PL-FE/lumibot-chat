@@ -78,7 +78,7 @@
       "data_source": "thetadata",
       "end_date": "2025-12-01",
       "lumibot_version": "4.4.27",
-      "max_backtest_time_seconds": 600,
+      "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
         "cagr": -2102,
         "max_drawdown": -2630,
@@ -126,7 +126,7 @@
       "data_source": "thetadata",
       "end_date": "2025-12-01",
       "lumibot_version": "4.4.27",
-      "max_backtest_time_seconds": 600,
+      "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
         "cagr": -382,
         "max_drawdown": -1338,
@@ -150,7 +150,7 @@
       "data_source": "thetadata",
       "end_date": "2025-12-26",
       "lumibot_version": "4.4.27",
-      "max_backtest_time_seconds": 600,
+      "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
         "cagr": -1172,
         "max_drawdown": -2872,

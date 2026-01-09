@@ -623,8 +623,9 @@ def plot_indicators(
                 col=1
             )
 
-        disable_ui = os.environ.get("LUMIBOT_DISABLE_UI", "").strip().lower() in ("1", "true", "yes") or bool(
-            os.environ.get("PYTEST_CURRENT_TEST")
+        disable_ui = (
+            os.environ.get("LUMIBOT_DISABLE_UI", "").strip().lower() in ("1", "true", "yes")
+            or bool(os.environ.get("PYTEST_CURRENT_TEST"))
         )
 
         # Create graph (auto_open disabled for CI/tests).
@@ -677,8 +678,9 @@ def plot_returns(
         logger.info("show_plot is False, not creating the plot file or CSV.")
         return
 
-    disable_ui = os.environ.get("LUMIBOT_DISABLE_UI", "").strip().lower() in ("1", "true", "yes") or bool(
-        os.environ.get("PYTEST_CURRENT_TEST")
+    disable_ui = (
+        os.environ.get("LUMIBOT_DISABLE_UI", "").strip().lower() in ("1", "true", "yes")
+        or bool(os.environ.get("PYTEST_CURRENT_TEST"))
     )
 
     logger.info("\nCreating trades plot and CSV...")
@@ -1156,8 +1158,9 @@ def create_tearsheet(
         _write_placeholder_tearsheet(f"QuantStats error: {exc}")
         return
 
-    disable_ui = os.environ.get("LUMIBOT_DISABLE_UI", "").strip().lower() in ("1", "true", "yes") or bool(
-        os.environ.get("PYTEST_CURRENT_TEST")
+    disable_ui = (
+        os.environ.get("LUMIBOT_DISABLE_UI", "").strip().lower() in ("1", "true", "yes")
+        or bool(os.environ.get("PYTEST_CURRENT_TEST"))
     )
 
     if show_tearsheet and not disable_ui:

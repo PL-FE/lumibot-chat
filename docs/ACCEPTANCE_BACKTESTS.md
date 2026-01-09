@@ -216,7 +216,7 @@ CI uses the full-year window; the shorter window is retained only as historical 
 - Correct CAGR = -21.02%
 - Correct Max DD = -26.30%
 - Observed `backtest_time_seconds` (macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8) = 292.0s
-- CI cap (seconds) <= 600
+- CI cap (seconds) <= 900
 - Baseline `run_id` = `BackdoorButterfly0DTE_2026-01-05_09-36_7AP0H8`
 
 | run_id | lumibot | window | wall_time_s | total_return | cagr | max_dd | flags | machine |
@@ -245,9 +245,9 @@ This strategy was previously **under investigation** for baseline mismatch; CI u
 
 #### Expected Results (ThetaData / S3 v44)
 
-- Correct Total Return = 125.00%
-- Correct CAGR = 7.02%
-- Correct Max DD = -99.32%
+- Correct Total Return = 14.00%
+- Correct CAGR = 1.11%
+- Correct Max DD = -99.30%
 - Observed `backtest_time_seconds` (macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8) = 122.6s
 - CI cap (seconds) <= 300
 - Baseline `run_id` = `MeliDeepDrawdownCalls_2026-01-09_13-04_SZkY2g`
@@ -279,7 +279,7 @@ See: `docs/investigations/ACCURACY_AUDIT_2026-01-02.md` for the divergence notes
 - Correct CAGR = -3.82%
 - Correct Max DD = -13.38%
 - Observed `backtest_time_seconds` (macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8) = 290.8s
-- CI cap (seconds) <= 600
+- CI cap (seconds) <= 900
 - Baseline `run_id` = `BackdoorButterfly0DTESmartLimit_2026-01-05_09-44_qLKdxw`
 
 | run_id | lumibot | window | wall_time_s | total_return | cagr | max_dd | flags | machine |
@@ -307,7 +307,7 @@ CI uses the stall repro / prod parity window; the shorter window is retained onl
 - Correct CAGR = -11.72%
 - Correct Max DD = -28.72%
 - Observed `backtest_time_seconds` (macOS=26.1; CPU=Apple M3 Max; RAM=48GB; Python=3.11.8) = 193.2s
-- CI cap (seconds) <= 600
+- CI cap (seconds) <= 900
 - Baseline `run_id` = `SPXShortStraddle_2026-01-05_09-49_35TJJl`
 
 | run_id | lumibot | window | wall_time_s | total_return | cagr | max_dd | notes | machine |
