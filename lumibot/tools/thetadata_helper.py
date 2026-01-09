@@ -2567,6 +2567,34 @@ def get_price_data(
         "CACHE_HIT" if not missing_dates else "CACHE_MISS"
     )
 
+    # Intraday coverage check: for non-day timespans, `get_missing_dates()` only reasons about full
+    # trading days (by date), not whether the cached frame actually reaches the requested end-of-window.
+    # This can produce "partially warm" caches (e.g., only through 15:00 ET) that are treated as hits,
+    # causing stale tails and inconsistent interval parity (minute vs 5minute/15minute/hour).
+    if timespan != "day" and df_all is not None and not df_all.empty:
+        try:
+            idx = pd.to_datetime(df_all.index, utc=True, errors="coerce")
+            idx = idx[~pd.isna(idx)]
+            if len(idx):
+                max_ts = idx.max()
+                min_ts = idx.min()
+
+                start_utc = pd.to_datetime(requested_start, utc=True, errors="coerce")
+                end_utc = pd.to_datetime(requested_end, utc=True, errors="coerce")
+                if pd.notna(start_utc) and pd.notna(end_utc):
+                    tolerance = timedelta(minutes=2)
+                    start_day = start_utc.date()
+                    end_day = end_utc.date()
+                    trading_days = set(get_trading_dates(asset, requested_start, requested_end))
+
+                    if start_day in trading_days and min_ts > start_utc + tolerance:
+                        missing_dates = sorted(set(missing_dates or []) | {start_day})
+                    if end_day in trading_days and max_ts < end_utc - tolerance:
+                        missing_dates = sorted(set(missing_dates or []) | {end_day})
+        except Exception:
+            # Coverage checks are best-effort and must never block callers.
+            pass
+
     cache_file = build_cache_filename(asset, timespan, datastyle)
     logger.debug(
         "[THETA][DEBUG][THETADATA-CACHE] asset=%s/%s timespan=%s datastyle=%s cache_file=%s exists=%s missing=%d",
@@ -2865,7 +2893,32 @@ def get_price_data(
 
             return df_clean if df_clean is not None else pd.DataFrame()
 
-        df_all = update_df(df_all, result_df)
+        # EOD history results are already normalized to UTC market-close timestamps above
+        # (`_align_day_index_to_market_close_utc`). Do NOT route them through `update_df()`,
+        # which assumes naive datetimes are in the default market timezone and will shift
+        # them incorrectly. That timezone shift can make a covered trading day look missing,
+        # causing repeated downloader queue submissions for the same option/day.
+        if result_df is not None and not result_df.empty:
+            df_merge = result_df
+            if "datetime" in df_merge.columns:
+                df_merge = df_merge.copy()
+                df_merge["datetime"] = pd.to_datetime(df_merge["datetime"], utc=True, errors="coerce")
+                df_merge = df_merge.dropna(subset=["datetime"]).set_index("datetime").sort_index()
+            else:
+                df_merge = df_merge.copy()
+                idx = pd.to_datetime(df_merge.index, utc=True, errors="coerce")
+                df_merge = df_merge.loc[~pd.isna(idx)]
+                df_merge.index = pd.DatetimeIndex(idx[~pd.isna(idx)], name="datetime")
+                df_merge = df_merge.sort_index()
+            df_merge = ensure_missing_column(df_merge)
+            df_merge.loc[:, "missing"] = False
+
+            if df_all is None or getattr(df_all, "empty", True):
+                df_all = df_merge
+            else:
+                df_all = ensure_missing_column(df_all)
+                df_all = pd.concat([df_all, df_merge]).sort_index()
+                df_all = df_all[~df_all.index.duplicated(keep="last")]  # Keep newest data over placeholders
         logger.debug(
             "[THETA][DEBUG][THETADATA-EOD] merged cache rows=%d (cached=%d new=%d)",
             0 if df_all is None else len(df_all),
@@ -3534,23 +3587,7 @@ def get_historical_data_snapshot_cached(
                     if "missing" in df_existing.columns:
                         missing_flags = df_existing["missing"].fillna(False).astype(bool)
                         if bool(missing_flags.all()):
-                            # Some underlyings have provider-specific expiration conventions (Friday vs
-                            # OCC Saturday). Older LumiBot versions used a heuristic mapping that could
-                            # generate 472/empty responses and permanently cache a placeholder-only
-                            # snapshot under the tradable expiry key.
-                            #
-                            # If we now know (via chain-derived mapping) that the provider expects a
-                            # different expiration representation than the heuristic, treat this
-                            # placeholder as stale and allow a refetch to repair the cache.
-                            try:
-                                symbol = _thetadata_option_root_symbol(asset)
-                                mapped = _thetadata_option_query_expiration(asset.expiration, symbol=symbol)
-                                heuristic = _thetadata_option_query_expiration_heuristic(asset.expiration)
-                                if mapped == heuristic:
-                                    return df_existing
-                            except Exception:
-                                return df_existing
-                            df_existing = None
+                            return df_existing
                 except Exception:
                     # If the missing column is malformed, treat this as a stable negative cache
                     # rather than risk infinite refetch loops in production backtests.
@@ -3991,12 +4028,28 @@ def load_cache(cache_file, *, start=None, end=None, preserve_full_history: bool 
             bad_count = int(bad_zero_rows.sum())
             if bad_count > 0:
                 bad_dates = df.index[bad_zero_rows].tolist()
-                logger.warning(
-                    "[THETA][DATA_QUALITY][CACHE] Filtering %d all-zero OHLC rows with no quote data: %s",
-                    bad_count,
-                    [str(d)[:10] for d in bad_dates[:5]],
-                )
-                df = df[~bad_zero_rows]
+                is_option_payload = all(c in df.columns for c in ("expiration", "strike", "right"))
+                if is_option_payload:
+                    # For option day/EOD caches, an all-zero OHLC row with no actionable NBBO often
+                    # means "no print/quote" (especially on expiry). Dropping it makes the day look
+                    # perpetually missing and triggers repeated downloader submissions. Treat it as a
+                    # placeholder coverage marker instead.
+                    logger.warning(
+                        "[THETA][DATA_QUALITY][CACHE] Converting %d all-zero OHLC option row(s) to placeholders: %s",
+                        bad_count,
+                        [str(d)[:10] for d in bad_dates[:5]],
+                    )
+                    for col in ("open", "high", "low", "close", "volume"):
+                        if col in df.columns:
+                            df.loc[bad_zero_rows, col] = float("nan")
+                    df.loc[bad_zero_rows, "missing"] = True
+                else:
+                    logger.warning(
+                        "[THETA][DATA_QUALITY][CACHE] Filtering %d all-zero OHLC rows with no quote data: %s",
+                        bad_count,
+                        [str(d)[:10] for d in bad_dates[:5]],
+                    )
+                    df = df[~bad_zero_rows]
     min_ts = df.index.min() if len(df) > 0 else None
     max_ts = df.index.max() if len(df) > 0 else None
     placeholder_count = int(df["missing"].sum()) if "missing" in df.columns else 0
@@ -4364,9 +4417,16 @@ def update_df(df_all, result):
             all_zero_ohlc = (df["open"] == 0) & (df["high"] == 0) & (df["low"] == 0) & (df["close"] == 0)
             drop_mask = all_zero_ohlc
 
-            # If quote columns are present, preserve rows with valid quotes even if OHLC is all zeros.
-            # Many illiquid options will have no trades on a day (OHLC=0) but still have NBBO quotes.
-            if "bid" in df.columns and "ask" in df.columns:
+            is_option_payload = all(c in df.columns for c in ("expiration", "strike", "right"))
+
+            # If quote columns are present, preserve rows with valid quotes even if OHLC is all zeros
+            # for non-option datasets (stocks/indices can legitimately have quote-only prints in some
+            # vendor feeds).
+            #
+            # For option EOD rows, however, ThetaData can return OHLC=0 alongside non-zero NBBO on
+            # illiquid/expiry days. Those rows must be treated as placeholders (not real trades) or
+            # strategies will mark-to-market at 0.00 and crater.
+            if "bid" in df.columns and "ask" in df.columns and not is_option_payload:
                 bid = pd.to_numeric(df["bid"], errors="coerce")
                 ask = pd.to_numeric(df["ask"], errors="coerce")
                 has_quote = ((bid > 0) | (ask > 0)).fillna(False)
@@ -4375,12 +4435,23 @@ def update_df(df_all, result):
             zero_count = int(drop_mask.sum()) if hasattr(drop_mask, "sum") else 0
             if zero_count > 0:
                 zero_dates = df.index[drop_mask].tolist()
-                logger.warning(
-                    "[THETA][DATA_QUALITY] Filtering %d all-zero OHLC row(s) with no quotes: %s",
-                    zero_count,
-                    [str(d)[:10] for d in zero_dates[:5]],
-                )
-                df = df[~drop_mask]
+                if is_option_payload:
+                    logger.warning(
+                        "[THETA][DATA_QUALITY] Converting %d all-zero OHLC option row(s) to placeholders: %s",
+                        zero_count,
+                        [str(d)[:10] for d in zero_dates[:5]],
+                    )
+                    for col in ("open", "high", "low", "close", "volume"):
+                        if col in df.columns:
+                            df.loc[drop_mask, col] = float("nan")
+                    df.loc[drop_mask, "missing"] = True
+                else:
+                    logger.warning(
+                        "[THETA][DATA_QUALITY] Filtering %d all-zero OHLC row(s) with no quotes: %s",
+                        zero_count,
+                        [str(d)[:10] for d in zero_dates[:5]],
+                    )
+                    df = df[~drop_mask]
 
         if df_all is not None:
             # set "datetime" column as index of df_all

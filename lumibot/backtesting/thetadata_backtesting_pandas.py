@@ -752,6 +752,27 @@ class ThetaDataBacktestingPandas(PandasData):
                 end_anchor = self._normalize_default_timezone(start_dt) or current_dt
             except Exception:
                 end_anchor = current_dt
+
+        # Index OHLC is a small surface area (vs option chains) and strategies often request it
+        # repeatedly throughout an intraday run (indicators, settlement, risk checks). If we only
+        # fetch up to the current simulation timestamp, we end up incrementally extending the same
+        # cache thousands of times (O(N^2) merges over a year window).
+        #
+        # Prefetching through the backtest end keeps behavior deterministic while allowing the
+        # Data() accessors to slice by `dt` (no lookahead as long as consumers pass `dt`).
+        if (
+            not snapshot_only
+            and require_ohlc_data
+            and asset_type_value == "index"
+            and asset_separated.asset_type != "option"
+            and self.datetime_end is not None
+        ):
+            try:
+                normalized_end = self._normalize_default_timezone(self.datetime_end)
+                if normalized_end is not None:
+                    end_anchor = normalized_end
+            except Exception:
+                pass
         if end_anchor is not None and self.datetime_end is not None:
             try:
                 normalized_end = self._normalize_default_timezone(self.datetime_end)
