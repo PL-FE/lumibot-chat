@@ -20,6 +20,9 @@ This repo is frequently edited by **multiple AI sessions**. To avoid lost work:
 - **Avoid stepping on the CI agent:** if `tests/backtest/`, baselines, or CI workflows are in-flight, coordinate via `docs/handoffs/` and keep edits non-overlapping.
 - **Document + test behavioral changes:** update the relevant docs in `docs/` and add regression tests in the same commit; add comments explaining “why/invariants” for non-obvious logic.
 - **Cache safety:** never delete shared caches. Use S3 namespace versioning (e.g., `LUMIBOT_CACHE_S3_VERSION=...`) for cold-cache simulations; only delete cache objects when explicitly requested and tightly scoped (symbol/version-specific).
+- **Test gating (STRICT):** do not introduce new environment variables just to skip/disable tests or to paper over CI failures.
+  - Prefer existing pytest markers (`apitest`, `acceptance_backtest`, etc.) and normal test skips with clear reasons.
+  - If a new env var is truly required for a user-facing feature, document it in `docsrc/environment_variables.rst` in the same PR.
 
 1. **Never launch ThetaTerminal locally WITH PRODUCTION CREDENTIALS.** Production has the only licensed session for that account. Starting the jar with prod credentials (even briefly or via Docker) instantly terminates the prod connection and halts all customers.
 2. **Use the shared downloader endpoint for backtests.** All tests/backtests must set `DATADOWNLOADER_BASE_URL=http://data-downloader.lumiwealth.com:8080` and `DATADOWNLOADER_API_KEY=<secret>`. Do not short-cut by hitting Theta directly (and avoid hard-coded IPs—they can change on redeploy).
