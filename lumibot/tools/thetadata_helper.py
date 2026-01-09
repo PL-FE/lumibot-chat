@@ -6441,11 +6441,15 @@ def get_chains_cached(
     min_expiration_date_coerced = _coerce_date(min_expiration_date)
     max_expiration_date_coerced = _coerce_date(max_expiration_date)
 
-    # Even when callers pass chain constraints, index chains are stable enough (no splits, and Theta's
-    # expirations list is not truly point-in-time) that we should reuse cached chain files whenever
-    # they cover the requested horizon. This is critical for CI/prod parity: otherwise year-long
-    # index option backtests rebuild chains daily and hit the downloader even when S3 is warm.
-    should_scan_cache_files = (not hint_present) or is_index
+    # Cache reuse policy:
+    # - Always scan local/remote chain cache files first.
+    # - Equities are restricted to a small "recent days" window to minimize any chance of drift
+    #   around corporate actions.
+    # - Index chains can reuse older cache files as long as they still cover the requested horizon.
+    #
+    # This is important for performance and CI/prod parity: without it, backtests rebuild chains
+    # (one strike-list request per expiration) even when S3 is warm, which can dominate runtime.
+    should_scan_cache_files = True
 
     if should_scan_cache_files:
         pattern = f"{asset.symbol}_*.parquet"
@@ -6496,7 +6500,7 @@ def get_chains_cached(
                     )
                     continue
 
-            if is_index and isinstance(data, dict):
+            if isinstance(data, dict):
                 try:
                     call_chain = data.get("Chains", {}).get("CALL", {}) or {}
                     expiries = [date.fromisoformat(exp) for exp in call_chain.keys()]

@@ -1542,7 +1542,7 @@ class OptionsHelper:
             symbol = None
 
         is_index_like = self._is_index_like_underlying(underlying_asset, symbol)
-        days_out = 45 if is_index_like else 180
+        days_out = 45 if is_index_like else 60
         return min_expiration_date + timedelta(days=days_out)
 
     def _chain_hint(self, min_expiration_date: date, max_expiration_date: Optional[date] = None):

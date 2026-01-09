@@ -3549,7 +3549,7 @@ class ThetaDataBacktestingPandas(PandasData):
                 # default horizon bounded (vs Theta's multi-year default), but conservative enough
                 # not to break common 30-60DTE strategies. Strategies that truly need a different
                 # horizon should set `_chain_constraints["max_expiration_date"]`.
-                max_days_out = 45 if is_index_like else 180
+                max_days_out = 45 if is_index_like else 60
 
                 base_date = current_date
                 try:

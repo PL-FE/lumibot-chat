@@ -39,7 +39,7 @@ def test_thetadata_chains_default_max_expiration_intraday(monkeypatch):
 
     stock_asset = Asset("AAPL", asset_type=Asset.AssetType.STOCK)
     theta.get_chains(stock_asset)
-    assert captured["constraints"]["max_expiration_date"] == current_date + timedelta(days=180)
+    assert captured["constraints"]["max_expiration_date"] == current_date + timedelta(days=60)
 
 
 def test_thetadata_chains_default_max_expiration_uses_min_date_if_later(monkeypatch):
@@ -57,7 +57,7 @@ def test_thetadata_chains_default_max_expiration_uses_min_date_if_later(monkeypa
     theta._chain_constraints = {"min_expiration_date": current_date + timedelta(days=90)}
 
     theta.get_chains(Asset("AAPL", asset_type=Asset.AssetType.STOCK))
-    assert captured["constraints"]["max_expiration_date"] == current_date + timedelta(days=270)
+    assert captured["constraints"]["max_expiration_date"] == current_date + timedelta(days=150)
 
 
 def test_thetadata_chains_does_not_force_max_expiration_for_day_mode(monkeypatch):
