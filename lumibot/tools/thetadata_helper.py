@@ -6536,8 +6536,6 @@ def get_chains_cached(
                         continue
                     if min_expiration_date_coerced is not None and max(expiries) < min_expiration_date_coerced:
                         continue
-                    if max_expiration_date_coerced is not None and max(expiries) < max_expiration_date_coerced:
-                        continue
                 except Exception:
                     continue
 
