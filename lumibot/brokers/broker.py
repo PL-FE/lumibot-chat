@@ -3,6 +3,7 @@ import json
 import os
 import time
 import threading
+from collections import deque
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -98,7 +99,12 @@ class Broker(ABC):
         # (option-heavy intraday backtests can generate 100k+ events). Store rows in a Python list
         # and materialize a DataFrame lazily when needed.
         self._trade_event_log_enabled = True
-        self._trade_event_log_rows = []
+        # In live mode we must avoid unbounded growth in long-running workers (Render/ECS).
+        # Backtests keep full history for analysis.
+        self._trade_event_log_max_rows = None if self.IS_BACKTESTING_BROKER else 5000
+        self._trade_event_log_rows = (
+            deque(maxlen=self._trade_event_log_max_rows) if self._trade_event_log_max_rows else []
+        )
         self._trade_event_log_df_cache = pd.DataFrame()
         self._hold_trade_events = False
         self._held_trades = []
@@ -1805,7 +1811,8 @@ class Broker(ABC):
         cache = getattr(self, "_trade_event_log_df_cache", None)
         if cache is None:
             rows = getattr(self, "_trade_event_log_rows", [])
-            cache = pd.DataFrame(rows) if rows else pd.DataFrame()
+            # `rows` may be a deque in live mode.
+            cache = pd.DataFrame(list(rows)) if rows else pd.DataFrame()
             self._trade_event_log_df_cache = cache
         return cache
 
@@ -1819,6 +1826,11 @@ class Broker(ABC):
             return
         self._trade_event_log_enabled = True
         self._trade_event_log_df_cache = value
+        # Preserve bounded live behavior even if a caller sets the DF explicitly.
+        if getattr(self, "_trade_event_log_max_rows", None):
+            self._trade_event_log_rows = deque(maxlen=self._trade_event_log_max_rows)
+        else:
+            self._trade_event_log_rows = []
 
     def process_held_trades(self):
         """Processes any held trade notifications."""
@@ -1994,6 +2006,12 @@ class Broker(ABC):
             self._trade_event_log_rows.append(new_row)
             # Invalidate cached DataFrame representation.
             self._trade_event_log_df_cache = None
+
+        # Ensure cleanup runs even when a strategy rarely submits orders.
+        try:
+            self._trigger_periodic_cleanup()
+        except Exception:
+            pass
 
         return
 

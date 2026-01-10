@@ -22,6 +22,7 @@ Deploy marker: `d5c6b730` ("deploy 4.4.31")
 - Polygon: reduced split-cache rate limit thrash.
 - SMART_LIMIT: hardened behavior for quote/stream failures.
 - Backtesting progress: improved per-asset `download_status` for clearer “what is downloading” diagnostics.
+- Live (Tradier): treat `submitted/open/new` as equivalent to reduce repeated NEW events under polling; bound live trade-event history to avoid unbounded memory growth in long-running workers.
 
 ### Removed
 - ⚠️ Removed ThetaData chain default-horizon env vars (`THETADATA_CHAIN_DEFAULT_MAX_DAYS_OUT*`). Chain default horizons are now fixed and covered by tests.
