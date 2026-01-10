@@ -34,6 +34,10 @@ This page documents environment variables used by LumiBot, with an emphasis on *
 - Purpose: Selects the backtesting datasource **even if code passes an explicit `datasource_class`**.
 - Values (case-insensitive):
   - `thetadata`, `yahoo`, `polygon`, `alpaca`, `ccxt`, `databento`
+  - `ibkr` / `interactivebrokersrest` / `interactive_brokers_rest` (IBKR Client Portal REST via Data Downloader)
+  - `router` (multi-provider routing; defaults to Theta for stock/option/index and IBKR for futures/crypto)
+  - JSON mapping (multi-provider routing by asset type), e.g.:
+    - `{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}`
   - `none` to disable env override and rely on code.
 - Where: `lumibot/strategies/_strategy.py` datasource selection logic.
 

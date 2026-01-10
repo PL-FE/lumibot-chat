@@ -27,6 +27,8 @@ test_bot.py
 .vscode
 .coverage*
 .env
+.env.local
+.env.*.local
 lumi_tradier
 lumiwealth_tradier
 ThetaTerminal.jar

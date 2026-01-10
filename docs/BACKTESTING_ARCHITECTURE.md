@@ -2,7 +2,7 @@
 
 ## Overview
 
-LumiBot is a trading and backtesting framework. This document focuses on the **backtesting architecture**, specifically how data flows from external sources (Yahoo, ThetaData, Polygon) into the backtesting engine.
+LumiBot is a trading and backtesting framework. This document focuses on the **backtesting architecture**, specifically how data flows from external sources (Yahoo, ThetaData, IBKR Client Portal REST, Polygon) into the backtesting engine.
 
 **CORE PRINCIPLE: Backtesting must mimic live broker behavior.**
 
@@ -27,6 +27,8 @@ lumibot/
 │   ├── backtesting_broker.py        # Core BacktestingBroker class
 │   ├── yahoo_backtesting.py         # Yahoo Finance adapter
 │   ├── thetadata_backtesting_pandas.py  # ThetaData adapter
+│   ├── interactive_brokers_rest_backtesting.py # IBKR (Client Portal REST) adapter
+│   ├── routed_backtesting.py        # Multi-provider router (Theta + IBKR)
 │   ├── polygon_backtesting.py       # Polygon.io adapter
 │   └── pandas_backtesting.py        # Base class for pandas-based sources
 │
@@ -39,6 +41,7 @@ lumibot/
 │
 ├── tools/                 # Helper modules for data fetching
 │   ├── thetadata_helper.py          # ThetaData API & caching (IMPORTANT)
+│   ├── ibkr_helper.py               # IBKR API (via downloader) & caching
 │   ├── yahoo_helper.py              # Yahoo Finance API
 │   ├── polygon_helper.py            # Polygon.io API & caching
 │   └── backtest_cache.py            # S3/local cache management
@@ -69,22 +72,22 @@ lumibot/
 │                                                                          │
 │  BACKTESTING_DATA_SOURCE env var OVERRIDES explicit datasource_class    │
 │                                                                          │
-│  Options: yahoo, thetadata, polygon, alpaca, ccxt, databento             │
+│  Options: yahoo, thetadata, ibkr, router, polygon, alpaca, ccxt, databento │
 │  Set to "none" to use explicit class from code                          │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
-           ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-           │    Yahoo     │ │  ThetaData   │ │   Polygon    │
-           │  Backtesting │ │  Backtesting │ │  Backtesting │
-           └──────────────┘ └──────────────┘ └──────────────┘
-                    │               │               │
-                    ▼               ▼               ▼
-           ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-           │ YahooHelper  │ │ thetadata_   │ │  polygon_    │
-           │              │ │   helper     │ │   helper     │
-           └──────────────┘ └──────────────┘ └──────────────┘
+           ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+           │    Yahoo     │ │  ThetaData   │ │    IBKR      │ │   Polygon    │
+           │  Backtesting │ │  Backtesting │ │  Backtesting │ │  Backtesting │
+           └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+                    │               │               │               │
+                    ▼               ▼               ▼               ▼
+           ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+           │ YahooHelper  │ │ thetadata_   │ │  ibkr_helper │ │  polygon_    │
+           │              │ │   helper     │ │              │ │   helper     │
+           └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
                     │               │               │
                     ▼               ▼               ▼
            ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
@@ -564,14 +567,25 @@ Used primarily by ThetaData:
 Each data source has its own local cache:
 - ThetaData: Parquet files in `~/Library/Caches/lumibot/`
 - Polygon: Feather files in `LUMIBOT_CACHE_FOLDER/polygon/`
+- IBKR: Parquet files in `LUMIBOT_CACHE_FOLDER/ibkr/`
 
 ## Environment Variables
 
 ### Data Source Selection
 ```bash
-BACKTESTING_DATA_SOURCE=thetadata  # Options: yahoo, thetadata, polygon, etc.
+BACKTESTING_DATA_SOURCE=thetadata  # Options: yahoo, thetadata, ibkr, router, polygon, etc.
                                     # Set to "none" to use code-specified class
 ```
+
+### IBKR Backtesting (Client Portal REST)
+
+IBKR backtesting uses the shared Data Downloader and is cached locally (and optionally mirrored to S3) just like ThetaData.
+
+- Single-provider: `BACKTESTING_DATA_SOURCE=ibkr`
+- Multi-provider routing (Theta for stock/option/index; IBKR for futures/crypto):
+  ```bash
+  export BACKTESTING_DATA_SOURCE='{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}'
+  ```
 
 ### Backtest output artifacts (HTML/CSV)
 ```bash
