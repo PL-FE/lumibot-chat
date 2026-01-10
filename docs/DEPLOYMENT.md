@@ -57,8 +57,27 @@
    - If the version branch was already merged into `dev` before the changelog is complete, add the changelog fix as a follow-up PR to `dev`.
 
 5) **Verify published artifacts**
+   - PyPI is sometimes eventually-consistent (CDN/cache); the publish job can succeed but installs may fail for a few
+     minutes. Always wait for the version to be visible/instalable before proceeding with downstream rollouts.
    - Confirm PyPI shows the expected version:
      - `python3 -m pip index versions lumibot | head`
+   - Confirm the version is actually installable (retry for a few minutes):
+     - `python3 -m pip install --no-deps "lumibot==X.Y.Z"`
+     - If it fails, retry with a short loop:
+
+       ```bash
+       VERSION="X.Y.Z"
+       for i in {1..20}; do
+         if python3 -m pip install --no-deps "lumibot==${VERSION}"; then
+           echo "OK: lumibot==${VERSION} is installable"
+           break
+         fi
+         echo "Waiting for PyPI propagation (${i}/20)..."
+         sleep 15
+       done
+       ```
+   - If you want to “force” a fresh fetch in an environment that may have cached wheels:
+     - `python3 -m pip install --upgrade --force-reinstall --no-deps "lumibot==X.Y.Z"`
    - Confirm the GitHub tag exists and points at the intended commit:
      - `git show -s vX.Y.Z`
 
