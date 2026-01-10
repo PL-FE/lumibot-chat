@@ -3143,6 +3143,18 @@ class ThetaDataBacktestingPandas(PandasData):
                     start_dt = dt - delta_td
                     end_dt = dt + window_td
 
+                    # PERF: Keep snapshot-only quote payloads small but stable. Bucket to a fixed
+                    # intraday window so delta probes don't download full-session quote history and
+                    # don't create one cache file per bar.
+                    try:
+                        bucket_td = timedelta(minutes=15)
+                        bucket_minute = (dt.minute // 15) * 15
+                        bucket_start = dt.replace(minute=bucket_minute, second=0, microsecond=0)
+                        start_dt = bucket_start
+                        end_dt = bucket_start + bucket_td
+                    except Exception:
+                        pass
+
                 df_snapshot = thetadata_helper.get_historical_data_snapshot_cached(
                     asset,
                     start_dt,
@@ -3150,10 +3162,8 @@ class ThetaDataBacktestingPandas(PandasData):
                     ivl_ms,
                     datastyle="quote",
                     include_after_hours=True,
-                    # PERF: Cache a stable full-session file per (asset, trading_day) instead of a
-                    # unique file per dt-window. Long-window backtests (NVDA/SPX) otherwise generate
-                    # thousands of tiny snapshot files and spend most of their time in downloader IO.
-                    prefer_full_session=True,
+                    # Cache the bucketed window (not the full session) so strike/delta probes stay cheap.
+                    prefer_full_session=False,
                 )
 
                 def _negative_ttl() -> timedelta:

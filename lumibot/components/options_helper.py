@@ -714,6 +714,94 @@ class OptionsHelper:
                 best_idx: Optional[int] = None
                 best_delta: Optional[float] = None
 
+                # PERF: Seed strike evaluation near the target delta using a Black–Scholes delta
+                # inversion estimate and probe only a small neighborhood. This avoids the full
+                # binary-walk (and its many quote probes) for option-heavy strategies.
+                strike_estimate: Optional[float] = None
+                try:
+                    right_norm = str(right).strip().lower()
+                    is_call = right_norm.startswith("c")
+                    call_delta = float(target_delta) if is_call else float(target_delta) + 1.0
+                    if 0.01 < call_delta < 0.99:
+                        as_of = None
+                        try:
+                            now = self.strategy.get_datetime()
+                        except Exception:
+                            now = None
+                        if isinstance(now, datetime):
+                            as_of = now.date()
+                        elif isinstance(now, date):
+                            as_of = now
+                        if as_of is None:
+                            as_of = date.today()
+
+                        days_to_expiry = (expiry - as_of).days
+                        t_years = max(1.0 / 365.0, float(days_to_expiry) / 365.0)
+
+                        try:
+                            is_index_like = self._is_index_like_underlying(
+                                underlying_asset, getattr(underlying_asset, "symbol", None)
+                            )
+                        except Exception:
+                            is_index_like = False
+                        sigma = 0.25 if is_index_like else 0.35
+
+                        nd = NormalDist()
+                        d1 = nd.inv_cdf(call_delta)
+                        sig_sqrt_t = sigma * math.sqrt(t_years)
+                        if sig_sqrt_t > 0:
+                            ln_s_over_k = (d1 * sig_sqrt_t) - (0.5 * sigma * sigma * t_years)
+                            strike_estimate = float(underlying_price) / math.exp(ln_s_over_k)
+                except Exception:
+                    strike_estimate = None
+
+                if strike_estimate is not None:
+                    try:
+                        insert_at = bisect_left(strikes_sorted, strike_estimate)
+                        start_idx = min(max(insert_at, 0), len(strikes_sorted) - 1)
+                        if start_idx > 0:
+                            before = strikes_sorted[start_idx - 1]
+                            after = strikes_sorted[start_idx]
+                            if abs(before - strike_estimate) <= abs(after - strike_estimate):
+                                start_idx -= 1
+
+                        for offset in range(0, 5):
+                            for idx in (start_idx - offset, start_idx + offset):
+                                if idx < lo or idx > hi or idx in visited:
+                                    continue
+                                visited.add(idx)
+                                strike = strikes_sorted[idx]
+                                delta = self.get_delta_for_strike(
+                                    underlying_asset,
+                                    float(underlying_price),
+                                    strike,
+                                    expiry,
+                                    right,
+                                )
+                                strike_deltas[strike] = delta
+                                if delta is None:
+                                    continue
+                                if best_delta is None or abs(delta - target_delta) < abs(best_delta - target_delta):
+                                    best_delta = delta
+                                    best_idx = idx
+
+                        if best_idx is not None:
+                            for idx in range(max(0, best_idx - 2), min(len(strikes_sorted), best_idx + 3)):
+                                strike = strikes_sorted[idx]
+                                if strike in strike_deltas:
+                                    continue
+                                strike_deltas[strike] = self.get_delta_for_strike(
+                                    underlying_asset,
+                                    float(underlying_price),
+                                    strike,
+                                    expiry,
+                                    right,
+                                )
+                            return strike_deltas
+                    except Exception:
+                        # Fall back to the legacy binary-walk below.
+                        pass
+
                 for _ in range(max_iters):
                     if lo > hi:
                         break
@@ -895,6 +983,17 @@ class OptionsHelper:
 
         option_price, _, _ = self._get_option_mark_from_quote(option, snapshot=True)
         if option_price is None:
+            # PERF: In backtesting, falling back to get_last_price() for option strike probing can
+            # trigger full-session quote-history downloads (09:30→16:00) per strike. For strike
+            # selection we prefer "no data" over an expensive fallback; the caller can try a
+            # nearby strike instead.
+            broker = getattr(self.strategy, "broker", None)
+            is_backtesting = bool(getattr(broker, "IS_BACKTESTING_BROKER", False)) or bool(
+                getattr(self.strategy, "is_backtesting", False)
+            )
+            if is_backtesting:
+                self._per_bar_delta_cache[delta_cache_key] = None
+                return None
             try:
                 option_price = _coerce_price(self.strategy.get_last_price(option))
             except Exception:
@@ -2137,6 +2236,19 @@ class OptionsHelper:
                     candidates_to_check = candidates
 
             for exp_str, exp_date in candidates_to_check:
+                # PERF/ROBUSTNESS: For far-dated expirations in historical ThetaData backtests,
+                # strict quote validation is both expensive (requires strike list + quote probes)
+                # and can produce false negatives (sparse historical NBBO coverage). For those
+                # horizons, accept the expiration and let strategies handle missing pricing at
+                # point-of-trade.
+                if is_theta_backtest and as_of_date is not None:
+                    try:
+                        horizon_days = (exp_date - as_of_date).days
+                    except Exception:
+                        horizon_days = None
+                    if horizon_days is not None and horizon_days >= 60:
+                        return exp_date
+
                 strikes = specific_chain.get(exp_str)
                 if not strikes:
                     continue
