@@ -57,7 +57,12 @@ def test_ibkr_helper_caches_history_and_reuses_cache(monkeypatch, tmp_path):
     assert "missing" not in df1.columns
     assert isinstance(df1.index, pd.DatetimeIndex)
 
-    # Second call should reuse cached data without hitting the history endpoint again.
+    # NOTE: IBKR crypto backtesting requires actionable bid/ask for quote-aware fills.
+    # `ibkr_helper` may fetch additional history sources (e.g. Bid_Ask + Midpoint) to
+    # derive bid/ask when Trades bars don't contain separate quote fields.
+    history_calls_after_first = calls["history"]
+
+    # Second call should reuse cached data without hitting the history endpoints again.
     df2 = ibkr_helper.get_price_data(
         asset=asset,
         quote=quote,
@@ -68,7 +73,7 @@ def test_ibkr_helper_caches_history_and_reuses_cache(monkeypatch, tmp_path):
         include_after_hours=True,
     )
     assert not df2.empty
-    assert calls["history"] == 1
+    assert calls["history"] == history_calls_after_first
     assert calls["secdef"] == 1
 
 
@@ -119,9 +124,11 @@ def test_ibkr_helper_persists_fetched_bars_even_when_requested_window_has_no_ove
     )
     assert df.empty
 
-    parquet_files = list(tmp_path.rglob("*.parquet"))
-    assert len(parquet_files) == 1
-    cached = pd.read_parquet(parquet_files[0])
+    # Multiple parquet files may be produced when `ibkr_helper` fetches/derives bid/ask.
+    # We require that the Trades series was persisted even if it doesn't overlap the request.
+    trades_files = list(tmp_path.rglob("*_TRADES.parquet"))
+    assert len(trades_files) == 1
+    cached = pd.read_parquet(trades_files[0])
     assert len(cached) == 2
-    assert calls["history"] == 1
+    assert calls["history"] >= 1
     assert calls["secdef"] == 1

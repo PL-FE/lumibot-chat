@@ -19,16 +19,13 @@ from lumibot.strategies.strategy import Strategy
 pytestmark = pytest.mark.apitest
 
 
-def _require_local_ibkr_downloader() -> tuple[str, str, str]:
+def _require_ibkr_downloader() -> tuple[str, str, str]:
     base_url = (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip().rstrip("/")
     api_key = (os.environ.get("DATADOWNLOADER_API_KEY") or "").strip()
     api_key_header = (os.environ.get("DATADOWNLOADER_API_KEY_HEADER") or "X-Downloader-Key").strip()
 
     if not base_url or not api_key:
         pytest.skip("Missing DATADOWNLOADER_BASE_URL / DATADOWNLOADER_API_KEY")
-
-    if "127.0.0.1" not in base_url and "localhost" not in base_url:
-        pytest.skip("IBKR parity apitest requires local downloader (localhost)")
 
     try:
         resp = requests.get(
@@ -52,7 +49,7 @@ def _require_local_ibkr_downloader() -> tuple[str, str, str]:
 
 @pytest.mark.parametrize("symbol", ["BTC", "ETH"])
 def test_ibkr_crypto_minute_close_series_matches_polygon_reasonably(monkeypatch, tmp_path, symbol: str):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
 
     polygon_key = (os.environ.get("POLYGON_API_KEY") or POLYGON_API_KEY or "").strip()
     if not polygon_key:
@@ -184,7 +181,7 @@ class _ParityBuyHold(Strategy):
 
 @pytest.mark.parametrize("symbol", ["BTC", "ETH"])
 def test_ibkr_crypto_buyhold_return_is_close_to_polygon(monkeypatch, tmp_path, symbol: str):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
 
     polygon_key = (os.environ.get("POLYGON_API_KEY") or POLYGON_API_KEY or "").strip()
     if not polygon_key:

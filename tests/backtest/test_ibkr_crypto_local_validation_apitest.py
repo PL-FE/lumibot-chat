@@ -99,17 +99,13 @@ class _IbkrCryptoRoundTrip(Strategy):
             self.submit_order(order)
 
 
-def _require_local_ibkr_downloader() -> Tuple[str, str]:
+def _require_ibkr_downloader() -> Tuple[str, str]:
     base_url = (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip().rstrip("/")
     api_key = (os.environ.get("DATADOWNLOADER_API_KEY") or "").strip()
     api_key_header = (os.environ.get("DATADOWNLOADER_API_KEY_HEADER") or "X-Downloader-Key").strip()
 
     if not base_url or not api_key:
         pytest.skip("Missing DATADOWNLOADER_BASE_URL / DATADOWNLOADER_API_KEY")
-
-    # Safety: these apitests are intended for the local downloader + local IBeam only.
-    if "127.0.0.1" not in base_url and "localhost" not in base_url:
-        pytest.skip(f"IBKR local apitests require a local downloader; got DATADOWNLOADER_BASE_URL={base_url!r}")
 
     try:
         resp = requests.get(
@@ -185,7 +181,7 @@ def _derive_known_good_window_from_cached_bars(
 
 
 def test_ibkr_crypto_backtest_produces_tearsheet_and_trade_artifacts(monkeypatch, tmp_path):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
     monkeypatch.setenv("MARKET", "24/7")
 
     # Keep artifacts and cache isolated and easy to inspect.
@@ -243,7 +239,7 @@ def test_ibkr_crypto_backtest_produces_tearsheet_and_trade_artifacts(monkeypatch
 
 
 def test_ibkr_crypto_backtest_roundtrip_produces_tearsheet_and_trades(monkeypatch, tmp_path):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
     monkeypatch.setenv("MARKET", "24/7")
 
     # Keep artifacts and cache isolated and easy to inspect.
@@ -281,7 +277,7 @@ def test_ibkr_crypto_backtest_roundtrip_produces_tearsheet_and_trades(monkeypatc
 
 
 def test_ibkr_crypto_warm_backtest_does_not_touch_downloader(monkeypatch, tmp_path):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
     monkeypatch.setenv("MARKET", "24/7")
 
     import lumibot.tools.ibkr_helper as ibkr_helper

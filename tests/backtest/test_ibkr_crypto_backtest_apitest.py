@@ -28,16 +28,12 @@ class _DummyIbkrCryptoStrategy(Strategy):
         return
 
 
-def _require_local_ibkr_downloader() -> str:
+def _require_ibkr_downloader() -> str:
     base_url = (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip().rstrip("/")
     api_key = (os.environ.get("DATADOWNLOADER_API_KEY") or "").strip()
 
     if not base_url or not api_key:
         pytest.skip("Missing DATADOWNLOADER_BASE_URL / DATADOWNLOADER_API_KEY for IBKR apitest")
-
-    # Safety: this apitest is intended for local IBeam runs, not the production downloader.
-    if "127.0.0.1" not in base_url and "localhost" not in base_url:
-        pytest.skip(f"IBKR apitest requires local downloader; got DATADOWNLOADER_BASE_URL={base_url!r}")
 
     try:
         resp = requests.get(
@@ -61,7 +57,7 @@ def _require_local_ibkr_downloader() -> str:
 
 @pytest.mark.parametrize("symbol", ["BTC", "ETH"])
 def test_ibkr_crypto_backtest_smoke_local_fills_market_order(monkeypatch, tmp_path, symbol: str):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
 
     import lumibot.tools.ibkr_helper as ibkr_helper
 
@@ -168,7 +164,7 @@ def test_ibkr_crypto_backtest_smoke_local_fills_market_order(monkeypatch, tmp_pa
 
 
 def test_ibkr_crypto_backtest_smoke_local_fills_marketable_limit_orders(monkeypatch, tmp_path):
-    _require_local_ibkr_downloader()
+    _require_ibkr_downloader()
 
     import lumibot.tools.ibkr_helper as ibkr_helper
 
