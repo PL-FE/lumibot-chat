@@ -45,6 +45,8 @@ To use multiple providers in a single backtest (example: ThetaData for options/s
 
    export BACKTESTING_DATA_SOURCE='{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}'
 
+Routing values are case/whitespace/_/- insensitive. For crypto, you may also route to CCXT by using either ``"ccxt"`` (auto-select exchange) or a CCXT exchange id directly (for example: ``"coinbase"`` or ``"kraken"``).
+
 Market Data Subscriptions (IBKR)
 --------------------------------
 
@@ -62,4 +64,3 @@ Authentication / Session Behavior
 The Client Portal Gateway is session-based; if the session becomes unauthenticated, the gateway must be re-authenticated. IBKR documents the expected authentication lifecycle and recommends using ``/iserver/auth/ssodh/init`` to re-authenticate in most scenarios:
 
 - https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/
-

@@ -38,6 +38,10 @@ This page documents environment variables used by LumiBot, with an emphasis on *
   - `router` (multi-provider routing; defaults to Theta for stock/option/index and IBKR for futures/crypto)
   - JSON mapping (multi-provider routing by asset type), e.g.:
     - `{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}`
+    - Provider values are case/whitespace/_/- insensitive. Supported values include:
+      - `thetadata`, `ibkr`, `polygon`, `alpaca`
+      - `ccxt` (auto-select exchange from existing env/credentials)
+      - any CCXT exchange id (e.g., `coinbase`, `kraken`, `binance`, `kucoin`) to route crypto to that exchange
   - `none` to disable env override and rely on code.
 - Where: `lumibot/strategies/_strategy.py` datasource selection logic.
 

@@ -586,6 +586,9 @@ IBKR backtesting uses the shared Data Downloader and is cached locally (and opti
   ```bash
   export BACKTESTING_DATA_SOURCE='{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}'
   ```
+  - You can also route crypto to CCXT by using either:
+    - `{"crypto":"ccxt"}` (auto-select exchange from existing env/credentials), or
+    - a CCXT exchange id directly, e.g. `{"crypto":"coinbase"}` or `{"crypto":"kraken"}`.
 
 #### Crypto daily bars (important semantics)
 
