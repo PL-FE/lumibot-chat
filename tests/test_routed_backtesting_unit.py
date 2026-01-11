@@ -50,4 +50,3 @@ def test_router_routes_crypto_to_ibkr(monkeypatch):
 
     assert calls["ibkr"] == 1
     assert ds._data_store
-
