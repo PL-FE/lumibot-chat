@@ -124,6 +124,63 @@ class InteractiveBrokersRESTBacktesting(PandasData):
                 pass
         return super().get_last_price(asset, quote=quote, exchange=exchange)
 
+    def get_quote(self, asset, quote=None, exchange=None, **kwargs):
+        """Return the best available quote snapshot for IBKR backtests.
+
+        Performance trade-off:
+        - Daily-cadence crypto strategies frequently execute at midnight timestamps.
+        - Fetching 1-minute history just to support quote-based fills can be extremely slow.
+
+        For crypto at midnight, prefer the derived daily series (fast, stable) as the quote
+        source; otherwise fall back to PandasData's default minute-based quote path.
+        """
+        from lumibot.entities import Quote
+
+        base_asset = asset
+        quote_asset = quote
+        if isinstance(base_asset, tuple):
+            base_asset, quote_asset = base_asset
+        quote_asset = quote_asset if quote_asset is not None else Asset("USD", "forex")
+
+        asset_type = str(getattr(base_asset, "asset_type", "") or "").lower()
+        now = self.get_datetime()
+        if asset_type == "crypto" and now.hour == 0 and now.minute == 0 and now.second == 0 and now.microsecond == 0:
+            day_key = (base_asset, quote_asset, "day")
+            if day_key not in self._fully_loaded_series:
+                try:
+                    self._update_pandas_data(
+                        base_asset,
+                        quote_asset,
+                        "day",
+                        start_dt=self.datetime_start - timedelta(days=7),
+                        end_dt=self.datetime_end,
+                        exchange=self.exchange,
+                        include_after_hours=True,
+                    )
+                except Exception:
+                    pass
+                self._fully_loaded_series.add(day_key)
+
+            day_data = self._data_store.get(day_key)
+            if day_data is not None:
+                try:
+                    ohlcv_bid_ask_dict = day_data.get_quote(now)
+                    return Quote(
+                        asset=base_asset,
+                        price=ohlcv_bid_ask_dict.get("close"),
+                        bid=ohlcv_bid_ask_dict.get("bid"),
+                        ask=ohlcv_bid_ask_dict.get("ask"),
+                        volume=ohlcv_bid_ask_dict.get("volume"),
+                        timestamp=now,
+                        bid_size=ohlcv_bid_ask_dict.get("bid_size"),
+                        ask_size=ohlcv_bid_ask_dict.get("ask_size"),
+                        raw_data=ohlcv_bid_ask_dict,
+                    )
+                except Exception:
+                    pass
+
+        return super().get_quote(base_asset, quote=quote_asset, exchange=exchange)
+
     def _update_pandas_data(
         self,
         asset: Asset,
