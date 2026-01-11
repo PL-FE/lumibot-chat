@@ -5977,16 +5977,36 @@ def build_historical_chain(
 
         expiration_candidates.append((expiration_iso, strike_symbol))
 
-    # Populate expiration keys with empty strike lists. In ThetaData backtests, strike lists are
-    # loaded lazily (via Chains.enable_lazy_strikes) so we don't trigger massive
-    # `option/list/strikes` fanout during chain building on cold caches.
-    for expiration_iso, _strike_symbol in expiration_candidates:
-        chains["CALL"].setdefault(expiration_iso, [])
-        chains["PUT"].setdefault(expiration_iso, [])
+    # STRIKE PREFETCH OPTIMIZATION:
+    # Many strategies only need the expiration list from a chain (e.g. to choose a far-dated LEAPS
+    # expiry) and will only query strikes for 1-2 expirations. Fetching strikes for every
+    # expiration can generate hundreds of `option/list/strikes` requests and dominate runtime.
+    #
+    # When the caller didn't provide explicit chain constraints and the candidate list is large,
+    # pre-populate the chain with *all* expiration keys (empty strike lists), but only prefetch
+    # strikes for a small, representative subset (head + tail). This keeps common strategies fast
+    # while preserving the full expiration list.
+    user_constraints = chain_constraints or {}
+    user_hint_present = any(
+        user_constraints.get(key) is not None for key in ("min_expiration_date", "max_expiration_date")
+    )
 
-    # Never eagerly prefetch strikes during chain building. Strike lists are fetched lazily
-    # only for expirations a strategy actually touches (via Chains.enable_lazy_strikes).
-    expiration_candidates_for_strikes: List[Tuple[str, str]] = []
+    expiration_candidates_for_strikes = expiration_candidates
+    if not user_hint_present and len(expiration_candidates) > 50:
+        for expiration_iso, _strike_symbol in expiration_candidates:
+            chains["CALL"].setdefault(expiration_iso, [])
+            chains["PUT"].setdefault(expiration_iso, [])
+
+        head = expiration_candidates[:14]
+        tail = expiration_candidates[-14:] if len(expiration_candidates) > 14 else []
+        seen: set[Tuple[str, str]] = set()
+        pruned: List[Tuple[str, str]] = []
+        for item in head + tail:
+            if item in seen:
+                continue
+            seen.add(item)
+            pruned.append(item)
+        expiration_candidates_for_strikes = pruned
 
     total_strike_units = max(1, min(len(expiration_candidates_for_strikes), max_expirations))
     completed_strike_units = 0
