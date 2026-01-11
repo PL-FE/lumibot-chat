@@ -80,6 +80,12 @@ def get_price_data(
 
     history_source = _normalize_history_source(source)
 
+    # Normalize timestep classification once so callers can pass "day", "1d", "1day", etc.
+    try:
+        _bar, _bar_seconds, timestep_component = _timestep_to_ibkr_bar(timestep)
+    except Exception:
+        timestep_component = _timestep_component(timestep)
+
     # IMPORTANT (IBKR crypto daily semantics):
     # IBKR's `bar=1d` history is not a clean midnight-to-midnight 24/7 day series for crypto.
     # Daily-cadence strategies in LumiBot typically advance the simulation clock at midnight in
@@ -89,7 +95,7 @@ def get_price_data(
     #
     # Fix: for crypto only, derive daily bars from intraday history and align them to midnight
     # buckets in `LUMIBOT_DEFAULT_PYTZ`.
-    if asset_type == "crypto" and _timestep_component(timestep) == "day":
+    if asset_type == "crypto" and str(timestep_component).endswith("day"):
         return _get_crypto_daily_bars(
             asset=asset,
             quote=quote,
@@ -189,7 +195,7 @@ def get_price_data(
     #
     # IMPORTANT (performance): do not do this for daily series (and avoid doing it for large
     # multi-month windows unless required) because it multiplies request volume.
-    if asset_type == "crypto" and _timestep_component(timestep) == "minute":
+    if asset_type == "crypto" and str(timestep_component).endswith("minute"):
         df_aug, changed = _maybe_augment_crypto_bid_ask(
             df_cache=df_cache,
             asset=asset,

@@ -1,12 +1,16 @@
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from lumibot.backtesting.thetadata_backtesting_pandas import ThetaDataBacktestingPandas
+from lumibot.constants import LUMIBOT_DEFAULT_PYTZ
+from lumibot.credentials import POLYGON_API_KEY
 from lumibot.entities import Asset, Data
 from lumibot.tools import ibkr_helper
+from lumibot.tools import polygon_helper
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +21,7 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
     Current supported providers:
     - ThetaData (default): stocks, options, indexes
     - IBKR Client Portal (REST) via the shared Data Downloader: futures + spot crypto
+    - Polygon: optional crypto parity checks
 
     Routing is configured via `config["backtesting_data_routing"]` (a dict mapping asset_type -> provider).
     """
@@ -29,6 +34,7 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
         # Track which IBKR series have been fully prefetched for the backtest window.
         # This prevents slow "one request per simulated day" behavior for daily-cadence crypto strategies.
         self._ibkr_fully_loaded_series: set[tuple] = set()
+        self._polygon_fully_loaded_series: set[tuple] = set()
 
     @staticmethod
     def _extract_routing_config(config: Any) -> Optional[Dict[str, str]]:
@@ -60,9 +66,20 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
                 provider = "thetadata"
             elif provider in {"ibkr", "interactivebrokersrest", "interactive_brokers_rest"}:
                 provider = "ibkr"
+            elif provider in {"polygon", "poly"}:
+                provider = "polygon"
             normalized[asset_type] = provider
 
         normalized.setdefault("default", "thetadata")
+
+        allowed = {"thetadata", "ibkr", "polygon"}
+        unknown = sorted({p for p in normalized.values() if p and p not in allowed})
+        if unknown:
+            raise ValueError(
+                f"Unsupported backtesting_data_routing provider(s): {unknown}. "
+                f"Allowed providers: {sorted(allowed)}"
+            )
+
         return normalized
 
     def _provider_for_asset(self, asset: Asset) -> str:
@@ -87,7 +104,7 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
             asset_separated, quote_asset = asset_separated
 
         provider = self._provider_for_asset(asset_separated)
-        if provider != "ibkr":
+        if provider not in {"ibkr", "polygon"}:
             return super()._update_pandas_data(
                 asset,
                 quote,
@@ -104,8 +121,9 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
 
         end_dt = start_dt if isinstance(start_dt, datetime) else self.get_datetime()
         ts = timestep or self.get_timestep()
+        start_buffer = timedelta(0) if provider == "ibkr" else timedelta(days=5)
         # IBKR crypto/futures trade outside equity calendars; do not add the default 5-day padding.
-        start_datetime, ts_unit = self.get_start_datetime_and_ts_unit(length, ts, start_dt=end_dt, start_buffer=timedelta(0))
+        start_datetime, ts_unit = self.get_start_datetime_and_ts_unit(length, ts, start_dt=end_dt, start_buffer=start_buffer)
         if ts_unit == "day":
             # Mirror ThetaDataBacktestingPandas: mark that day data exists so day-mode callers
             # (e.g., get_last_price) can align away from minute bars when appropriate.
@@ -129,6 +147,75 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
                 pass
 
         asset_type = str(getattr(asset_separated, "asset_type", "") or "").lower()
+        if provider == "polygon":
+            polygon_key = (os.environ.get("POLYGON_API_KEY") or POLYGON_API_KEY or "").strip()
+            if not polygon_key:
+                raise ValueError("Routing selected Polygon but POLYGON_API_KEY is not configured.")
+
+            ts_lower = str(ts_unit or "").lower()
+            if ts_lower.endswith("day"):
+                timespan = "day"
+            elif ts_lower.endswith("hour"):
+                timespan = "hour"
+            else:
+                timespan = "minute"
+
+            if asset_type == "crypto" and ts_unit == "day" and canonical_key not in self._polygon_fully_loaded_series:
+                try:
+                    lookback_days = max(7, int(length) + 5)
+                except Exception:
+                    lookback_days = 7
+                prefetch_start = min(start_datetime, self.datetime_start - timedelta(days=lookback_days))
+                prefetch_end = self.datetime_end
+                df = polygon_helper.get_price_data_from_polygon(
+                    api_key=polygon_key,
+                    asset=asset_separated,
+                    quote_asset=quote_asset,
+                    start=prefetch_start,
+                    end=prefetch_end,
+                    timespan=timespan,
+                    force_cache_update=False,
+                    max_workers=4,
+                )
+                self._polygon_fully_loaded_series.add(canonical_key)
+            else:
+                df = polygon_helper.get_price_data_from_polygon(
+                    api_key=polygon_key,
+                    asset=asset_separated,
+                    quote_asset=quote_asset,
+                    start=start_datetime,
+                    end=end_dt,
+                    timespan=timespan,
+                    force_cache_update=False,
+                    max_workers=4,
+                )
+
+            if df is None or df.empty:
+                return None
+
+            if isinstance(df.index, pd.DatetimeIndex):
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
+                df.index = df.index.tz_convert(LUMIBOT_DEFAULT_PYTZ)
+                df = df.sort_index()
+            if "close" in df.columns:
+                # Provide quote-like columns for fill/mark logic (matches IBKR daily behavior).
+                if "bid" not in df.columns:
+                    df["bid"] = pd.to_numeric(df["close"], errors="coerce")
+                if "ask" not in df.columns:
+                    df["ask"] = pd.to_numeric(df["close"], errors="coerce")
+
+            if existing_df is not None and isinstance(existing_df, pd.DataFrame) and not existing_df.empty:
+                merged = pd.concat([existing_df, df], axis=0).sort_index()
+                merged = merged[~merged.index.duplicated(keep="last")]
+            else:
+                merged = df
+
+            data = Data(asset_separated, merged, timestep=ts_unit, quote=quote_asset)
+            self._data_store[canonical_key] = data
+            if legacy_key not in self._data_store:
+                self._data_store[legacy_key] = data
+            return None
         # Crypto daily backtests frequently request a rolling lookback (e.g. 200D SMA) at every
         # simulated day, which can otherwise translate into one IBKR request per day.
         #
@@ -197,7 +284,7 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
         except Exception:
             provider = "thetadata"
 
-        if provider == "ibkr" and timestep == "minute":
+        if provider in {"ibkr", "polygon"} and timestep == "minute":
             # If this run hasn't shown intraday cadence, prefer day-level marks for crypto to avoid
             # expensive minute-by-minute backfill during daily strategies.
             if not bool(getattr(self, "_observed_intraday_cadence", False)) and bool(

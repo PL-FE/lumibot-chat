@@ -93,3 +93,37 @@ def test_ibkr_fetch_history_between_dates_does_not_break_early_on_short_chunks(m
     assert not df.empty
     assert df.index.min() <= start
 
+
+def test_ibkr_crypto_get_price_data_derives_daily_for_1d_like_timesteps(monkeypatch):
+    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
+    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 2, tzinfo=timezone.utc)
+
+    called = {"count": 0}
+
+    def _fake_daily(**kwargs):
+        called["count"] += 1
+        return pd.DataFrame(
+            {"open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [0]},
+            index=pd.DatetimeIndex([pd.Timestamp("2025-01-01", tz=ibkr_helper.LUMIBOT_DEFAULT_PYTZ)]),
+        )
+
+    monkeypatch.setattr(ibkr_helper, "_get_crypto_daily_bars", _fake_daily)
+
+    for ts in ("day", "1d", "1day", "2day"):
+        df = ibkr_helper.get_price_data(
+            asset=base,
+            quote=quote,
+            timestep=ts,
+            start_dt=start,
+            end_dt=end,
+            exchange="ZEROHASH",
+            include_after_hours=True,
+            source="Trades",
+        )
+        assert df is not None
+        assert not df.empty
+
+    assert called["count"] == 4
