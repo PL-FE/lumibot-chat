@@ -3604,6 +3604,30 @@ def get_historical_data_snapshot_cached(
             password=password,
         )
 
+    # CI/acceptance backtests run with a read-only S3 cache and a strict "no downloader queue"
+    # invariant. Snapshot cache filenames are window-specific, so they may not exist in the warm
+    # S3 namespace even when the full-session parquet caches are already present.
+    #
+    # In read-only mode, prefer the canonical (non-snapshot) cache layout via `get_historical_data`
+    # so we reuse warmed objects instead of attempting to create new snapshot objects.
+    try:
+        from lumibot.tools.backtest_cache import CacheMode, get_backtest_cache
+
+        cache_manager = get_backtest_cache()
+        if cache_manager.enabled and cache_manager.mode == CacheMode.S3_READONLY:
+            return get_historical_data(
+                asset,
+                start_dt,
+                end_dt,
+                ivl,
+                datastyle=datastyle,
+                include_after_hours=include_after_hours,
+                username=username,
+                password=password,
+            )
+    except Exception:
+        pass
+
     interval_label = _interval_label_from_ms(ivl)
     day = trading_days[0]
     start_local = _normalize_market_datetime(start_dt)
