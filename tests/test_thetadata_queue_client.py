@@ -9,7 +9,6 @@ Tests cover:
 - Local tracking of pending requests
 - Error handling
 """
-import os
 import threading
 import time
 from unittest.mock import MagicMock, patch
