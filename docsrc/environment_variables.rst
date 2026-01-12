@@ -40,6 +40,12 @@ BACKTESTING_DATA_SOURCE
 - Purpose: Select the backtesting datasource **even if your code passes a `datasource_class`**.
 - Values (case-insensitive):
   - ``thetadata``, ``yahoo``, ``polygon``, ``alpaca``, ``ccxt``, ``databento``
+  - ``ibkr`` / ``interactivebrokersrest`` / ``interactive_brokers_rest`` (IBKR Client Portal REST via Data Downloader)
+  - ``router`` (multi-provider routing; defaults to Theta for stock/option/index and IBKR for futures/crypto)
+  - JSON mapping (multi-provider routing by asset type), e.g. ``{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}``
+    - Provider values are case/whitespace/_/- insensitive.
+    - Supported values include ``thetadata``, ``ibkr``, ``polygon``, ``alpaca``, and ``ccxt``.
+    - For CCXT, you may use ``ccxt`` (auto-select exchange from existing env/credentials) **or** specify a CCXT exchange id directly (for example: ``coinbase``, ``kraken``, ``binance``, ``kucoin``).
   - ``none`` to disable the env override and rely on code.
 
 Testing / CI guardrails

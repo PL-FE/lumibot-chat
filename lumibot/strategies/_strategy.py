@@ -31,6 +31,7 @@ from ..backtesting import (
     DataBentoDataBacktesting,
     InteractiveBrokersRESTBacktesting,
     PolygonDataBacktesting,
+    RoutedBacktestingPandas,
     ThetaDataBacktesting,
     ThetaDataBacktestingPandas,
     YahooDataBacktesting,
@@ -46,7 +47,6 @@ from ..credentials import (
     DISCORD_WEBHOOK_URL,
     HIDE_POSITIONS,
     HIDE_TRADES,
-    INTERACTIVE_BROKERS_REST_CONFIG,
     LIVE_CONFIG,
     LOG_BACKTEST_PROGRESS_TO_FILE,
     LUMIWEALTH_API_KEY,
@@ -1369,6 +1369,42 @@ class _Strategy:
 
                 self._benchmark_returns_df = df
 
+            # IBKR crypto backtests: compute benchmark from the backtest data source (not Yahoo).
+            # Yahoo symbols for crypto (e.g., "BTC") are inconsistent and can result in empty series,
+            # which breaks tearsheet generation. Using the backtest data ensures consistency and
+            # keeps the run fully offline from external market data sites.
+            elif str(getattr(self.broker.data_source, "SOURCE", "") or "").upper() == "INTERACTIVEBROKERSREST":
+                benchmark_asset = self._benchmark_asset
+                if isinstance(benchmark_asset, str):
+                    parts = [p.strip() for p in benchmark_asset.split("/") if p.strip()]
+                    if len(parts) == 2:
+                        benchmark_asset = (Asset(symbol=parts[0], asset_type="crypto"), Asset(symbol=parts[1], asset_type="forex"))
+                    else:
+                        benchmark_asset = Asset(symbol=benchmark_asset, asset_type="crypto")
+
+                timestep = "minute"
+                if "D" in str(self._sleeptime):
+                    timestep = "day"
+
+                bars = self.broker.data_source.get_historical_prices_between_dates(
+                    benchmark_asset,
+                    timestep,
+                    start_date=self._backtesting_start,
+                    end_date=backtesting_end_adjusted,
+                    quote=self._quote_asset,
+                )
+                if bars is None or getattr(bars, "df", None) is None:
+                    self.logger.error(f"Couldn't get benchmark bars from IBKR data source: {benchmark_asset}")
+                    return
+                df = bars.df
+                if df is None or df.empty or "close" not in df.columns:
+                    self.logger.error(f"IBKR benchmark bars empty/invalid: {benchmark_asset}")
+                    return
+                df = df.copy()
+                df["return"] = df["close"].pct_change(fill_method=None)
+                df["symbol_cumprod"] = (1 + df["return"]).cumprod()
+                self._benchmark_returns_df = df
+
             if type(self.broker.data_source) == AlpacaBacktesting:
                 benchmark_asset = self._benchmark_asset
 
@@ -1467,9 +1503,6 @@ class _Strategy:
                             "OPTION_DATA_SOURCE",
                             type(self.broker.option_source).__name__,
                         )
-                    base_url = os.environ.get("DATADOWNLOADER_BASE_URL")
-                    if base_url:
-                        strategy_parameters.setdefault("DATADOWNLOADER_BASE_URL", base_url)
             except Exception:
                 # Never fail tearsheet generation due to metadata/diagnostics.
                 pass
@@ -1751,11 +1784,23 @@ class _Strategy:
         # datasource_class argument was provided.
         env_override_raw = os.environ.get("BACKTESTING_DATA_SOURCE")
         env_override_name = None
+        env_override_routing = None
 
         if env_override_raw is not None:
             trimmed = env_override_raw.strip()
             if trimmed and trimmed.lower() != "none":
-                env_override_name = trimmed.lower()
+                if trimmed.startswith("{") and trimmed.endswith("}"):
+                    try:
+                        parsed = json.loads(trimmed)
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        env_override_name = "router"
+                        env_override_routing = parsed
+                    else:
+                        env_override_name = trimmed.lower()
+                else:
+                    env_override_name = trimmed.lower()
         elif datasource_class is None:
             # No override provided and no class in code – fall back to the default
             # configured in credentials (ThetaData unless the project overrides it).
@@ -1769,6 +1814,12 @@ class _Strategy:
                 "alpaca": AlpacaBacktesting,
                 "ccxt": CcxtBacktesting,
                 "databento": DataBentoDataBacktesting,
+                "ibkr": InteractiveBrokersRESTBacktesting,
+                "interactivebrokersrest": InteractiveBrokersRESTBacktesting,
+                "interactive_brokers_rest": InteractiveBrokersRESTBacktesting,
+                "router": RoutedBacktestingPandas,
+                "thetadata_ibkr": RoutedBacktestingPandas,
+                "theta_ibkr": RoutedBacktestingPandas,
             }
 
             if env_override_name not in datasource_map:
@@ -1779,6 +1830,20 @@ class _Strategy:
                 )
 
             datasource_class = datasource_map[env_override_name]
+
+            if env_override_routing is not None:
+                if config is None:
+                    config = {}
+                if isinstance(config, dict):
+                    merged = dict(config)
+                    merged["backtesting_data_routing"] = env_override_routing
+                    config = merged
+                else:
+                    try:
+                        setattr(config, "backtesting_data_routing", env_override_routing)
+                    except Exception:
+                        pass
+
             label = env_override_raw or _DEFAULT_BACKTESTING_DATA_SOURCE
             get_logger(__name__).info(colored(
                 f"Using BACKTESTING_DATA_SOURCE setting for backtest data: {label}",
@@ -1906,7 +1971,9 @@ class _Strategy:
                 log_backtest_progress_to_file=LOG_BACKTEST_PROGRESS_TO_FILE,
                 **kwargs,
             )
-        elif datasource_class.__name__ == 'ThetaDataBacktesting' or (optionsource_class and optionsource_class.__name__ == 'ThetaDataBacktesting'):
+        elif issubclass(datasource_class, ThetaDataBacktestingPandas) or (
+            optionsource_class and issubclass(optionsource_class, ThetaDataBacktestingPandas)
+        ):
             data_source = datasource_class(
                 backtesting_start,
                 backtesting_end,
@@ -1924,7 +1991,7 @@ class _Strategy:
             data_source = datasource_class(
                 backtesting_start,
                 backtesting_end,
-                config=INTERACTIVE_BROKERS_REST_CONFIG,
+                config=config,
                 auto_adjust=auto_adjust,
                 pandas_data=pandas_data,
                 show_progress_bar=show_progress_bar,

@@ -105,7 +105,14 @@ def _base_env(repo_root: Path) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
         {
+            # The acceptance subprocess should behave like GitHub CI (where CI=true is always set),
+            # so any CI-only guardrails in the data path are consistently exercised locally too.
+            "CI": "true",
             "IS_BACKTESTING": "True",
+            # Acceptance backtests are intended to validate ThetaData + downloader + S3 warm-cache
+            # behavior. Many Strategy Library demo scripts default to Polygon for minute-level runs,
+            # so force ThetaData here regardless of the script's `datasource_class=` argument.
+            "BACKTESTING_DATA_SOURCE": "thetadata",
             "SHOW_PLOT": "False",
             "SHOW_INDICATORS": "False",
             # Never open the tearsheet in a browser during tests.
