@@ -826,10 +826,16 @@ class ThetaDataBacktestingPandas(PandasData):
                         from lumibot.tools.helpers import get_trading_days
 
                         market = os.environ.get("BACKTESTING_MARKET", "NYSE")
-                        close_cache = getattr(self, "_session_close_cache", None)
+                        # NOTE: Do not reuse `_session_close_cache` here.
+                        # The small-window "align to session close" logic above intentionally caches
+                        # the *forward* session close for a given date (which may be AFTER the current
+                        # `end_requirement` timestamp). For the end-coverage clamp we need the *last*
+                        # session close at or before the end timestamp, so cache it separately to
+                        # avoid collisions that prevent clamping on weekends/holidays.
+                        close_cache = getattr(self, "_session_close_cache_last", None)
                         if close_cache is None:
                             close_cache = {}
-                            self._session_close_cache = close_cache
+                            self._session_close_cache_last = close_cache
 
                         cache_date = end_requirement.date() if hasattr(end_requirement, "date") else end_requirement
                         cache_key = (market, cache_date)
@@ -860,18 +866,21 @@ class ThetaDataBacktestingPandas(PandasData):
                             "[THETA][DEBUG][END_REQUIREMENT] failed to align intraday option end_requirement",
                             exc_info=True,
                         )
-                # CORRECTNESS + PERFORMANCE: For index minute OHLC in Theta backtests, the provider is
-                # regular-session (RTH) bounded (e.g. ~09:30–16:00 ET for SPX) and does not provide
-                # bars through 23:59/UTC-midnight. If we require coverage through the backtest end
-                # bound (often 23:59 or 18:59 ET depending on how end dates are serialized), the
-                # cache will *never* be "complete" and we can enter a perpetual STALE→REFRESH loop
-                # (observed in SPX0DTEHybridStrangle production runs).
+                # CORRECTNESS + PERFORMANCE: For index intraday data in Theta backtests, the provider is
+                # regular-session (RTH) bounded (e.g. ~09:30–16:00 ET for SPX, with early closes on
+                # holidays) and does not provide bars through 23:59/UTC-midnight.
                 #
-                # Clamp the intraday end requirement down to the session close for the end date so
-                # "covered through close" is considered complete.
+                # If we require coverage through the backtest end bound (often 23:59 or 18:59 ET
+                # depending on how end dates are serialized), the cache can become impossible to satisfy
+                # and we can enter a perpetual STALE→REFRESH loop (observed in:
+                # - SPX0DTEHybridStrangle prod runs dominated by v3/index/history/ohlc
+                # - acceptance SPX short straddle runs stuck on SPXW minute prefetch).
+                #
+                # Clamp the intraday end requirement down to the *last trading session close* at or
+                # before the end requirement datetime so "covered through close" is considered complete
+                # even when the backtest end falls on a weekend/holiday.
                 if (
                     is_index_asset
-                    and require_ohlc_data
                     and not snapshot_only
                     and ts_unit in {"minute", "hour"}
                     and end_requirement is not None
@@ -890,15 +899,22 @@ class ThetaDataBacktestingPandas(PandasData):
                         if cache_key in close_cache:
                             cached_close = close_cache.get(cache_key)
                         else:
+                            # Include a small lookback window so holidays/weekends resolve to the prior
+                            # session close (e.g., 2025-12-25 holiday should clamp to 2025-12-24 early close).
                             schedule = get_trading_days(
                                 market=market,
-                                start_date=end_requirement,
+                                start_date=end_requirement - timedelta(days=7),
                                 end_date=end_requirement + timedelta(days=2),
                                 tzinfo=self.tzinfo,
                             )
                             cached_close = None
                             if not schedule.empty:
-                                cached_close = schedule.iloc[0]["market_close"]
+                                closes = schedule["market_close"]
+                                candidates = closes[closes <= end_requirement]
+                                if not candidates.empty:
+                                    cached_close = candidates.iloc[-1]
+                                else:
+                                    cached_close = closes.iloc[0]
                             close_cache[cache_key] = cached_close
 
                         if cached_close is not None and end_requirement > cached_close:
