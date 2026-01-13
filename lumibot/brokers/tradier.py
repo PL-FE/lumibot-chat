@@ -522,6 +522,13 @@ class Tradier(Broker):
 
         positions_ret = []
 
+        if strategy is None:
+            strategy_name = "Unknown"
+        elif isinstance(strategy, str):
+            strategy_name = strategy
+        else:
+            strategy_name = getattr(strategy, "name", str(strategy))
+
         # Loop through each row in the dataframe
         for _, row in positions_df.iterrows():
             # Get the symbol/quantity and create the position asset
@@ -531,7 +538,7 @@ class Tradier(Broker):
 
             # Create the position
             position = Position(
-                strategy=strategy.name if strategy else "Unknown",
+                strategy=strategy_name,
                 asset=asset,
                 quantity=quantity,
             )
