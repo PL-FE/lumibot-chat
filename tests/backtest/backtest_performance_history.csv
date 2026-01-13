@@ -7060,3 +7060,4 @@ timestamp,test_name,data_source,trading_days,execution_time_seconds,git_commit,l
 2026-01-13T04:19:45.294258,test_limit_and_trailing_stops,unknown,,0.165,cf65a0be,4.4.33,,,,,Auto-tracked from test_example_strategies
 2026-01-13T04:19:52.591974,test_trading_iteration_failure_raises_exception,unknown,,6.376,cf65a0be,4.4.33,,,,,Auto-tracked from test_failing_backtest
 2026-01-13T04:20:00.619524,test_backtest_classmethod_trading_iteration_failure,unknown,,7.539,cf65a0be,4.4.33,,,,,Auto-tracked from test_failing_backtest
+2026-01-13T04:40:22.676155,test_acceptance_spx_short_straddle,unknown,,215.925,1ffc1351,4.4.33,,,,,Auto-tracked from test_acceptance_backtests_ci
