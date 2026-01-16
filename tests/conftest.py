@@ -322,6 +322,11 @@ def pytest_runtest_setup(item: pytest.Item):
         if _is_placeholder(downloader_key):
             missing.append("DATADOWNLOADER_API_KEY")
 
+        # Enforce the shared downloader endpoint is specified as well
+        downloader_base = os.environ.get("DATADOWNLOADER_BASE_URL")
+        if _is_placeholder(downloader_base):
+            missing.append("DATADOWNLOADER_BASE_URL")
+
     if missing:
         reason = (
             "Skipping API test due to missing/placeholder credentials: "
