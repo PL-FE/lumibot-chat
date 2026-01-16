@@ -552,12 +552,12 @@ class Alpaca(Broker):
         trail_price_value = getattr(response, 'trail_price', None) or resp_raw.get('trail_price')
         trail_percent_value = getattr(response, 'trail_percent', None) or resp_raw.get('trail_percent')
         stop_limit_price = limit_price_value if order_type_value == Order.OrderType.STOP_LIMIT or order_type_value == "stop_limit" else None
-        # Average fill price: support both Alpaca field names
+        # Average fill price: prefer raw dict first to avoid MagicMock auto-attributes,
+        # support both Alpaca field names, then fall back to explicit attribute
         avg_fill_price_value = (
-            getattr(response, 'filled_avg_price', None)
-            or getattr(response, 'avg_fill_price', None)
-            or (resp_raw.get('filled_avg_price') if isinstance(resp_raw, dict) else None)
+            (resp_raw.get('filled_avg_price') if isinstance(resp_raw, dict) else None)
             or (resp_raw.get('avg_fill_price') if isinstance(resp_raw, dict) else None)
+            or getattr(response, 'filled_avg_price', None)
         )
 
         # Time in force and status
@@ -597,12 +597,13 @@ class Alpaca(Broker):
             time_in_force=time_in_force_value,
             order_class=order_class_value,
             order_type=order_type_value if order_type_value != "trailing_stop" else Order.OrderType.TRAIL,
-            date_created=getattr(response, 'created_at', None),
+            # Prefer raw first to avoid MagicMock traps
+            date_created=(resp_raw.get('created_at') if isinstance(resp_raw, dict) else None) or getattr(response, 'created_at', None),
             # TODO: remove hardcoding in case Alpaca allows crypto to crypto trading
             quote=Asset(symbol="USD", asset_type="forex"),
         )
         order.set_identifier(identifier_value)
-        order.broker_create_date = getattr(response, 'created_at', None)
+        order.broker_create_date = (resp_raw.get('created_at') if isinstance(resp_raw, dict) else None) or getattr(response, 'created_at', None)
         order.broker_update_date = getattr(response, 'updated_at', None)
         order.status = status_value
         order.update_raw(response)
