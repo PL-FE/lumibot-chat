@@ -315,6 +315,13 @@ def pytest_runtest_setup(item: pytest.Item):
         if _is_placeholder(theta_pass):
             missing.append("THETADATA_PASSWORD")
 
+    # Downloader-specific requirement: shared downloader API key
+    # Only enforce when tests are explicitly marked with `downloader`.
+    if has_downloader:
+        downloader_key = os.environ.get("DATADOWNLOADER_API_KEY")
+        if _is_placeholder(downloader_key):
+            missing.append("DATADOWNLOADER_API_KEY")
+
     if missing:
         reason = (
             "Skipping API test due to missing/placeholder credentials: "

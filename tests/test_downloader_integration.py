@@ -12,14 +12,6 @@ pytestmark = [pytest.mark.downloader, pytest.mark.thetadata]
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DOWNLOADER_BASE_URL = "http://data-downloader.lumiwealth.com:8080"
 
-if (
-    not os.environ.get("DATADOWNLOADER_API_KEY")
-    or not os.environ.get("THETADATA_USERNAME")
-    or os.environ.get("THETADATA_USERNAME") == "uname"
-    or not os.environ.get("THETADATA_PASSWORD")
-):
-    pytest.skip("missing DATADOWNLOADER/THETADATA credentials", allow_module_level=True)
-
 
 def _normalize_downloader_base_url(value: Optional[str]) -> str:
     if not value:
