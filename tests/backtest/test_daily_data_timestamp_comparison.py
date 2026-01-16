@@ -29,15 +29,9 @@ from lumibot.tools.polygon_helper import get_price_data_from_polygon as polygon_
 
 load_dotenv()
 
-
-if (
-    not os.environ.get("POLYGON_API_KEY")
-    or os.environ.get("POLYGON_API_KEY") == "<your key here>"
-    or not os.environ.get("THETADATA_USERNAME")
-    or os.environ.get("THETADATA_USERNAME") == "uname"
-    or not os.environ.get("THETADATA_PASSWORD")
-):
-    pytest.skip(allow_module_level=True)
+# Mark this module as requiring external API/data downloads.
+# Centralized skipping is handled in tests/conftest.py
+pytestmark = [pytest.mark.apitest, pytest.mark.downloader]
 
 class TestDailyDataTimestampComparison:
     """

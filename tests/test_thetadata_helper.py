@@ -21,13 +21,6 @@ from lumibot.tools import thetadata_helper
 from lumibot.backtesting import ThetaDataBacktestingPandas
 from lumibot.tools.backtest_cache import CacheMode
 
-if (
-    not os.environ.get("THETADATA_USERNAME")
-    or os.environ.get("THETADATA_USERNAME") == "uname"
-    or not os.environ.get("THETADATA_PASSWORD")
-):
-    pytest.skip(allow_module_level=True)
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "thetadata_v3"
 
 

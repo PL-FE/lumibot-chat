@@ -15,7 +15,7 @@ if (
     or os.environ.get("THETADATA_USERNAME") == "uname"
     or not os.environ.get("THETADATA_PASSWORD")
 ):
-    pytest.skip(allow_module_level=True)
+    pytest.skip("missing DATADOWNLOADER/THETADATA credentials", allow_module_level=True)
 
 
 def _normalize_downloader_base_url(value: Optional[str]) -> str:
@@ -58,12 +58,16 @@ def test_remote_downloader_stock_smoke(tmp_path):
         env["PYTHONPATH"] = str(REPO_ROOT)
 
     script = r"""
+import os
 import datetime
 import pytz
 from lumibot.entities import Asset
 from lumibot.tools import thetadata_helper
 
 assert thetadata_helper.REMOTE_DOWNLOADER_ENABLED, "Remote downloader flag must be set"
+
+username = os.environ["THETADATA_USERNAME"]
+password = os.environ["THETADATA_PASSWORD"]
 
 asset = Asset(asset_type="stock", symbol="PLTR")
 start = pytz.UTC.localize(datetime.datetime(2024, 9, 16, 9, 30))
@@ -74,8 +78,8 @@ df = thetadata_helper.get_historical_data(
     start_dt=start,
     end_dt=end,
     ivl=60000,
-    username="%s",
-    password="%s",
+    username=username,
+    password=password,
     datastyle="ohlc",
     include_after_hours=False,
 )
@@ -86,7 +90,7 @@ print(f"remote rows={len(df)} first_ts={df.index[0]}")
 
     # Write the script to disk so subprocess traces are easier to debug when needed.
     smoke_path = tmp_path / "downloader_smoke.py"
-    smoke_path.write_text(script % (username, password), encoding="utf-8")
+    smoke_path.write_text(script, encoding="utf-8")
 
     result = subprocess.run(
         [sys.executable, str(smoke_path)],
@@ -129,12 +133,16 @@ def test_remote_downloader_handles_long_eod_spans(tmp_path):
         env["PYTHONPATH"] = str(REPO_ROOT)
 
     script = r"""
+import os
 import datetime
 import pytz
 from lumibot.entities import Asset
 from lumibot.tools import thetadata_helper
 
 assert thetadata_helper.REMOTE_DOWNLOADER_ENABLED, "Remote downloader flag must be set"
+
+username = os.environ["THETADATA_USERNAME"]
+password = os.environ["THETADATA_PASSWORD"]
 
 asset = Asset(asset_type="index", symbol="SPX")
 start = pytz.UTC.localize(datetime.datetime(2023, 1, 3))
@@ -145,8 +153,8 @@ df = thetadata_helper.get_historical_eod_data(
     asset=asset,
     start_dt=start,
     end_dt=end,
-    username="%s",
-    password="%s",
+    username=username,
+    password=password,
 )
 
 assert df is not None and len(df) > 250, f"Expected >365-day EOD rows, got {0 if df is None else len(df)}"
@@ -154,7 +162,7 @@ print(f"long_eod_rows={len(df)} first={df.index.min()} last={df.index.max()}")
 """
 
     smoke_path = tmp_path / "downloader_eod_smoke.py"
-    smoke_path.write_text(script % (username, password), encoding="utf-8")
+    smoke_path.write_text(script, encoding="utf-8")
 
     result = subprocess.run(
         [sys.executable, str(smoke_path)],

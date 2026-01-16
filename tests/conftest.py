@@ -239,3 +239,63 @@ def _restore_alpaca_trading_stream():
         _AlpacaTradingStream.close = _ALPACA_TRADING_STREAM_ORIGINAL_CLOSE
     if _AlpacaTradingStream is not None and _ALPACA_TRADING_STREAM_ORIGINAL_RUN_FOREVER is not None:
         _AlpacaTradingStream._run_forever = _ALPACA_TRADING_STREAM_ORIGINAL_RUN_FOREVER
+
+
+# Centralized credential validation and skipping for API-dependent tests
+def _is_placeholder(value: str) -> bool:
+    if value is None:
+        return True
+    v = str(value).strip().lower()
+    if not v:
+        return True
+    placeholders = {
+        "<your key here>",
+        "<your api key>",
+        "<api key>",
+        "uname",
+        "username",
+        "password",
+        "<username>",
+        "<password>",
+        "none",
+        "null",
+        "changeme",
+    }
+    return v in placeholders
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item):
+    """
+    Skip tests marked as requiring external APIs when credentials are missing
+    or look like placeholders. This centralizes the logic so individual tests
+    don't need inline skip-if checks.
+
+    Recognized markers:
+      - apitest: general external API usage
+      - downloader: tests that hit data providers (Polygon, ThetaData, etc.)
+    """
+    has_apitest = item.get_closest_marker("apitest") is not None
+    has_downloader = item.get_closest_marker("downloader") is not None
+    if not (has_apitest or has_downloader):
+        return
+
+    # Validate Polygon & ThetaData creds if present/required
+    polygon_key = os.environ.get("POLYGON_API_KEY")
+    theta_user = os.environ.get("THETADATA_USERNAME")
+    theta_pass = os.environ.get("THETADATA_PASSWORD")
+
+    missing = []
+    if _is_placeholder(polygon_key):
+        missing.append("POLYGON_API_KEY")
+    if _is_placeholder(theta_user):
+        missing.append("THETADATA_USERNAME")
+    if _is_placeholder(theta_pass):
+        missing.append("THETADATA_PASSWORD")
+
+    if missing:
+        reason = (
+            "Skipping API test due to missing/placeholder credentials: "
+            + ", ".join(missing)
+        )
+        pytest.skip(reason)
