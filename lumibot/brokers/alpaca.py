@@ -552,14 +552,20 @@ class Alpaca(Broker):
         trail_price_value = getattr(response, 'trail_price', None) or resp_raw.get('trail_price')
         trail_percent_value = getattr(response, 'trail_percent', None) or resp_raw.get('trail_percent')
         stop_limit_price = limit_price_value if order_type_value == Order.OrderType.STOP_LIMIT or order_type_value == "stop_limit" else None
-        avg_fill_price_value = getattr(response, 'filled_avg_price', None) or resp_raw.get('filled_avg_price')
+        # Average fill price: support both Alpaca field names
+        avg_fill_price_value = (
+            getattr(response, 'filled_avg_price', None)
+            or getattr(response, 'avg_fill_price', None)
+            or (resp_raw.get('filled_avg_price') if isinstance(resp_raw, dict) else None)
+            or (resp_raw.get('avg_fill_price') if isinstance(resp_raw, dict) else None)
+        )
 
         # Time in force and status
         time_in_force_value = getattr(response, 'time_in_force', None) or resp_raw.get('time_in_force')
         status_value = getattr(response, 'status', None) or resp_raw.get('status')
 
         if status_value in ('filled', 'fill', 'partially_filled') and avg_fill_price_value is None:
-            logger.warning(f"Filled or partially filled order with no average average price available for {resp_symbol}.\n{resp_raw}")
+            logger.warning(f"Filled or partially filled order with no average price available for {resp_symbol}.\n{resp_raw}")
 
         # Identifier
         identifier_value = getattr(response, 'id', None) or resp_raw.get('id')
