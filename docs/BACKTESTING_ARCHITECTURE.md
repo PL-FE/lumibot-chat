@@ -161,8 +161,10 @@ DataSource (ABC)
 **Flow:**
 1. `ThetaDataBacktestingPandas` inherits from `PandasData`
 2. Calls `thetadata_helper.get_price_data()` to fetch data
-3. Data comes from **Data Downloader** (remote HTTP service)
-4. Uses S3 cache for performance
+3. Data comes from either:
+   - a **local ThetaTerminal** (default / public), or
+   - the internal **Data Downloader** service (when `DATADOWNLOADER_BASE_URL` is set).
+4. Uses S3 cache for performance (when enabled)
 
 **Key Functions:**
 - `get_price_data()` - Main entry point (line 1248)
@@ -170,9 +172,14 @@ DataSource (ABC)
 
 ### ThetaData Data Downloader (remote service)
 
-Backtests are intended to use the **remote downloader** service, not a locally-started ThetaTerminal.
+This is an **internal/proprietary** service that can proxy ThetaData requests and provide queuing/concurrency controls.
 
-- Base URL: `http://data-downloader.lumiwealth.com:8080`
+- Selection rule:
+  - If `DATADOWNLOADER_BASE_URL` is set, LumiBot routes ThetaData through the downloader queue and **must not** manage
+    any local ThetaTerminal process (single-session constraint).
+  - Otherwise, LumiBot auto-manages a local ThetaTerminal.
+
+- Base URL (internal): `http://localhost:8080` (local) or `https://<your-downloader-host>:8080` (remote)
 - Avoid hard-coded downloader IPs (they can change on redeploy)
 - Local downloader code checkout: `Documents/Development/botspot_data_downloader`
 
@@ -342,6 +349,26 @@ ThetaData’s EOD day data is keyed by trading date, but returned timestamps may
   - placeholder rows.
 
 Primary location: `lumibot/tools/thetadata_helper.py` (day-index alignment helpers).
+
+## Intraday Bars: Session-Close Coverage (CRITICAL)
+
+ThetaData index/stock intraday (minute/hour) feeds are often **regular-session (RTH) bounded**.
+For example, SPX index minute OHLC typically yields ~391 bars/day and ends at the trading session close (or early close).
+
+**Failure mode (performance + correctness):**
+- If the backtest “required end coverage” timestamp is interpreted literally as `23:59` (or `18:59` ET due to UTC-midnight transport),
+  the cache can never be considered “complete” for an RTH-bounded feed.
+- This can trigger an endless loop of:
+  - `[THETA][CACHE][STALE] prefetch_complete but coverage insufficient` and
+  - `Submitted to queue ... v3/index/history/ohlc ...`
+  even on “warm” runs.
+
+**Fix direction (implemented for ThetaData index intraday):**
+- Define “coverage complete” for index intraday by the **last trading session close at or before** the end requirement
+  (holiday/weekend/early-close safe), rather than requiring bars through an arbitrary end datetime.
+
+See:
+- `docs/investigations/2026-01-13_SPX_INTRADAY_STALE_LOOP_FIX.md`
 
 **Split Handling (FIXED - Nov 28, 2025)**
 
@@ -612,7 +639,7 @@ BACKTESTING_QUIET_LOGS=false  # useful when debugging (otherwise logs may be emp
 ```bash
 THETADATA_USERNAME=xxx
 THETADATA_PASSWORD=xxx
-DATADOWNLOADER_BASE_URL=http://data-downloader.lumiwealth.com:8080  # Data Downloader URL (preferred)
+DATADOWNLOADER_BASE_URL=http://localhost:8080  # Data Downloader URL (set to your environment)
 DATADOWNLOADER_API_KEY=xxx
 DATADOWNLOADER_API_KEY_HEADER=X-Downloader-Key  # default header name used by downloader
 DATADOWNLOADER_SKIP_LOCAL_START=true  # Don't start local ThetaTerminal
@@ -631,7 +658,7 @@ LUMIBOT_CACHE_MODE=readwrite
 ### ThetaData Rules (from AGENTS.md)
 
 1. **NEVER run ThetaTerminal locally** - Only use the Data Downloader
-2. **Use the shared downloader endpoint** - Set `DATADOWNLOADER_BASE_URL`
+2. **Use the downloader endpoint from your environment** - Set `DATADOWNLOADER_BASE_URL`
 3. **Respect queue/backoff** - Handle `{"error":"queue_full"}` responses
 4. **Long commands need safe-timeout** - Use `safe-timeout` wrapper
 

@@ -121,3 +121,105 @@ def test_intraday_index_minute_ohlc_clamps_end_requirement_to_session_close(monk
         source._update_pandas_data(asset, quote_asset, 5, "minute", dt, require_quote_data=False, require_ohlc_data=True)
 
     assert "[THETA][CACHE][STALE]" not in caplog.text
+
+
+def test_intraday_index_minute_quote_clamps_end_requirement_to_session_close(monkeypatch, caplog):
+    """Regression: index intraday coverage clamping must apply even for quote/last-price probes.
+
+    Some strategies (and OptionsHelper internals) request intraday index data via "quote"/last price
+    paths rather than explicit OHLC requests. The end-coverage heuristic still must treat the session
+    close as complete, otherwise backtests can enter the same STALE→REFRESH loop.
+    """
+
+    tz = pytz.timezone("America/New_York")
+    dt = tz.localize(datetime(2025, 2, 6, 10, 15))
+
+    source = ThetaDataBacktestingPandas(
+        datetime_start=tz.localize(datetime(2025, 2, 3, 0, 0)),
+        datetime_end=tz.localize(datetime(2025, 2, 7, 0, 0)),
+        username="test",
+        password="test",
+        tzinfo=tz,
+    )
+    monkeypatch.setattr(source, "get_datetime", lambda: dt)
+    monkeypatch.setenv("BACKTESTING_MARKET", "NYSE")
+
+    asset = Asset("SPX", asset_type=Asset.AssetType.INDEX)
+    quote_asset = Asset("USD", asset_type="forex")
+    canonical_key = (asset, quote_asset, "minute")
+
+    existing_end = tz.localize(datetime(2025, 2, 6, 16, 0))
+    idx = pd.date_range(existing_end - timedelta(minutes=4), existing_end, freq="min", tz=tz)
+    df = pd.DataFrame({"close": [6075.0, 6075.1, 6075.2, 6075.3, 6075.4]}, index=idx)
+    source.pandas_data[canonical_key] = SimpleNamespace(df=df, timestep="minute")
+    source._dataset_metadata[canonical_key] = {
+        "timestep": "minute",
+        "start": idx[0].to_pydatetime(),
+        "end": idx[-1].to_pydatetime(),
+        "rows": len(df),
+        "has_quotes": True,
+        "has_ohlc": True,
+        "prefetch_complete": True,
+    }
+
+    def _fetch_called(*_args, **_kwargs):
+        raise RuntimeError("fetch_called")
+
+    monkeypatch.setattr(thetadata_helper, "get_price_data", _fetch_called)
+
+    with caplog.at_level("INFO"):
+        source._update_pandas_data(asset, quote_asset, 5, "minute", dt, require_quote_data=True, require_ohlc_data=False)
+
+    assert "[THETA][CACHE][STALE]" not in caplog.text
+
+
+def test_intraday_index_minute_clamps_end_requirement_to_last_trading_session_close(monkeypatch, caplog):
+    """Regression: index intraday coverage must align weekends/holidays to the last trading close.
+
+    Example failure: backtest end date lands on a market holiday, cached data ends at the previous
+    session close (or early close), and the datasource repeatedly refetches because it demands
+    coverage through the non-trading end date.
+    """
+
+    tz = pytz.timezone("America/New_York")
+    dt = tz.localize(datetime(2025, 12, 24, 12, 0))
+
+    # End is exclusive midnight 2025-12-26 -> internal end_requirement is 2025-12-25 23:59 (holiday).
+    source = ThetaDataBacktestingPandas(
+        datetime_start=tz.localize(datetime(2025, 12, 1, 0, 0)),
+        datetime_end=tz.localize(datetime(2025, 12, 26, 0, 0)),
+        username="test",
+        password="test",
+        tzinfo=tz,
+    )
+    monkeypatch.setattr(source, "get_datetime", lambda: dt)
+    monkeypatch.setenv("BACKTESTING_MARKET", "NYSE")
+
+    asset = Asset("SPXW", asset_type=Asset.AssetType.INDEX)
+    quote_asset = Asset("USD", asset_type="forex")
+    canonical_key = (asset, quote_asset, "minute")
+
+    # 2025-12-24 is an early close (13:00 ET). Seed cache through that close.
+    existing_end = tz.localize(datetime(2025, 12, 24, 13, 0))
+    idx = pd.date_range(existing_end - timedelta(minutes=4), existing_end, freq="min", tz=tz)
+    df = pd.DataFrame({"close": [5950.0, 5950.1, 5950.2, 5950.3, 5950.4]}, index=idx)
+    source.pandas_data[canonical_key] = SimpleNamespace(df=df, timestep="minute")
+    source._dataset_metadata[canonical_key] = {
+        "timestep": "minute",
+        "start": idx[0].to_pydatetime(),
+        "end": idx[-1].to_pydatetime(),
+        "rows": len(df),
+        "has_quotes": True,
+        "has_ohlc": True,
+        "prefetch_complete": True,
+    }
+
+    def _fetch_called(*_args, **_kwargs):
+        raise RuntimeError("fetch_called")
+
+    monkeypatch.setattr(thetadata_helper, "get_price_data", _fetch_called)
+
+    with caplog.at_level("INFO"):
+        source._update_pandas_data(asset, quote_asset, 5, "minute", dt, require_quote_data=False, require_ohlc_data=True)
+
+    assert "[THETA][CACHE][STALE]" not in caplog.text

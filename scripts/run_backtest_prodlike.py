@@ -127,6 +127,21 @@ def main() -> int:
     parser.add_argument("--start", required=True, help="BACKTESTING_START (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, help="BACKTESTING_END (YYYY-MM-DD)")
     parser.add_argument(
+        "--data-source",
+        default="thetadata",
+        help="Set BACKTESTING_DATA_SOURCE (e.g., thetadata, ibkr, databento, router).",
+    )
+    parser.add_argument(
+        "--ibkr-futures-exchange",
+        default=None,
+        help="Optional override for IBKR_FUTURES_EXCHANGE (defaults to CME when data-source=ibkr).",
+    )
+    parser.add_argument(
+        "--ibkr-history-source",
+        default=None,
+        help="Optional override for IBKR_HISTORY_SOURCE (Trades, Midpoint, Bid_Ask). For futures parity use Trades.",
+    )
+    parser.add_argument(
         "--dotenv",
         default="/Users/robertgrzesik/Documents/Development/botspot_node/.env-local",
         help="dotenv file containing DATADOWNLOADER + S3 cache creds",
@@ -160,6 +175,11 @@ def main() -> int:
         "--cache-prefix",
         default=None,
         help="Override LUMIBOT_CACHE_S3_PREFIX (alternative to cache-version)",
+    )
+    parser.add_argument(
+        "--use-dotenv-s3-keys",
+        action="store_true",
+        help="Use LUMIBOT_CACHE_S3_ACCESS_KEY_ID/SECRET from the dotenv file instead of the host AWS credential chain.",
     )
     parser.add_argument(
         "--label",
@@ -207,7 +227,7 @@ def main() -> int:
 
     # Backtest wiring / prod-like flags
     env["IS_BACKTESTING"] = "True"
-    env["BACKTESTING_DATA_SOURCE"] = "thetadata"
+    env["BACKTESTING_DATA_SOURCE"] = (args.data_source or "thetadata").strip()
     env["BACKTESTING_START"] = args.start
     env["BACKTESTING_END"] = args.end
 
@@ -224,6 +244,16 @@ def main() -> int:
 
     if args.profile:
         env["BACKTESTING_PROFILE"] = args.profile
+
+    if env["BACKTESTING_DATA_SOURCE"].strip().lower() in {
+        "ibkr",
+        "interactivebrokersrest",
+        "interactive_brokers_rest",
+        "interactivebrokers_rest",
+    }:
+        env.setdefault("IBKR_FUTURES_EXCHANGE", (args.ibkr_futures_exchange or "CME").strip().upper())
+        if args.ibkr_history_source:
+            env["IBKR_HISTORY_SOURCE"] = args.ibkr_history_source.strip()
 
     # Data downloader config
     for k in [
@@ -242,13 +272,18 @@ def main() -> int:
         "LUMIBOT_CACHE_S3_BUCKET",
         "LUMIBOT_CACHE_S3_PREFIX",
         "LUMIBOT_CACHE_S3_REGION",
-        "LUMIBOT_CACHE_S3_ACCESS_KEY_ID",
-        "LUMIBOT_CACHE_S3_SECRET_ACCESS_KEY",
-        "LUMIBOT_CACHE_S3_SESSION_TOKEN",
         "LUMIBOT_CACHE_S3_VERSION",
     ]:
         if k in dotenv:
             env[k] = dotenv[k]
+    if args.use_dotenv_s3_keys:
+        for k in [
+            "LUMIBOT_CACHE_S3_ACCESS_KEY_ID",
+            "LUMIBOT_CACHE_S3_SECRET_ACCESS_KEY",
+            "LUMIBOT_CACHE_S3_SESSION_TOKEN",
+        ]:
+            if k in dotenv:
+                env[k] = dotenv[k]
 
     if args.cache_folder:
         env["LUMIBOT_CACHE_FOLDER"] = args.cache_folder
@@ -263,12 +298,16 @@ def main() -> int:
     started_at = time.time()
     print(f"[run] label={label}")
     print(f"[run] main={main_py}")
+    print(f"[run] data_source={env.get('BACKTESTING_DATA_SOURCE')}")
     print(f"[run] window={args.start} -> {args.end}")
     print(f"[run] workdir={workdir}")
     print(f"[run] cache_folder={env.get('LUMIBOT_CACHE_FOLDER')}")
     print(f"[run] cache_s3_bucket={env.get('LUMIBOT_CACHE_S3_BUCKET')}")
     print(f"[run] cache_s3_prefix={env.get('LUMIBOT_CACHE_S3_PREFIX')}")
     print(f"[run] cache_s3_version={env.get('LUMIBOT_CACHE_S3_VERSION')}")
+    if env.get("BACKTESTING_DATA_SOURCE", "").strip().lower() in {"ibkr", "interactivebrokersrest", "interactive_brokers_rest", "interactivebrokers_rest"}:
+        print(f"[run] ibkr_futures_exchange={env.get('IBKR_FUTURES_EXCHANGE')}")
+        print(f"[run] ibkr_history_source={env.get('IBKR_HISTORY_SOURCE')}")
     print(f"[run] audit={_bool_str(args.audit)}")
     print(f"[run] profile={env.get('BACKTESTING_PROFILE')}")
 

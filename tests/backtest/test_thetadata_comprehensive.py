@@ -18,6 +18,8 @@ from lumibot.backtesting import ThetaDataBacktesting, PolygonDataBacktesting
 # Load environment variables from .env file
 load_dotenv()
 
+pytestmark = [pytest.mark.downloader]
+
 
 def _require_theta_credentials() -> Tuple[str, str]:
     """Fetch ThetaData credentials or skip when unavailable."""

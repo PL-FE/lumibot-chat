@@ -115,11 +115,20 @@ This page documents environment variables used by LumiBot, with an emphasis on *
 - Output: produces a `*_profile_yappi.csv` artifact alongside other backtest artifacts.
 - Related tooling: `scripts/analyze_yappi_csv.py`
 
-## Remote downloader (ThetaData via shared service)
+## Remote downloader (ThetaData via shared service) — internal/proprietary
+
+This section describes the internal **Data Downloader** service used by LumiWealth/BotSpot deployments.
+Open-source users typically should not set these variables.
+
+Selection rule (ThetaData):
+- If `DATADOWNLOADER_BASE_URL` is set, LumiBot routes ThetaData through the downloader queue and **must not** manage any
+  local ThetaTerminal process (single-session constraint).
+- Otherwise, LumiBot auto-manages a local ThetaTerminal and talks to it directly on `THETADATA_BASE_URL` / `127.0.0.1:25503`.
 
 ### `DATADOWNLOADER_BASE_URL`
 - Purpose: Points LumiBot at the remote downloader service.
-- Example: `http://data-downloader.lumiwealth.com:8080`
+- Example (local): `http://localhost:8080`
+- Example (remote): `https://<your-downloader-host>:8080`
 
 ### `DATADOWNLOADER_API_KEY` / `DATADOWNLOADER_API_KEY_HEADER`
 - Purpose: Authentication for the downloader service.
