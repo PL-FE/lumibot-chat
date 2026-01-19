@@ -20,6 +20,8 @@ from lumibot.tools import polygon_helper, thetadata_helper
 # Load environment variables from .env file
 load_dotenv()
 
+pytestmark = [pytest.mark.downloader]
+
 # Get credentials from environment variables
 POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY")
 THETADATA_USERNAME = os.environ.get("THETADATA_USERNAME")
