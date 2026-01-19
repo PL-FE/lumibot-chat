@@ -3426,11 +3426,26 @@ class BacktestingBroker(Broker):
         low_val = self._coerce_price(low)
         limit_val = self._coerce_price(limit_price)
 
-        if any(self._is_invalid_price(val) for val in (open_val, high_val, low_val, limit_val)):
+        # For limit orders:
+        # - bar prices must be strictly positive
+        # - limit prices must be present (not None/NaN)
+        #
+        # BUT: allow `limit_price <= 0` as a shorthand for "marketable sell" (common pattern: sell limit @ 0).
+        # This is used in tests and real strategies to express "fill immediately at best available price".
+        if any(self._is_invalid_price(val) for val in (open_val, high_val, low_val)):
             return None
+        if limit_val is None:
+            return None
+        try:
+            if isinstance(limit_val, float) and math.isnan(limit_val):
+                return None
+            if pd.isna(limit_val):
+                return None
+        except Exception:
+            pass
 
         # Gap Up case: Limit wasn't triggered by previous candle but current candle opens higher, fill it now
-        if side == "sell" and limit_val <= open_val:
+        if side == "sell" and (limit_val <= 0 or limit_val <= open_val):
             return open_val
 
         # Gap Down case: Limit wasn't triggered by previous candle but current candle opens lower, fill it now

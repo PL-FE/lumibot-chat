@@ -350,16 +350,22 @@ def _run_script(case: _BaselineCase) -> tuple[Path, dict[str, int]]:
     metrics = _read_tearsheet_metrics_centipercent(tearsheet_csv)
 
     expected = case.expected_metrics_centipercent
+    mismatches: list[str] = []
     for key in ("total_return", "cagr", "max_drawdown"):
-        actual = metrics[key]
+        actual = int(metrics[key])
         exp = int(expected[key])
         if abs(actual - exp) > _METRIC_TOLERANCE_CENTIPERCENT:
-            raise AssertionError(
-                f"{case.slug} {key} mismatch (centipercent): actual={actual} expected={exp} "
-                f"tolerance={_METRIC_TOLERANCE_CENTIPERCENT} "
-                f"(baseline_run_id={case.baseline_run_id})\n"
-                f"tearsheet={tearsheet_csv}\nrun_dir={run_dir}"
-            )
+            mismatches.append(f"{key}: actual={actual} expected={exp} (tol={_METRIC_TOLERANCE_CENTIPERCENT})")
+    if mismatches:
+        raise AssertionError(
+            f"{case.slug} metrics mismatch (centipercent) "
+            f"(baseline_run_id={case.baseline_run_id})\n"
+            + "\n".join(mismatches)
+            + "\n"
+            + f"actual_metrics_centipercent={metrics}\n"
+            + f"expected_metrics_centipercent={expected}\n"
+            + f"tearsheet={tearsheet_csv}\nrun_dir={run_dir}"
+        )
 
     payload = json.loads(settings.read_text(encoding="utf-8"))
     _assert_settings_match_window(case, payload)
