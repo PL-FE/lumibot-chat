@@ -302,9 +302,11 @@ class InteractiveBrokersRESTBacktesting(PandasData):
 
         end_dt = self.get_datetime()
         # IBKR crypto/futures trade outside equity calendars; do not add the default 5-day padding.
-        start_dt, _ = self.get_start_datetime_and_ts_unit(length, timestep, start_dt=end_dt, start_buffer=timedelta(0))
+        start_dt, ts_unit = self.get_start_datetime_and_ts_unit(
+            length, timestep, start_dt=end_dt, start_buffer=timedelta(0)
+        )
+        ts_unit = str(ts_unit or "").strip().lower()
         asset_type = str(getattr(asset_separated, "asset_type", "") or "").lower()
-        ts_unit = str(timestep or "").strip().lower()
         if asset_type in {"future", "cont_future"} and ts_unit in {"minute", "hour", "day"}:
             # Futures strategies frequently request very small slices (e.g., `length=2`) at the
             # beginning of the backtest window. If we only fetch the tiny requested slice, IBKR's
