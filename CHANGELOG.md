@@ -1,6 +1,11 @@
 # Changelog
 
-## 4.4.34 - Unreleased
+## 4.4.35 - Unreleased
+
+### Changed
+- IBKR futures backtesting: cut downloader roundtrips by caching history windows across iterations and preferring native bar sizes (e.g., 15-min) when available.
+
+## 4.4.34 - 2026-01-19
 
 ### Added
 - IBKR futures: add acceptance backtest strategy covering market/limit/stop/stop-limit/trailing/smart-limit and OCO/OTO/bracket semantics.

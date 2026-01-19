@@ -389,7 +389,7 @@ class PandasData(DataSourceBacktesting):
         if quote is not None:
             candidates.append((asset, quote))
 
-        if isinstance(asset, Asset) and asset.asset_type in ["option", "future", "stock", "index"]:
+        if isinstance(asset, Asset) and asset.asset_type in ["option", "future", "cont_future", "stock", "index"]:
             candidates.append((asset, Asset("USD", "forex")))
 
         candidates.append(asset)
