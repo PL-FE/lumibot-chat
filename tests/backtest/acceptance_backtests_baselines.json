@@ -167,6 +167,54 @@
       "slug": "spx_short_straddle_repro",
       "start_date": "2025-01-06",
       "strategy_name": "SPXShortStraddle"
+    },
+    {
+      "backtest_time_seconds": 8.748265125090256,
+      "baseline_run_id": "IbkrMesFuturesAcceptance_2026-01-18_17-19_MyTLU5",
+      "data_source": "ibkr",
+      "end_date": "2025-12-11",
+      "lumibot_version": "4.4.33",
+      "max_backtest_time_seconds": 300,
+      "metrics_centipercent": {
+        "cagr": -446,
+        "max_drawdown": -29,
+        "total_return": -3
+      },
+      "metrics_raw": {
+        "cagr": "-4.46%",
+        "max_drawdown": "-0.29%",
+        "total_return": "-0.03%"
+      },
+      "script_filename": "IBKR MES Futures Acceptance.py",
+      "settings_backtesting_end": "2025-12-10 23:59:00-05:00",
+      "settings_backtesting_start": "2025-12-08 00:00:00-05:00",
+      "slug": "ibkr_mes_futures_acceptance",
+      "start_date": "2025-12-08",
+      "strategy_name": "IbkrMesFuturesAcceptance"
+    },
+    {
+      "backtest_time_seconds": 36.08439366705716,
+      "baseline_run_id": "IbkrCryptoAcceptance_2026-01-14_17-39_k9nEa1",
+      "data_source": "ibkr",
+      "end_date": "2025-12-18",
+      "lumibot_version": "4.4.33",
+      "max_backtest_time_seconds": 180,
+      "metrics_centipercent": {
+        "cagr": 223,
+        "max_drawdown": -9,
+        "total_return": 2
+      },
+      "metrics_raw": {
+        "cagr": "2.23%",
+        "max_drawdown": "-0.09%",
+        "total_return": "0.02%"
+      },
+      "script_filename": "IBKR Crypto Acceptance.py",
+      "settings_backtesting_end": "2025-12-17 23:59:00-05:00",
+      "settings_backtesting_start": "2025-12-15 00:00:00-05:00",
+      "slug": "ibkr_crypto_acceptance_btc_usd",
+      "start_date": "2025-12-15",
+      "strategy_name": "IbkrCryptoAcceptance"
     }
   ],
   "notes": "Percent metrics are stored as centipercent integers (0.01% units) for strict comparisons.",

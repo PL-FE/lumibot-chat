@@ -1927,8 +1927,12 @@ class BacktestingBroker(Broker):
                     close = ohlc.df['close'][-1]
                     volume = ohlc.df['volume'][-1]
 
-            # Get the OHLCV data for the asset if we're using the PANDAS data source
-            elif self.data_source.SOURCE == "PANDAS":
+            # Get the OHLCV data for the asset if we're using a Pandas-backed data source.
+            #
+            # IMPORTANT: IBKR REST backtesting is implemented as a PandasData subclass but its
+            # `SOURCE` is not literally "PANDAS". It must still use the Pandas order-fill path,
+            # otherwise `open/high/low/close` remain unset and orders never fill.
+            elif self.data_source.SOURCE == "PANDAS" or data_source_name in {"INTERACTIVEBROKERSREST"}:
                 # Market orders: prefer quote-based fills when bid/ask are available to avoid
                 # expensive OHLC downloads and reflect real-world execution more closely.
                 if order.order_type == Order.OrderType.MARKET:
@@ -2022,10 +2026,23 @@ class BacktestingBroker(Broker):
                     # (see Data._get_bars_dict). For daily bars, a negative `timeshift` can
                     # accidentally *advance* the slice into future sessions.
                     #
-                    # For intraday bars, we still need the current bar available for order fills
-                    # at `self.datetime` (e.g., crypto backtests on the first bar). Use `-1` to
-                    # include the current bar without pulling future bars.
-                    timeshift = 0 if str(timestep) == "day" else -1
+                    # For intraday bars, we still need a deterministic bar available for order fills.
+                    #
+                    # Default (`-1`) includes the current bar while avoiding pulling far-future bars.
+                    #
+                    # For IBKR futures parity vs DataBento baselines, we intentionally include one
+                    # additional bar (`-2`) and then select the *next* bar for execution (see
+                    # `should_use_next_bar` below). This mirrors the "submit at bar close -> execute
+                    # next bar" model used in our historical futures baselines.
+                    is_ibkr_futures = (
+                        data_source_name in {"INTERACTIVEBROKERSREST"}
+                        and str(getattr(order.asset, "asset_type", "") or "").lower() in {"future", "cont_future"}
+                        and str(timestep) != "day"
+                    )
+                    if is_ibkr_futures:
+                        timeshift = -2
+                    else:
+                        timeshift = 0 if str(timestep) == "day" else -1
                     ohlc = self.data_source.get_historical_prices(
                         asset=asset,
                         length=2,
@@ -2265,7 +2282,59 @@ class BacktestingBroker(Broker):
                     close = df["close"][0]
                     volume = df["volume"][0]
                 else:  # Pandas DataFrame
-                    df = df_original[df_original.index >= self.datetime]
+                    # Avoid same-bar lookahead for IBKR futures: bars are commonly timestamped at
+                    # the bar start. When an order is submitted at `self.datetime` (end of bar),
+                    # it should execute no earlier than the *next* bar. However, orders that were
+                    # already working before `self.datetime` must still be evaluated on the
+                    # current bar, even when the next bar is a large session gap (daily
+                    # maintenance break / weekend reopen).
+                    should_use_next_bar = (
+                        data_source_name in {"INTERACTIVEBROKERSREST"}
+                        and str(getattr(order.asset, "asset_type", "") or "").lower() in {"future", "cont_future"}
+                        and str(getattr(self.data_source, "_timestep", "minute")) != "day"
+                    )
+                    if should_use_next_bar:
+                        df_next = df_original[df_original.index > self.datetime]
+                        if len(df_next) == 0:
+                            df = df_original[df_original.index >= self.datetime]
+                        else:
+                            next_dt = df_next.index[0]
+
+                            created_at = getattr(order, "_date_created", None)
+                            is_new_order = False
+                            if created_at is not None:
+                                try:
+                                    created_ts = pd.Timestamp(created_at)
+                                    now_ts = pd.Timestamp(self.datetime)
+                                    if created_ts.tz is None and now_ts.tz is not None:
+                                        created_ts = created_ts.tz_localize(now_ts.tz)
+                                    elif created_ts.tz is not None and now_ts.tz is None:
+                                        now_ts = now_ts.tz_localize(created_ts.tz)
+                                    is_new_order = created_ts >= now_ts
+                                except Exception:
+                                    is_new_order = False
+
+                            timestep = str(getattr(self.data_source, "_timestep", "minute"))
+                            expected_step = None
+                            if timestep in {"minute", "1m", "min"}:
+                                expected_step = pd.Timedelta(minutes=1)
+                            elif timestep in {"hour", "1h"}:
+                                expected_step = pd.Timedelta(hours=1)
+
+                            is_session_gap = False
+                            if expected_step is not None:
+                                try:
+                                    gap = pd.Timestamp(next_dt) - pd.Timestamp(self.datetime)
+                                    is_session_gap = gap > expected_step * 5
+                                except Exception:
+                                    is_session_gap = False
+
+                            if is_session_gap and not is_new_order:
+                                df = df_original[df_original.index >= self.datetime]
+                            else:
+                                df = df_next
+                    else:
+                        df = df_original[df_original.index >= self.datetime]
 
                     # If the dataframe is empty, then we should get the last row of the original dataframe
                     # because it is the best data we have
@@ -2386,9 +2455,11 @@ class BacktestingBroker(Broker):
 
                 # Update the stop price if the price has moved
                 if order.is_sell_order():
-                    order.update_trail_stop_price(high)
+                    if high is not None and not self._is_invalid_price(high):
+                        order.update_trail_stop_price(high)
                 elif order.is_buy_order():
-                    order.update_trail_stop_price(low)
+                    if low is not None and not self._is_invalid_price(low):
+                        order.update_trail_stop_price(low)
 
             else:
                 raise ValueError(f"Order type {order.order_type} is not implemented for backtesting.")
@@ -2757,7 +2828,13 @@ class BacktestingBroker(Broker):
         timestep = getattr(self.data_source, "_timestep", None)
         if not (self._bar_has_missing_prices(open_, high_, low_) or timestep == "day"):
             return None
-        if order.order_type not in (Order.OrderType.LIMIT, Order.OrderType.STOP_LIMIT, Order.OrderType.MARKET):
+        if order.order_type not in (
+            Order.OrderType.LIMIT,
+            Order.OrderType.STOP,
+            Order.OrderType.STOP_LIMIT,
+            Order.OrderType.TRAIL,
+            Order.OrderType.MARKET,
+        ):
             return None
         if not (order.is_buy_order() or order.is_sell_order()):
             return None
@@ -2777,11 +2854,14 @@ class BacktestingBroker(Broker):
         is_buy = order.is_buy_order()
 
         fill_price: Optional[float] = None
+        crossed = False
+
         if order.order_type == Order.OrderType.MARKET:
             fill_price = ask if is_buy else bid
-        else:
+            crossed = True
+
+        elif order.order_type == Order.OrderType.LIMIT:
             limit_price = self._coerce_price(order.limit_price)
-            crossed = False
             if is_buy:
                 if ask is not None and limit_price is not None and limit_price >= ask:
                     fill_price = ask
@@ -2794,6 +2874,103 @@ class BacktestingBroker(Broker):
                     crossed = True
                 elif ask is not None and limit_price is not None and limit_price <= ask:
                     fill_price = limit_price
+
+        elif order.order_type == Order.OrderType.STOP:
+            stop_price = self._coerce_price(getattr(order, "stop_price", None))
+            if stop_price is None or self._is_invalid_price(stop_price):
+                return None
+            # Quote-based stop trigger:
+            # - Buy stop triggers when the market trades/quotes at or above the stop. Use ask as the
+            #   executable reference.
+            # - Sell stop triggers when the market trades/quotes at or below the stop. Use bid as the
+            #   executable reference.
+            if is_buy:
+                if ask is not None and not self._is_invalid_price(ask) and ask >= stop_price:
+                    fill_price = ask
+                    crossed = True
+            else:
+                if bid is not None and not self._is_invalid_price(bid) and bid <= stop_price:
+                    fill_price = bid
+                    crossed = True
+
+        elif order.order_type == Order.OrderType.STOP_LIMIT:
+            stop_price = self._coerce_price(getattr(order, "stop_price", None))
+            limit_price = self._coerce_price(getattr(order, "limit_price", None))
+            if stop_price is None or limit_price is None:
+                return None
+            # Stop prices must be strictly positive. Limit prices are allowed to be <=0 in
+            # backtests as a shorthand for "marketable" (common pattern: sell limit @ 0).
+            if self._is_invalid_price(stop_price):
+                return None
+            try:
+                if isinstance(limit_price, float) and math.isnan(limit_price):
+                    return None
+                if pd.isna(limit_price):
+                    return None
+            except Exception:
+                pass
+
+            if not getattr(order, "price_triggered", False):
+                triggered = False
+                if is_buy:
+                    if ask is not None and not self._is_invalid_price(ask) and ask >= stop_price:
+                        triggered = True
+                else:
+                    if bid is not None and not self._is_invalid_price(bid) and bid <= stop_price:
+                        triggered = True
+                if not triggered:
+                    return None
+                order.price_triggered = True
+
+            # Once triggered, behave like a normal limit order against the quote.
+            if is_buy:
+                if ask is not None and limit_price >= ask:
+                    fill_price = ask
+                    crossed = True
+                elif bid is not None and limit_price >= bid:
+                    fill_price = limit_price
+            else:
+                if bid is not None and limit_price <= bid:
+                    fill_price = bid
+                    crossed = True
+                elif ask is not None and limit_price <= ask:
+                    fill_price = limit_price
+
+        elif order.order_type == Order.OrderType.TRAIL:
+            # Quote-based trailing stop support for feeds that do not provide OHLC bars.
+            #
+            # WHY: IBKR crypto/futures history sources can be effectively quote-like (open/high/low
+            # missing). Trailing stops still need to advance their stop level and be able to trigger
+            # against bid/ask without relying on OHLC highs/lows.
+            update_price = None
+            if is_buy:
+                update_price = bid
+            else:
+                update_price = ask
+            if update_price is None or self._is_invalid_price(update_price):
+                if bid is not None and ask is not None and not (self._is_invalid_price(bid) or self._is_invalid_price(ask)):
+                    update_price = (bid + ask) / 2
+
+            if update_price is None or self._is_invalid_price(update_price):
+                return None
+
+            try:
+                order.update_trail_stop_price(float(update_price))
+            except Exception:
+                return None
+
+            trail_stop = self._coerce_price(getattr(order, "_trail_stop_price", None))
+            if trail_stop is None or self._is_invalid_price(trail_stop):
+                return None
+
+            if is_buy:
+                if ask is not None and not self._is_invalid_price(ask) and ask >= trail_stop:
+                    fill_price = ask
+                    crossed = True
+            else:
+                if bid is not None and not self._is_invalid_price(bid) and bid <= trail_stop:
+                    fill_price = bid
+                    crossed = True
 
         if fill_price is None or self._is_invalid_price(fill_price):
             return None
@@ -2842,8 +3019,9 @@ class BacktestingBroker(Broker):
                 "fill.model": "quote_fallback",
                 "fill.order_type": str(getattr(order, "order_type", None)),
                 "fill.price": float(fill_price),
-                "fill.crossed": bool(crossed) if order.order_type != Order.OrderType.MARKET else True,
+                "fill.crossed": bool(crossed),
                 "order.limit_price": self._coerce_price(getattr(order, "limit_price", None)),
+                "order.stop_price": self._coerce_price(getattr(order, "stop_price", None)),
                 "spread.limit": spread_limit,
                 "spread.pct": spread_pct,
             },
@@ -2980,7 +3158,16 @@ class BacktestingBroker(Broker):
             return open_, False
 
         side = "buy" if order.is_buy_order() else "sell"
-        tick = infer_tick_size(bid, ask)
+        tick = None
+        if order.order_class != Order.OrderClass.MULTILEG:
+            try:
+                asset_tick = getattr(order.asset, "min_tick", None)
+                if asset_tick is not None and float(asset_tick) > 0:
+                    tick = float(asset_tick)
+            except Exception:
+                tick = None
+        if tick is None:
+            tick = infer_tick_size(bid, ask)
         mid = compute_mid(bid, ask)
         final_price = compute_final_price(bid, ask, side, smart_limit.final_price_pct)
         slippage_amount = smart_limit.get_slippage_amount()
@@ -3088,7 +3275,15 @@ class BacktestingBroker(Broker):
 
             raw_fill = leg_mid + adj if leg.is_buy_order() else leg_mid - adj
             raw_fill = round(raw_fill, 6)
-            tick = infer_tick_size(leg_info["bid"], leg_info["ask"])
+            tick = None
+            try:
+                asset_tick = getattr(leg.asset, "min_tick", None)
+                if asset_tick is not None and float(asset_tick) > 0:
+                    tick = float(asset_tick)
+            except Exception:
+                tick = None
+            if tick is None:
+                tick = infer_tick_size(leg_info["bid"], leg_info["ask"])
             fill_price = round_to_tick(raw_fill, tick, side="buy" if leg.is_buy_order() else "sell")
 
             multiplier = getattr(leg.asset, "multiplier", 1) or 1

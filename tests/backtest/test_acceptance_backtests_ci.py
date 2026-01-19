@@ -222,26 +222,36 @@ def _assert_settings_match_window(case: _BaselineCase, payload: dict[str, object
 
 
 def _require_acceptance_env(case: _BaselineCase) -> None:
-    required_common = [
-        "THETADATA_USERNAME",
-        "THETADATA_PASSWORD",
-    ]
-    required_thetadata = [
-        "DATADOWNLOADER_BASE_URL",
-        "DATADOWNLOADER_API_KEY",
+    required_s3 = [
         "LUMIBOT_CACHE_S3_BUCKET",
         "LUMIBOT_CACHE_S3_PREFIX",
         "LUMIBOT_CACHE_S3_REGION",
         "LUMIBOT_CACHE_S3_ACCESS_KEY_ID",
         "LUMIBOT_CACHE_S3_SECRET_ACCESS_KEY",
     ]
+    required_downloader = [
+        "DATADOWNLOADER_BASE_URL",
+        "DATADOWNLOADER_API_KEY",
+    ]
+    required_thetadata_creds = [
+        "THETADATA_USERNAME",
+        "THETADATA_PASSWORD",
+    ]
 
     if case.data_source == "thetadata":
-        _require_env(required_common + required_thetadata)
-    else:
-        # Yahoo runs don't require downloader/cache secrets, but they still require non-empty ThetaData
-        # credentials due to Strategy.backtest() validation in shared code paths.
-        _require_env(required_common)
+        _require_env(required_thetadata_creds + required_downloader + required_s3)
+        return
+
+    if case.data_source == "ibkr":
+        # IBKR acceptance runs are still cache-backed (warm S3 invariant). They should be able to
+        # run without touching the downloader, but we still require downloader wiring so any
+        # accidental network usage fails loudly and is actionable.
+        _require_env(required_downloader + required_s3)
+        return
+
+    # Other data sources (e.g. yahoo) don't require downloader/cache secrets, but they still require
+    # non-empty ThetaData credentials due to Strategy.backtest() validation in shared code paths.
+    _require_env(required_thetadata_creds)
 
 
 def _run_subprocess(
@@ -293,6 +303,10 @@ def _run_script(case: _BaselineCase) -> tuple[Path, dict[str, int]]:
     env["BACKTESTING_START"] = case.start_date
     env["BACKTESTING_END"] = case.end_date
     env["BACKTESTING_DATA_SOURCE"] = case.data_source
+    if case.data_source == "ibkr":
+        # IBKR acceptance is currently staged on the v2 cache namespace (conid registry + warm bars).
+        # Keeping ThetaData acceptance on v44 avoids churn for the existing CI baselines.
+        env["LUMIBOT_CACHE_S3_VERSION"] = "v2"
 
     stdout_path = run_dir / "stdout.txt"
     stderr_path = run_dir / "stderr.txt"
@@ -352,7 +366,7 @@ def _run_script(case: _BaselineCase) -> tuple[Path, dict[str, int]]:
 
     # Structural (non-log-based) validation: acceptance backtests must not touch the downloader/queue
     # because S3 is expected to already be warm for these canonical windows.
-    if case.data_source == "thetadata":
+    if case.data_source in {"thetadata", "ibkr"}:
         queue = payload.get("thetadata_queue_telemetry") or {}
         try:
             submit_requests = int(queue.get("submit_requests") or 0)
@@ -415,3 +429,11 @@ def test_acceptance_backdoor_smartlimit() -> None:
 
 def test_acceptance_spx_short_straddle() -> None:
     _run_script(_baseline("spx_short_straddle_repro"))
+
+
+def test_acceptance_ibkr_crypto_btc_usd() -> None:
+    _run_script(_baseline("ibkr_crypto_acceptance_btc_usd"))
+
+
+def test_acceptance_ibkr_mes_futures_acceptance() -> None:
+    _run_script(_baseline("ibkr_mes_futures_acceptance"))

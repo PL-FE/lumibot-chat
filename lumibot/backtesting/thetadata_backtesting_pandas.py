@@ -100,7 +100,11 @@ class ThetaDataBacktestingPandas(PandasData):
         set_queue_client_id(client_id)
         logger.info(f"[THETA][QUEUE] Set unique client_id for queue fairness: {client_id}")
 
-        self.kill_processes_by_name("ThetaTerminal.jar")
+        # When a Data Downloader is configured, LumiBot must never touch local ThetaTerminal
+        # processes. Starting/killing a local ThetaTerminal can steal the single licensed Theta
+        # session and take down the downloader.
+        if not (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip():
+            self.kill_processes_by_name("ThetaTerminal.jar")
         thetadata_helper.reset_theta_terminal_tracking()
 
     def is_weekend(self, date):

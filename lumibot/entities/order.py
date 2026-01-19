@@ -601,14 +601,25 @@ class Order:
         if self.order_type != self.OrderType.TRAIL:
             return
 
+        # Trail modifiers are validated as numeric, but may be `Decimal` depending on how the
+        # strategy constructed the order. Convert to floats to keep arithmetic stable across
+        # backtesting/live code paths.
+        trail_percent = self.trail_percent
+        if isinstance(trail_percent, Decimal):
+            trail_percent = float(trail_percent)
+
+        trail_price = self.trail_price
+        if isinstance(trail_price, Decimal):
+            trail_price = float(trail_price)
+
         # Update the trail stop price if we have a trail_percent
-        if self.trail_percent is not None:
+        if trail_percent is not None:
             # Get potential trail stop price
             if self.is_buy_order():
-                potential_trail_stop_price = price * (1 + self.trail_percent)
+                potential_trail_stop_price = price * (1 + trail_percent)
             # Buy/Sell are the only valid sides, so we can use else here.
             else:
-                potential_trail_stop_price = price * (1 - self.trail_percent)
+                potential_trail_stop_price = price * (1 - trail_percent)
 
             # Set the trail stop price if it has not been set yet.
             if self._trail_stop_price is None:
@@ -626,12 +637,12 @@ class Order:
                 self._trail_stop_price = potential_trail_stop_price
 
         # Update the trail stop price if we have a trail_price
-        if self.trail_price is not None:
+        if trail_price is not None:
             # Get potential trail stop price
             if self.is_buy_order():
-                potential_trail_stop_price = price + self.trail_price
+                potential_trail_stop_price = price + trail_price
             elif self.is_sell_order():
-                potential_trail_stop_price = price - self.trail_price
+                potential_trail_stop_price = price - trail_price
             else:
                 raise ValueError(f"side must be either 'buy' or 'sell'. Got {self.side} instead.")
 

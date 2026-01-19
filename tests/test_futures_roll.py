@@ -8,8 +8,8 @@ from lumibot.tools import futures_roll
 NY = pytz.timezone("America/New_York")
 
 
-def _dt(year: int, month: int, day: int) -> datetime.datetime:
-    return NY.localize(datetime.datetime(year, month, day))
+def _dt(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime.datetime:
+    return NY.localize(datetime.datetime(year, month, day, hour, minute))
 
 
 def test_equity_index_roll_eight_business_days_before_expiry():
@@ -44,8 +44,10 @@ def test_comex_gold_rolls_on_third_last_business_day_offset():
     year, month = futures_roll.determine_contract_year_month(asset_symbol, _dt(2025, 2, 14))
     assert (year, month) == (2025, 2)
 
-    # Seven business days before the third last business day of February 2025 is Feb 17
-    year, month = futures_roll.determine_contract_year_month(asset_symbol, _dt(2025, 2, 17))
+    # Seven business days before the third last business day of February 2025 is Feb 17.
+    # Roll triggers are shifted slightly (see futures_roll._calculate_roll_trigger) to avoid
+    # edge-case midnight boundary issues.
+    year, month = futures_roll.determine_contract_year_month(asset_symbol, _dt(2025, 2, 17, 0, 6))
     assert (year, month) == (2025, 4)
 
 

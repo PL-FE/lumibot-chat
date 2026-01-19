@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date
 from decimal import Decimal
 
 import pandas as pd
@@ -8,12 +8,12 @@ import pytest
 
 from lumibot.backtesting import BacktestingBroker
 from lumibot.backtesting.interactive_brokers_rest_backtesting import InteractiveBrokersRESTBacktesting
-from lumibot.entities import Asset
+from lumibot.entities import Asset, SmartLimitConfig, SmartLimitPreset
 from lumibot.entities.order import Order
 from lumibot.strategies.strategy import Strategy
 
 
-class _DummyIbkrCryptoStrategy(Strategy):
+class _DummyIbkrFuturesStrategy(Strategy):
     def initialize(self, parameters=None):
         self.sleeptime = "1M"
         self.include_cash_positions = True
@@ -22,23 +22,46 @@ class _DummyIbkrCryptoStrategy(Strategy):
         return
 
 
-def test_ibkr_rest_backtesting_crypto_market_orders_fill_at_ask_and_bid(monkeypatch):
-    import lumibot.tools.ibkr_helper as ibkr_helper
-
-    idx = pd.date_range("2025-01-01 00:00", periods=3, freq="1min", tz="America/New_York")
-    spread = 10.0
+def _make_df(*, bid0: float, ask0: float, bid1: float, ask1: float) -> pd.DataFrame:
+    idx = pd.date_range("2025-12-08 09:31", periods=2, freq="1min", tz="America/New_York")
     df = pd.DataFrame(
         {
-            "open": [20_000.0, 20_100.0, 20_200.0],
-            "high": [20_050.0, 20_150.0, 20_250.0],
-            "low": [19_900.0, 20_000.0, 20_100.0],
-            "close": [20_010.0, 20_120.0, 20_230.0],
-            "bid": [20_010.0 - spread / 2, 20_120.0 - spread / 2, 20_230.0 - spread / 2],
-            "ask": [20_010.0 + spread / 2, 20_120.0 + spread / 2, 20_230.0 + spread / 2],
-            "volume": [1_000, 1_000, 1_000],
+            "open": [ask0, ask1],
+            "high": [ask0, ask1],
+            "low": [bid0, bid1],
+            "close": [(bid0 + ask0) / 2, (bid1 + ask1) / 2],
+            "bid": [bid0, bid1],
+            "ask": [ask0, ask1],
+            "volume": [1000, 1000],
         },
         index=idx,
     )
+    return df
+
+
+def _make_quote_only_df(*, bids: list[float], asks: list[float]) -> pd.DataFrame:
+    idx = pd.date_range("2025-12-08 09:31", periods=len(bids), freq="1min", tz="America/New_York")
+    mids = [(b + a) / 2 for b, a in zip(bids, asks)]
+    df = pd.DataFrame(
+        {
+            # Force quote-based fill model by making OHLC incomplete.
+            "open": [pd.NA] * len(bids),
+            "high": [pd.NA] * len(bids),
+            "low": [pd.NA] * len(bids),
+            "close": mids,
+            "bid": bids,
+            "ask": asks,
+            "volume": [1000] * len(bids),
+        },
+        index=idx,
+    )
+    return df
+
+
+def test_ibkr_rest_backtesting_futures_market_roundtrip_uses_bid_ask_and_multiplier(monkeypatch):
+    import lumibot.tools.ibkr_helper as ibkr_helper
+
+    df = _make_quote_only_df(bids=[100.00, 100.75], asks=[100.25, 101.00])
 
     def fake_get_price_data(*, asset, quote, timestep, start_dt, end_dt, exchange=None, include_after_hours=True, source=None):
         return df
@@ -46,8 +69,8 @@ def test_ibkr_rest_backtesting_crypto_market_orders_fill_at_ask_and_bid(monkeypa
     monkeypatch.setattr(ibkr_helper, "get_price_data", fake_get_price_data)
 
     data_source = InteractiveBrokersRESTBacktesting(
-        datetime_start=idx[0].to_pydatetime(),
-        datetime_end=(idx[-1] + pd.Timedelta(minutes=1)).to_pydatetime(),
+        datetime_start=df.index[0].to_pydatetime(),
+        datetime_end=(df.index[-1] + pd.Timedelta(minutes=1)).to_pydatetime(),
         market="24/7",
         show_progress_bar=False,
         log_backtest_progress_to_file=False,
@@ -57,87 +80,62 @@ def test_ibkr_rest_backtesting_crypto_market_orders_fill_at_ask_and_bid(monkeypa
     broker = BacktestingBroker(data_source=data_source)
     broker.initialize_market_calendars(data_source.get_trading_days_pandas())
     broker._first_iteration = False
-    broker._update_datetime(idx[0].to_pydatetime())
 
-    strategy = _DummyIbkrCryptoStrategy(
+    strategy = _DummyIbkrFuturesStrategy(
         broker=broker,
-        budget=100_000.0,
+        budget=10_000.0,
         analyze_backtest=False,
         parameters={},
     )
     strategy._first_iteration = False
 
-    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
-    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    setattr(fut, "min_tick", 0.25)
 
     data_source.get_historical_prices_between_dates(
-        (base, quote),
+        (fut, Asset("USD", asset_type=Asset.AssetType.FOREX)),
         timestep="minute",
-        quote=quote,
-        start_date=idx[0].to_pydatetime(),
-        end_date=idx[-1].to_pydatetime(),
+        quote=None,
+        start_date=df.index[0].to_pydatetime(),
+        end_date=df.index[-1].to_pydatetime(),
     )
 
-    q0 = broker.get_quote(base, quote=quote)
-    expected_ask_0 = float(getattr(q0, "ask"))
-    expected_bid_0 = float(getattr(q0, "bid"))
-    assert expected_ask_0 > expected_bid_0
+    q0 = broker.get_quote(fut, quote=None)
+    assert float(getattr(q0, "ask")) == pytest.approx(100.25)
+    assert float(getattr(q0, "bid")) == pytest.approx(100.00)
 
-    buy = strategy.create_order(
-        base,
-        Decimal("0.5"),
-        Order.OrderSide.BUY,
-        order_type=Order.OrderType.MARKET,
-        quote=quote,
-    )
-
+    buy = strategy.create_order(fut, Decimal("1"), Order.OrderSide.BUY, order_type=Order.OrderType.MARKET)
     strategy.submit_order(buy)
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
-
     assert buy.is_filled()
-    assert buy.get_fill_price() == pytest.approx(expected_ask_0, rel=1e-12)
+    assert buy.get_fill_price() == pytest.approx(100.25, rel=1e-12)
 
-    expected_cash_after_buy = 100_000.0 - (0.5 * expected_ask_0)
-    assert strategy.cash == pytest.approx(expected_cash_after_buy, rel=1e-9)
+    cash_after_open = 10_000.0 - 1300.0
+    assert strategy.cash == pytest.approx(cash_after_open, rel=1e-9)
 
-    broker._update_datetime(idx[1].to_pydatetime())
-    q1 = broker.get_quote(base, quote=quote)
-    expected_bid_1 = float(getattr(q1, "bid"))
-    expected_ask_1 = float(getattr(q1, "ask"))
-    assert expected_ask_1 > expected_bid_1
+    broker._update_datetime(df.index[1].to_pydatetime())
+    q1 = broker.get_quote(fut, quote=None)
+    assert float(getattr(q1, "bid")) == pytest.approx(100.75)
 
-    sell = strategy.create_order(
-        base,
-        Decimal("0.5"),
-        Order.OrderSide.SELL,
-        order_type=Order.OrderType.MARKET,
-        quote=quote,
-    )
+    sell = strategy.create_order(fut, Decimal("1"), Order.OrderSide.SELL, order_type=Order.OrderType.MARKET)
     strategy.submit_order(sell)
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
 
     assert sell.is_filled()
-    assert sell.get_fill_price() == pytest.approx(expected_bid_1, rel=1e-12)
+    assert sell.get_fill_price() == pytest.approx(100.75, rel=1e-12)
+
+    expected_pnl = (100.75 - 100.25) * 1.0 * 5.0
+    expected_cash = 10_000.0 + expected_pnl
+    assert strategy.cash == pytest.approx(expected_cash, rel=1e-9)
 
 
-def test_ibkr_rest_backtesting_crypto_limit_orders_fill_against_quotes(monkeypatch):
+def test_ibkr_rest_backtesting_futures_smart_limit_uses_asset_min_tick(monkeypatch):
     import lumibot.tools.ibkr_helper as ibkr_helper
 
-    idx = pd.date_range("2025-01-01 00:00", periods=3, freq="1min", tz="America/New_York")
-    df = pd.DataFrame(
-        {
-            "open": [100.0, 101.0, 102.0],
-            "high": [101.0, 102.0, 103.0],
-            "low": [99.0, 100.0, 101.0],
-            "close": [100.5, 101.5, 102.5],
-            "bid": [100.4, 101.4, 102.4],
-            "ask": [100.6, 101.6, 102.6],
-            "volume": [1_000, 1_000, 1_000],
-        },
-        index=idx,
-    )
+    # With bid=100.00 and ask=100.25, mid=100.125. Futures tick=0.25 should round BUY fill up to 100.25.
+    df = _make_df(bid0=100.00, ask0=100.25, bid1=100.00, ask1=100.25)
 
     def fake_get_price_data(*, asset, quote, timestep, start_dt, end_dt, exchange=None, include_after_hours=True, source=None):
         return df
@@ -145,8 +143,8 @@ def test_ibkr_rest_backtesting_crypto_limit_orders_fill_against_quotes(monkeypat
     monkeypatch.setattr(ibkr_helper, "get_price_data", fake_get_price_data)
 
     data_source = InteractiveBrokersRESTBacktesting(
-        datetime_start=idx[0].to_pydatetime(),
-        datetime_end=(idx[-1] + pd.Timedelta(minutes=1)).to_pydatetime(),
+        datetime_start=df.index[0].to_pydatetime(),
+        datetime_end=(df.index[-1] + pd.Timedelta(minutes=1)).to_pydatetime(),
         market="24/7",
         show_progress_bar=False,
         log_backtest_progress_to_file=False,
@@ -157,7 +155,7 @@ def test_ibkr_rest_backtesting_crypto_limit_orders_fill_against_quotes(monkeypat
     broker.initialize_market_calendars(data_source.get_trading_days_pandas())
     broker._first_iteration = False
 
-    strategy = _DummyIbkrCryptoStrategy(
+    strategy = _DummyIbkrFuturesStrategy(
         broker=broker,
         budget=10_000.0,
         analyze_backtest=False,
@@ -165,74 +163,41 @@ def test_ibkr_rest_backtesting_crypto_limit_orders_fill_against_quotes(monkeypat
     )
     strategy._first_iteration = False
 
-    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
-    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    setattr(fut, "min_tick", 0.25)
 
     data_source.get_historical_prices_between_dates(
-        (base, quote),
+        (fut, Asset("USD", asset_type=Asset.AssetType.FOREX)),
         timestep="minute",
-        quote=quote,
-        start_date=idx[0].to_pydatetime(),
-        end_date=idx[-1].to_pydatetime(),
+        quote=None,
+        start_date=df.index[0].to_pydatetime(),
+        end_date=df.index[-1].to_pydatetime(),
     )
 
-    broker._update_datetime(idx[0].to_pydatetime())
-    q0 = broker.get_quote(base, quote=quote)
-    expected_ask_0 = float(getattr(q0, "ask"))
-    expected_bid_0 = float(getattr(q0, "bid"))
-    assert expected_ask_0 > expected_bid_0
+    cfg = SmartLimitConfig(preset=SmartLimitPreset.FAST, final_price_pct=1.0, slippage=0.0)
+    order = strategy.create_order(fut, Decimal("1"), Order.OrderSide.BUY, order_type=Order.OrderType.SMART_LIMIT, smart_limit=cfg)
+    strategy.submit_order(order)
 
-    buy_marketable = strategy.create_order(
-        base,
-        Decimal("1"),
-        Order.OrderSide.BUY,
-        order_type=Order.OrderType.LIMIT,
-        limit_price=Decimal("999999"),
-        quote=quote,
-    )
-    strategy.submit_order(buy_marketable)
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
 
-    assert buy_marketable.is_filled()
-    assert buy_marketable.get_fill_price() == pytest.approx(expected_ask_0, rel=1e-12)
-
-    broker._update_datetime(idx[1].to_pydatetime())
-    q1 = broker.get_quote(base, quote=quote)
-    expected_bid_1 = float(getattr(q1, "bid"))
-    expected_ask_1 = float(getattr(q1, "ask"))
-    assert expected_ask_1 > expected_bid_1
-
-    sell_marketable = strategy.create_order(
-        base,
-        Decimal("1"),
-        Order.OrderSide.SELL,
-        order_type=Order.OrderType.LIMIT,
-        limit_price=Decimal("0"),
-        quote=quote,
-    )
-    strategy.submit_order(sell_marketable)
-    broker.process_pending_orders(strategy)
-    strategy._executor.process_queue()
-
-    assert sell_marketable.is_filled()
-    assert sell_marketable.get_fill_price() == pytest.approx(expected_bid_1, rel=1e-12)
+    assert order.is_filled()
+    assert order.get_fill_price() == pytest.approx(100.25, rel=1e-12)
 
 
-def test_ibkr_rest_backtesting_crypto_stop_and_stop_limit_orders_fill(monkeypatch):
+def test_ibkr_rest_backtesting_futures_stop_and_stop_limit_orders_fill(monkeypatch):
     import lumibot.tools.ibkr_helper as ibkr_helper
 
-    idx = pd.date_range("2025-01-01 00:00", periods=2, freq="1min", tz="America/New_York")
+    idx = pd.date_range("2025-12-08 09:31", periods=2, freq="1min", tz="America/New_York")
     df = pd.DataFrame(
         {
-            # Force quote-based fills (IBKR backtests rely on bid/ask); OHLC may be incomplete.
             "open": [pd.NA, pd.NA],
             "high": [pd.NA, pd.NA],
             "low": [pd.NA, pd.NA],
-            "close": [100.0, 90.0],
-            "bid": [99.5, 89.5],
-            "ask": [100.5, 90.5],
-            "volume": [1_000, 1_000],
+            "close": [100.00, 100.00],
+            "bid": [99.75, 99.75],
+            "ask": [100.25, 100.25],
+            "volume": [1000, 1000],
         },
         index=idx,
     )
@@ -255,7 +220,7 @@ def test_ibkr_rest_backtesting_crypto_stop_and_stop_limit_orders_fill(monkeypatc
     broker.initialize_market_calendars(data_source.get_trading_days_pandas())
     broker._first_iteration = False
 
-    strategy = _DummyIbkrCryptoStrategy(
+    strategy = _DummyIbkrFuturesStrategy(
         broker=broker,
         budget=10_000.0,
         analyze_backtest=False,
@@ -263,60 +228,62 @@ def test_ibkr_rest_backtesting_crypto_stop_and_stop_limit_orders_fill(monkeypatc
     )
     strategy._first_iteration = False
 
-    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
-    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    setattr(fut, "min_tick", 0.25)
 
     data_source.get_historical_prices_between_dates(
-        (base, quote),
+        (fut, Asset("USD", asset_type=Asset.AssetType.FOREX)),
         timestep="minute",
-        quote=quote,
+        quote=None,
         start_date=idx[0].to_pydatetime(),
         end_date=idx[-1].to_pydatetime(),
     )
 
-    buy_stop = strategy.create_order(
-        base,
-        Decimal("1"),
-        Order.OrderSide.BUY,
-        order_type=Order.OrderType.STOP,
-        stop_price=Decimal("1"),
-        quote=quote,
-    )
-    strategy.submit_order(buy_stop)
-    # Backtesting bars are non-lookahead: advance at least one bar so OHLC is available.
-    broker._update_datetime(idx[1].to_pydatetime())
+    buy = strategy.create_order(fut, Decimal("1"), Order.OrderSide.BUY, order_type=Order.OrderType.MARKET)
+    strategy.submit_order(buy)
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
-    assert buy_stop.is_filled()
+    assert buy.is_filled()
 
-    sell_stop_limit = strategy.create_order(
-        base,
+    stop_exit = strategy.create_order(
+        fut,
         Decimal("1"),
         Order.OrderSide.SELL,
-        order_type=Order.OrderType.STOP_LIMIT,
+        order_type=Order.OrderType.STOP,
         stop_price=Decimal("999999"),
-        limit_price=Decimal("0"),
-        quote=quote,
     )
-    strategy.submit_order(sell_stop_limit)
+    strategy.submit_order(stop_exit)
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
-    assert sell_stop_limit.is_filled()
+    assert stop_exit.is_filled()
+
+    stop_limit_entry = strategy.create_order(
+        fut,
+        Decimal("1"),
+        Order.OrderSide.BUY,
+        order_type=Order.OrderType.STOP_LIMIT,
+        stop_price=Decimal("0.25"),
+        limit_price=Decimal("999999"),
+    )
+    strategy.submit_order(stop_limit_entry)
+    broker.process_pending_orders(strategy)
+    strategy._executor.process_queue()
+    assert stop_limit_entry.is_filled()
 
 
-def test_ibkr_rest_backtesting_crypto_trailing_stop_triggers(monkeypatch):
+def test_ibkr_rest_backtesting_futures_trailing_stop_triggers(monkeypatch):
     import lumibot.tools.ibkr_helper as ibkr_helper
 
-    idx = pd.date_range("2025-01-01 00:00", periods=4, freq="1min", tz="America/New_York")
+    idx = pd.date_range("2025-12-08 09:31", periods=5, freq="1min", tz="America/New_York")
     df = pd.DataFrame(
         {
-            "open": [pd.NA] * 4,
-            "high": [pd.NA] * 4,
-            "low": [pd.NA] * 4,
-            "close": [101.0, 104.0, 105.0, 101.0],
-            "bid": [100.5, 103.5, 104.5, 100.5],
-            "ask": [101.5, 104.5, 105.5, 101.5],
-            "volume": [1_000, 1_000, 1_000, 1_000],
+            "open": [pd.NA] * 5,
+            "high": [pd.NA] * 5,
+            "low": [pd.NA] * 5,
+            "close": [100.75, 102.75, 103.75, 104.75, 101.75],
+            "bid": [100.00, 102.00, 103.00, 104.00, 101.00],
+            "ask": [100.25, 102.25, 103.25, 104.25, 101.25],
+            "volume": [1000, 1000, 1000, 1000, 1000],
         },
         index=idx,
     )
@@ -339,7 +306,7 @@ def test_ibkr_rest_backtesting_crypto_trailing_stop_triggers(monkeypatch):
     broker.initialize_market_calendars(data_source.get_trading_days_pandas())
     broker._first_iteration = False
 
-    strategy = _DummyIbkrCryptoStrategy(
+    strategy = _DummyIbkrFuturesStrategy(
         broker=broker,
         budget=10_000.0,
         analyze_backtest=False,
@@ -347,18 +314,18 @@ def test_ibkr_rest_backtesting_crypto_trailing_stop_triggers(monkeypatch):
     )
     strategy._first_iteration = False
 
-    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
-    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    setattr(fut, "min_tick", 0.25)
 
     data_source.get_historical_prices_between_dates(
-        (base, quote),
+        (fut, Asset("USD", asset_type=Asset.AssetType.FOREX)),
         timestep="minute",
-        quote=quote,
+        quote=None,
         start_date=idx[0].to_pydatetime(),
         end_date=idx[-1].to_pydatetime(),
     )
 
-    buy = strategy.create_order(base, Decimal("1"), Order.OrderSide.BUY, order_type=Order.OrderType.MARKET, quote=quote)
+    buy = strategy.create_order(fut, Decimal("1"), Order.OrderSide.BUY, order_type=Order.OrderType.MARKET)
     strategy.submit_order(buy)
     broker._update_datetime(idx[1].to_pydatetime())
     broker.process_pending_orders(strategy)
@@ -366,12 +333,11 @@ def test_ibkr_rest_backtesting_crypto_trailing_stop_triggers(monkeypatch):
     assert buy.is_filled()
 
     trail = strategy.create_order(
-        base,
+        fut,
         Decimal("1"),
         Order.OrderSide.SELL,
         order_type=Order.OrderType.TRAIL,
-        trail_price=Decimal("2.0"),
-        quote=quote,
+        trail_price=Decimal("1.0"),
     )
     strategy.submit_order(trail)
 
@@ -385,19 +351,19 @@ def test_ibkr_rest_backtesting_crypto_trailing_stop_triggers(monkeypatch):
     assert trail.is_filled()
 
 
-def test_ibkr_rest_backtesting_crypto_oco_and_oto_orders_execute(monkeypatch):
+def test_ibkr_rest_backtesting_futures_oco_and_oto_orders_execute(monkeypatch):
     import lumibot.tools.ibkr_helper as ibkr_helper
 
-    idx = pd.date_range("2025-01-01 00:00", periods=2, freq="1min", tz="America/New_York")
+    idx = pd.date_range("2025-12-08 09:31", periods=3, freq="1min", tz="America/New_York")
     df = pd.DataFrame(
         {
-            "open": [100.0, 100.0],
-            "high": [100.0, 100.0],
-            "low": [100.0, 100.0],
-            "close": [100.0, 100.0],
-            "bid": [99.5, 99.5],
-            "ask": [100.5, 100.5],
-            "volume": [1_000, 1_000],
+            "open": [100.25, 100.25, 100.25],
+            "high": [100.25, 100.25, 100.25],
+            "low": [100.25, 100.25, 100.25],
+            "close": [100.25, 100.25, 100.25],
+            "bid": [100.00, 100.00, 100.00],
+            "ask": [100.25, 100.25, 100.25],
+            "volume": [1000, 1000, 1000],
         },
         index=idx,
     )
@@ -421,7 +387,7 @@ def test_ibkr_rest_backtesting_crypto_oco_and_oto_orders_execute(monkeypatch):
     broker._first_iteration = False
     broker._update_datetime(idx[0].to_pydatetime())
 
-    strategy = _DummyIbkrCryptoStrategy(
+    strategy = _DummyIbkrFuturesStrategy(
         broker=broker,
         budget=10_000.0,
         analyze_backtest=False,
@@ -429,44 +395,44 @@ def test_ibkr_rest_backtesting_crypto_oco_and_oto_orders_execute(monkeypatch):
     )
     strategy._first_iteration = False
 
-    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
-    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    setattr(fut, "min_tick", 0.25)
 
     data_source.get_historical_prices_between_dates(
-        (base, quote),
+        (fut, Asset("USD", asset_type=Asset.AssetType.FOREX)),
         timestep="minute",
-        quote=quote,
+        quote=None,
         start_date=idx[0].to_pydatetime(),
         end_date=idx[-1].to_pydatetime(),
     )
 
-    entry = strategy.create_order(
-        base,
+    oto = strategy.create_order(
+        fut,
         Decimal("1"),
         Order.OrderSide.BUY,
         order_type=Order.OrderType.LIMIT,
         limit_price=Decimal("999999"),
         order_class=Order.OrderClass.OTO,
         secondary_limit_price=Decimal("0"),
-        quote=quote,
     )
-    strategy.submit_order(entry)
+    strategy.submit_order(oto)
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
-    assert entry.is_filled()
+    assert oto.is_filled()
+    assert oto.child_orders and len(oto.child_orders) == 1
 
     broker._update_datetime(idx[1].to_pydatetime())
     broker.process_pending_orders(strategy)
     strategy._executor.process_queue()
+    assert oto.child_orders[0].is_filled()
 
     oco = strategy.create_order(
-        base,
+        fut,
         Decimal("1"),
         Order.OrderSide.BUY,
         order_class=Order.OrderClass.OCO,
         limit_price=Decimal("999999"),
-        stop_price=Decimal("1"),
-        quote=quote,
+        stop_price=Decimal("0.25"),
     )
     strategy.submit_order(oco)
     broker.process_pending_orders(strategy)
@@ -476,19 +442,19 @@ def test_ibkr_rest_backtesting_crypto_oco_and_oto_orders_execute(monkeypatch):
     assert any(child.is_canceled() for child in oco.child_orders)
 
 
-def test_ibkr_rest_backtesting_crypto_bracket_order_executes_children(monkeypatch):
+def test_ibkr_rest_backtesting_futures_bracket_order_executes_children(monkeypatch):
     import lumibot.tools.ibkr_helper as ibkr_helper
 
-    idx = pd.date_range("2025-01-01 00:00", periods=3, freq="1min", tz="America/New_York")
+    idx = pd.date_range("2025-12-08 09:31", periods=3, freq="1min", tz="America/New_York")
     df = pd.DataFrame(
         {
-            "open": [100.0, 100.0, 100.0],
-            "high": [100.0, 100.0, 100.0],
-            "low": [100.0, 100.0, 100.0],
-            "close": [100.0, 100.0, 100.0],
-            "bid": [99.5, 99.5, 99.5],
-            "ask": [100.5, 100.5, 100.5],
-            "volume": [1_000, 1_000, 1_000],
+            "open": [100.25, 100.25, 100.25],
+            "high": [100.25, 100.25, 100.25],
+            "low": [100.25, 100.25, 100.25],
+            "close": [100.25, 100.25, 100.25],
+            "bid": [100.00, 100.00, 100.00],
+            "ask": [100.25, 100.25, 100.25],
+            "volume": [1000, 1000, 1000],
         },
         index=idx,
     )
@@ -512,7 +478,7 @@ def test_ibkr_rest_backtesting_crypto_bracket_order_executes_children(monkeypatc
     broker._first_iteration = False
     broker._update_datetime(idx[0].to_pydatetime())
 
-    strategy = _DummyIbkrCryptoStrategy(
+    strategy = _DummyIbkrFuturesStrategy(
         broker=broker,
         budget=10_000.0,
         analyze_backtest=False,
@@ -520,19 +486,19 @@ def test_ibkr_rest_backtesting_crypto_bracket_order_executes_children(monkeypatc
     )
     strategy._first_iteration = False
 
-    base = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
-    quote = Asset("USD", asset_type=Asset.AssetType.FOREX)
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    setattr(fut, "min_tick", 0.25)
 
     data_source.get_historical_prices_between_dates(
-        (base, quote),
+        (fut, Asset("USD", asset_type=Asset.AssetType.FOREX)),
         timestep="minute",
-        quote=quote,
+        quote=None,
         start_date=idx[0].to_pydatetime(),
         end_date=idx[-1].to_pydatetime(),
     )
 
     bracket = strategy.create_order(
-        base,
+        fut,
         Decimal("1"),
         Order.OrderSide.BUY,
         order_type=Order.OrderType.LIMIT,
@@ -540,7 +506,6 @@ def test_ibkr_rest_backtesting_crypto_bracket_order_executes_children(monkeypatc
         order_class=Order.OrderClass.BRACKET,
         secondary_limit_price=Decimal("0"),
         secondary_stop_price=Decimal("999999"),
-        quote=quote,
     )
     strategy.submit_order(bracket)
     broker.process_pending_orders(strategy)

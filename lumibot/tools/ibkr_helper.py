@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -24,6 +24,73 @@ CACHE_SUBFOLDER = "ibkr"
 IBKR_HISTORY_MAX_POINTS = 1000
 IBKR_DEFAULT_CRYPTO_VENUE = "ZEROHASH"
 IBKR_DEFAULT_HISTORY_SOURCE = "Trades"
+
+def _enable_futures_bid_ask_derivation() -> bool:
+    """Whether to derive bid/ask quotes for futures from Bid_Ask + Midpoint history.
+
+    Default is disabled because:
+    - Futures backtests in LumiBot are intended to fill off TRADES/OHLC by default.
+    - IBKR Client Portal Bid_Ask/Midpoint history can be flaky and adds 2x request volume.
+    """
+    return os.environ.get("LUMIBOT_IBKR_ENABLE_FUTURES_BID_ASK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+def _us_futures_closed_interval(start_local: datetime, end_local: datetime) -> bool:
+    """Return True if US futures are fully closed in [start_local, end_local).
+
+    This is a deliberately simple rule-based calendar used to avoid repeated downloader fetches
+    for known closed windows (daily maintenance + weekends). It is not intended to encode every
+    CME holiday/early-close rule; those can still produce longer gaps that require vendor data.
+    """
+    try:
+        start_ts = pd.Timestamp(start_local)
+        end_ts = pd.Timestamp(end_local)
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize(LUMIBOT_DEFAULT_PYTZ)
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize(LUMIBOT_DEFAULT_PYTZ)
+        start_ts = start_ts.tz_convert("America/New_York")
+        end_ts = end_ts.tz_convert("America/New_York")
+        if end_ts <= start_ts:
+            return True
+    except Exception:
+        return False
+
+    def _next_open(ts: pd.Timestamp) -> pd.Timestamp:
+        ts = ts.tz_convert("America/New_York")
+        dow = int(ts.weekday())  # Mon=0 .. Sun=6
+        t = ts.time()
+
+        # Saturday: closed all day; next open is Sunday 18:00 ET.
+        if dow == 5:
+            days = 1
+            candidate = (ts + pd.Timedelta(days=days)).normalize() + pd.Timedelta(hours=18)
+            return candidate.tz_localize("America/New_York") if candidate.tzinfo is None else candidate
+
+        # Sunday: closed until 18:00 ET.
+        if dow == 6:
+            open_ts = ts.normalize() + pd.Timedelta(hours=18)
+            open_ts = open_ts.tz_localize("America/New_York") if open_ts.tzinfo is None else open_ts
+            return ts if ts >= open_ts else open_ts
+
+        # Weekdays: closed daily 17:00–18:00 ET.
+        if t >= datetime.min.replace(hour=17, minute=0, second=0).time() and t < datetime.min.replace(hour=18, minute=0, second=0).time():
+            reopen = ts.normalize() + pd.Timedelta(hours=18)
+            reopen = reopen.tz_localize("America/New_York") if reopen.tzinfo is None else reopen
+            return reopen
+
+        return ts
+
+    try:
+        next_open = _next_open(start_ts)
+        return bool(next_open >= end_ts)
+    except Exception:
+        return False
 
 
 @dataclass(frozen=True)
@@ -83,7 +150,19 @@ def get_price_data(
     if asset_type == "crypto" and not effective_exchange:
         effective_exchange = (os.environ.get("IBKR_CRYPTO_VENUE") or IBKR_DEFAULT_CRYPTO_VENUE).strip().upper()
 
-    source_was_explicit = source is not None
+    # Treat the env var as explicit too.
+    #
+    # WHY (parity harness): For IBKR-vs-DataBento parity runs we set `IBKR_HISTORY_SOURCE=Trades`
+    # and need to treat that as an explicit choice so we do NOT augment the Trades series with
+    # derived bid/ask columns (which would otherwise change fill semantics in the backtester).
+    env_source_raw = os.environ.get("IBKR_HISTORY_SOURCE")
+    env_source_was_explicit = False
+    if env_source_raw is not None:
+        trimmed = env_source_raw.strip()
+        if trimmed and trimmed.lower() != "none":
+            env_source_was_explicit = True
+
+    source_was_explicit = source is not None or env_source_was_explicit
     history_source = _normalize_history_source(source)
 
     # Normalize timestep classification once so callers can pass "day", "1d", "1day", etc.
@@ -91,6 +170,90 @@ def get_price_data(
         _bar, _bar_seconds, timestep_component = _timestep_to_ibkr_bar(timestep)
     except Exception:
         timestep_component = _timestep_component(timestep)
+
+    # Continuous futures
+    #
+    # IMPORTANT (expired explicit futures support):
+    # IBKR's Client Portal API does not reliably expose conids for *expired* futures contracts.
+    # To backtest `cont_future` deterministically (and to support explicit expired contracts),
+    # LumiBot uses a local conid registry (`ibkr/conids.json`) populated via a one-time TWS
+    # backfill. `cont_future` data is stitched by resolving each contract month using LumiBot's
+    # roll schedule (see `_resolve_cont_future_segments`), then fetching bars per-expiration.
+
+    if asset_type == "cont_future":
+        segments = _resolve_cont_future_segments(asset=asset, start_dt=start_utc, end_dt=end_utc, exchange=effective_exchange)
+        if not segments:
+            raise RuntimeError(
+                "Unable to resolve cont_future roll segments for IBKR. "
+                "This usually means the futures roll rules are unavailable or conid backfill is missing."
+            )
+        # Ensure the *user-facing* cont_future asset (used in orders/positions) carries the
+        # correct contract metadata (multiplier/min_tick). Otherwise PnL and tick rounding will
+        # be wrong even if we fetch bars for the right underlying expirations.
+        #
+        # We copy metadata from the first roll segment, since multiplier/minTick are stable
+        # across expirations for a given root (e.g., MES, ES).
+        try:
+            first_asset, _, _ = segments[0]
+            _maybe_apply_future_contract_metadata(asset=first_asset, exchange=effective_exchange)
+            first_multiplier = getattr(first_asset, "multiplier", None)
+            if first_multiplier not in (None, 0, 1):
+                try:
+                    asset.multiplier = first_multiplier  # type: ignore[assignment]
+                except Exception:
+                    pass
+            first_min_tick = getattr(first_asset, "min_tick", None)
+            if first_min_tick not in (None, 0):
+                try:
+                    setattr(asset, "min_tick", first_min_tick)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        frames: list[pd.DataFrame] = []
+        for i, (seg_asset, seg_start, seg_end) in enumerate(segments):
+            # Clamp each segment to the requested window.
+            seg_start = _to_utc(seg_start)
+            seg_end = _to_utc(seg_end)
+
+            # IMPORTANT: `Strategy.get_last_price()` is evaluated at bar boundaries, and our
+            # futures backtesting semantics treat "last price at dt" as the last completed bar
+            # (i.e., previous bar close).
+            #
+            # At roll boundaries, the *first* bar of the new contract often occurs exactly one
+            # minute before the roll trigger (`roll_dt + 1 minute` in `futures_roll`), so the
+            # previous-bar lookup at the roll timestamp needs the new contract's final pre-roll
+            # minute available.
+            #
+            # Fix: for every segment after the first, widen the fetch window by 1 minute on the
+            # left so the stitched series contains that preceding bar. We rely on "keep=last"
+            # de-duping so the newer contract overrides overlaps deterministically.
+            if i > 0:
+                seg_start = seg_start - timedelta(minutes=1)
+
+            seg_start = max(seg_start, start_utc)
+            seg_end = min(_to_utc(seg_end), end_utc)
+            if seg_start >= seg_end:
+                continue
+            df_seg = get_price_data(
+                asset=seg_asset,
+                quote=quote,
+                timestep=timestep,
+                start_dt=seg_start,
+                end_dt=seg_end,
+                exchange=effective_exchange,
+                include_after_hours=include_after_hours,
+                source=source,
+            )
+            if df_seg is not None and not df_seg.empty:
+                frames.append(df_seg)
+        if not frames:
+            return pd.DataFrame()
+        stitched = pd.concat(frames, axis=0)
+        stitched = stitched[~stitched.index.duplicated(keep="last")]
+        stitched = stitched.sort_index()
+        return stitched.loc[(stitched.index >= start_local) & (stitched.index <= end_local)]
 
     # IMPORTANT (IBKR crypto daily semantics):
     # IBKR's `bar=1d` history is not a clean midnight-to-midnight 24/7 day series for crypto.
@@ -112,6 +275,21 @@ def get_price_data(
             source=history_source,
         )
 
+    if asset_type in {"future", "cont_future"} and str(timestep_component).endswith("day"):
+        _maybe_apply_future_contract_metadata(asset=asset, exchange=effective_exchange)
+        return _get_futures_daily_bars(
+            asset=asset,
+            quote=quote,
+            start_dt=start_utc,
+            end_dt=end_utc,
+            exchange=effective_exchange,
+            include_after_hours=include_after_hours,
+            source=history_source,
+        )
+
+    if asset_type in {"future", "cont_future"}:
+        _maybe_apply_future_contract_metadata(asset=asset, exchange=effective_exchange)
+
     cache_file = _cache_file_for(
         asset=asset,
         quote=quote,
@@ -130,6 +308,30 @@ def get_price_data(
         pass
 
     df_cache = _read_cache_frame(cache_file)
+    # If this series came from a cached parquet (e.g., prefilled via TWS), it may not include the
+    # synthetic bid/ask fallback columns that we add when decoding Client Portal history. For
+    # non-explicit history sources, populate bid/ask from close so quote-based fill logic (and
+    # SMART_LIMIT) remains functional without forcing extra history requests.
+    if (
+        not source_was_explicit
+        and not df_cache.empty
+        and "close" in df_cache.columns
+        and (("bid" not in df_cache.columns) or ("ask" not in df_cache.columns))
+    ):
+        df_cache = df_cache.copy()
+        close = pd.to_numeric(df_cache.get("close"), errors="coerce")
+
+        if "bid" in df_cache.columns:
+            bid = pd.to_numeric(df_cache.get("bid"), errors="coerce")
+        else:
+            bid = pd.Series(index=df_cache.index, dtype="float64")
+        df_cache["bid"] = bid.where(~bid.isna(), close)
+
+        if "ask" in df_cache.columns:
+            ask = pd.to_numeric(df_cache.get("ask"), errors="coerce")
+        else:
+            ask = pd.Series(index=df_cache.index, dtype="float64")
+        df_cache["ask"] = ask.where(~ask.isna(), close)
     if not df_cache.empty:
         coverage_start = df_cache.index.min()
         coverage_end = df_cache.index.max()
@@ -137,28 +339,137 @@ def get_price_data(
         coverage_start = None
         coverage_end = None
 
+    # Detect disjoint cached segments.
+    #
+    # IBKR parquet caches (especially when hydrated from remote S3) can contain disjoint segments
+    # where `coverage_start..coverage_end` spans a large range but the requested window is only
+    # partially covered (or not covered near one boundary). If we only look at global min/max
+    # coverage we can incorrectly treat a request as a cache hit and return empty/underfilled bars.
+    window_slice = pd.DataFrame()
+    window_cov_start = None
+    window_cov_end = None
+    try:
+        if coverage_start is not None and coverage_end is not None:
+            window_slice = df_cache.loc[(df_cache.index >= start_local) & (df_cache.index <= end_local)]
+            if not window_slice.empty:
+                window_cov_start = window_slice.index.min()
+                window_cov_end = window_slice.index.max()
+    except Exception:
+        window_slice = pd.DataFrame()
+        window_cov_start = None
+        window_cov_end = None
+
+    # IBKR history can legitimately omit the very last bar(s) of a window (e.g., missing the final
+    # 1–2 minutes of the day). When this happens, repeatedly trying to "fill to the end" creates
+    # unnecessary downloader traffic and can wedge CI acceptance runs.
+    #
+    # Treat the cached series as "good enough" if it's within 2 bars of the requested end.
+    #
+    # Futures also have an expected daily maintenance gap (~1 hour). If a request window begins
+    # during a closed period and the cache starts at the next session open, do not try to fetch
+    # the closed interval (it will return empty and can trigger retry loops).
+    end_tolerance = timedelta(0)
+    start_tolerance = timedelta(0)
+    bar_step = timedelta(0)
+    try:
+        ibkr_bar, _, _ = _timestep_to_ibkr_bar(timestep)
+
+        def _bar_delta(bar: str) -> timedelta:
+            b = (bar or "").strip().lower()
+            if b.endswith("min"):
+                return timedelta(minutes=int(b.removesuffix("min") or "1"))
+            if b.endswith("h"):
+                return timedelta(hours=int(b.removesuffix("h") or "1"))
+            if b.endswith("d"):
+                return timedelta(days=int(b.removesuffix("d") or "1"))
+            return timedelta(0)
+
+        bar_step = _bar_delta(ibkr_bar)
+        end_tolerance = bar_step * 3
+        start_tolerance = bar_step * 3
+        if asset_type in {"future", "cont_future"}:
+            start_tolerance = max(start_tolerance, timedelta(hours=1))
+    except Exception:
+        end_tolerance = timedelta(0)
+        start_tolerance = timedelta(0)
+        bar_step = timedelta(0)
+
+    window_start_gap_closed = (
+        asset_type in {"future", "cont_future"}
+        and window_cov_start is not None
+        and start_local < window_cov_start
+        and _us_futures_closed_interval(start_local, window_cov_start)
+    )
+    cache_start_gap_closed = (
+        asset_type in {"future", "cont_future"}
+        and coverage_start is not None
+        and start_local < coverage_start
+        and _us_futures_closed_interval(start_local, coverage_start)
+    )
+    window_end_gap_closed = (
+        asset_type in {"future", "cont_future"}
+        and window_cov_end is not None
+        and end_local > window_cov_end
+        and _us_futures_closed_interval(window_cov_end + bar_step, end_local)
+    )
+    cache_end_gap_closed = (
+        asset_type in {"future", "cont_future"}
+        and coverage_end is not None
+        and end_local > coverage_end
+        and _us_futures_closed_interval(coverage_end + bar_step, end_local)
+    )
+
     needs_fetch = (
         coverage_start is None
         or coverage_end is None
-        or start_local < coverage_start
-        or end_local > coverage_end
+        # If the requested window has no rows at all (even though the overall cache has a broad
+        # min/max range), treat it as a cache miss and fetch that specific segment.
+        or (coverage_start is not None and coverage_end is not None and window_slice.empty)
+        # Missing coverage near the requested boundaries (disjoint segments within the window).
+        or (
+            window_cov_start is not None
+            and start_local < window_cov_start
+            and not window_start_gap_closed
+            and (start_tolerance <= timedelta(0) or (window_cov_start - start_local) > start_tolerance)
+        )
+        or (
+            window_cov_end is not None
+            and end_local > window_cov_end
+            and not window_end_gap_closed
+            and (end_tolerance <= timedelta(0) or (end_local - window_cov_end) > end_tolerance)
+        )
+        or (
+            coverage_start is not None
+            and start_local < coverage_start
+            and not cache_start_gap_closed
+            and (start_tolerance <= timedelta(0) or (coverage_start - start_local) > start_tolerance)
+        )
+        or (
+            end_local > coverage_end
+            and not cache_end_gap_closed
+            and (end_tolerance <= timedelta(0) or (end_local - coverage_end) > end_tolerance)
+        )
     )
 
     if needs_fetch:
         segments: list[tuple[datetime, datetime]] = []
-        if coverage_start is None or coverage_end is None:
+        if coverage_start is None or coverage_end is None or window_slice.empty:
             segments.append((start_utc, end_utc))
         else:
+            # Prefer window-local coverage for disjoint-segment detection.
+            effective_start = window_cov_start or coverage_start
+            effective_end = window_cov_end or coverage_end
+
             # If the requested window has no overlap with the cached window, do NOT try to "bridge"
             # the gap. Fetch exactly the requested window and merge it into the cache as a disjoint
             # segment. Bridging can turn a 1-hour request into months of downloads.
-            if end_local < coverage_start or start_local > coverage_end:
+            if end_local < effective_start or start_local > effective_end:
                 segments.append((start_utc, end_utc))
             else:
-                if start_local < coverage_start:
-                    segments.append((start_utc, coverage_start.astimezone(timezone.utc)))
-                if end_local > coverage_end:
-                    segments.append((coverage_end.astimezone(timezone.utc), end_utc))
+                if effective_start is not None and start_local < effective_start:
+                    segments.append((start_utc, effective_start.astimezone(timezone.utc)))
+                if effective_end is not None and end_local > effective_end:
+                    segments.append((effective_end.astimezone(timezone.utc), end_utc))
 
         for seg_start, seg_end in segments:
             if seg_start >= seg_end:
@@ -173,6 +484,7 @@ def get_price_data(
                     exchange=effective_exchange,
                     include_after_hours=include_after_hours,
                     source=history_source,
+                    source_was_explicit=source_was_explicit,
                 )
             except Exception as exc:
                 # Avoid crashing the entire backtest on entitlement/session issues. Return an empty
@@ -216,6 +528,26 @@ def get_price_data(
             _write_cache_frame(cache_file, df_aug)
             df_cache = df_aug
 
+    if (
+        _enable_futures_bid_ask_derivation()
+        and (not source_was_explicit)
+        and asset_type in {"future", "cont_future"}
+        and str(timestep_component).endswith(("minute", "hour"))
+    ):
+        df_aug, changed = _maybe_augment_futures_bid_ask(
+            df_cache=df_cache,
+            asset=asset,
+            quote=quote,
+            timestep=timestep,
+            start_dt=start_utc,
+            end_dt=end_utc,
+            exchange=effective_exchange,
+            include_after_hours=include_after_hours,
+        )
+        if changed:
+            _write_cache_frame(cache_file, df_aug)
+            df_cache = df_aug
+
     # Remove placeholder rows from the returned frame (but keep them in cache).
     frame = df_cache.loc[(df_cache.index >= start_local) & (df_cache.index <= end_local)].copy()
     if "missing" in frame.columns:
@@ -233,6 +565,103 @@ def _frame_has_actionable_bid_ask(df: pd.DataFrame) -> bool:
     ask = pd.to_numeric(df["ask"], errors="coerce")
     spread = ask - bid
     return bool((spread > 0).any())
+
+
+def _resolve_cont_future_segments(*, asset: Asset, start_dt: datetime, end_dt: datetime, exchange: Optional[str]) -> list[tuple[Asset, datetime, datetime]]:
+    """Resolve a `cont_future` asset into a list of explicit futures contract segments.
+
+    This follows LumiBot's roll schedule (`lumibot.tools.futures_roll`) so that backtests
+    match live broker semantics (Tradovate/ProjectX) and are comparable across providers
+    (e.g., DataBento vs IBKR).
+    """
+    try:
+        from lumibot.tools import futures_roll
+    except Exception:
+        return []
+
+    start_utc = _to_utc(start_dt)
+    end_utc = _to_utc(end_dt)
+    if start_utc > end_utc:
+        start_utc, end_utc = end_utc, start_utc
+
+    try:
+        schedule = futures_roll.build_roll_schedule(asset, start_utc, end_utc, year_digits=2)
+    except Exception:
+        schedule = []
+    if not schedule:
+        return []
+
+    segments: list[tuple[Asset, datetime, datetime]] = []
+    for contract_symbol, seg_start, seg_end in schedule:
+        year, month = _parse_contract_year_month(contract_symbol)
+        expiration = _contract_expiration_date(asset.symbol, year=year, month=month)
+        contract_asset = Asset(asset.symbol, asset_type=Asset.AssetType.FUTURE, expiration=expiration)
+        # Validate that we can resolve an explicit conid for this contract month.
+        try:
+            _resolve_conid(asset=contract_asset, quote=None, exchange=exchange)
+        except Exception as exc:
+            raise RuntimeError(
+                f"IBKR cont_future requires conids for explicit contract months (e.g., {contract_symbol}). "
+                "If this is an expired contract, IBKR Client Portal cannot discover its conid. "
+                "Run the one-time TWS conid backfill (scripts/backfill_ibkr_futures_conids_tws.py) "
+                "to populate ibkr/conids.json."
+            ) from exc
+        segments.append((contract_asset, _to_utc(seg_start), _to_utc(seg_end)))
+    return segments
+
+
+def _parse_contract_year_month(contract_symbol: str) -> tuple[int, int]:
+    """Parse a futures contract symbol (e.g., MESZ25) into (year, month)."""
+    symbol = (contract_symbol or "").strip().upper()
+    if len(symbol) < 3:
+        raise ValueError(f"Invalid contract symbol: {contract_symbol!r}")
+
+    month_code = symbol[-3:-2]
+    year_text = symbol[-2:]
+    try:
+        year_two = int(year_text)
+    except Exception as exc:
+        raise ValueError(f"Invalid futures year in {contract_symbol!r}") from exc
+
+    # Assumption: 20xx is the relevant range for our backtests.
+    year = 2000 + year_two
+
+    try:
+        from lumibot.tools import futures_roll
+
+        reverse = {v: k for k, v in getattr(futures_roll, "_FUTURES_MONTH_CODES", {}).items()}
+    except Exception:
+        reverse = {"H": 3, "M": 6, "U": 9, "Z": 12}
+
+    month = reverse.get(month_code)
+    if month is None:
+        raise ValueError(f"Invalid futures month code {month_code!r} in {contract_symbol!r}")
+    return year, int(month)
+
+
+def _contract_expiration_date(root_symbol: str, *, year: int, month: int):
+    """Best-effort expiration date for a futures contract based on the roll rules."""
+    try:
+        from lumibot.tools import futures_roll
+
+        rule = futures_roll.ROLL_RULES.get(str(root_symbol).upper())
+        anchor = getattr(rule, "anchor", None) if rule else None
+
+        if anchor == "third_last_business_day":
+            expiry = futures_roll._third_last_business_day(year, month)
+        else:
+            # Default anchor for CME equity index futures is third Friday.
+            expiry = futures_roll._third_friday(year, month)
+        return expiry.date()
+    except Exception:
+        # Safe fallback: third Friday.
+        from datetime import date, timedelta
+
+        first = date(year, month, 1)
+        days_until_friday = (4 - first.weekday()) % 7
+        first_friday = first + timedelta(days=days_until_friday)
+        third_friday = first_friday + timedelta(days=14)
+        return third_friday
 
 
 def _get_cached_bars_for_source(
@@ -272,11 +701,29 @@ def _get_cached_bars_for_source(
         coverage_start = None
         coverage_end = None
 
+    end_tolerance = timedelta(0)
+    try:
+        ibkr_bar, _, _ = _timestep_to_ibkr_bar(timestep)
+
+        def _bar_delta(bar: str) -> timedelta:
+            b = (bar or "").strip().lower()
+            if b.endswith("min"):
+                return timedelta(minutes=int(b.removesuffix("min") or "1"))
+            if b.endswith("h"):
+                return timedelta(hours=int(b.removesuffix("h") or "1"))
+            if b.endswith("d"):
+                return timedelta(days=int(b.removesuffix("d") or "1"))
+            return timedelta(0)
+
+        end_tolerance = _bar_delta(ibkr_bar) * 3
+    except Exception:
+        end_tolerance = timedelta(0)
+
     needs_fetch = (
         coverage_start is None
         or coverage_end is None
         or start_local < coverage_start
-        or end_local > coverage_end
+        or (end_local > coverage_end and (end_tolerance <= timedelta(0) or (end_local - coverage_end) > end_tolerance))
     )
 
     if needs_fetch:
@@ -305,6 +752,7 @@ def _get_cached_bars_for_source(
                     exchange=exchange,
                     include_after_hours=include_after_hours,
                     source=history_source,
+                    source_was_explicit=True,
                 )
             except Exception as exc:
                 logger.error(
@@ -397,6 +845,72 @@ def _maybe_augment_crypto_bid_ask(
     return updated, True
 
 
+def _maybe_augment_futures_bid_ask(
+    *,
+    df_cache: pd.DataFrame,
+    asset: Asset,
+    quote: Optional[Asset],
+    timestep: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    exchange: Optional[str],
+    include_after_hours: bool,
+) -> tuple[pd.DataFrame, bool]:
+    if not _enable_futures_bid_ask_derivation():
+        return df_cache, False
+    if df_cache is None or df_cache.empty:
+        return df_cache, False
+    if _frame_has_actionable_bid_ask(df_cache):
+        return df_cache, False
+
+    try:
+        bid_ask = _get_cached_bars_for_source(
+            asset=asset,
+            quote=quote,
+            timestep=timestep,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            exchange=exchange,
+            include_after_hours=include_after_hours,
+            source="Bid_Ask",
+        )
+        midpoint = _get_cached_bars_for_source(
+            asset=asset,
+            quote=quote,
+            timestep=timestep,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            exchange=exchange,
+            include_after_hours=include_after_hours,
+            source="Midpoint",
+        )
+    except Exception:
+        return df_cache, False
+
+    derived = _derive_bid_ask_from_bid_ask_and_midpoint(bid_ask, midpoint)
+    if derived is None or derived.empty:
+        return df_cache, False
+
+    updated = df_cache.copy()
+    updated.loc[derived.index, "bid"] = derived["bid"]
+    updated.loc[derived.index, "ask"] = derived["ask"]
+
+    if "close" in updated.columns:
+        updated["bid"] = pd.to_numeric(updated.get("bid"), errors="coerce").where(
+            ~pd.to_numeric(updated.get("bid"), errors="coerce").isna(),
+            pd.to_numeric(updated.get("close"), errors="coerce"),
+        )
+        updated["ask"] = pd.to_numeric(updated.get("ask"), errors="coerce").where(
+            ~pd.to_numeric(updated.get("ask"), errors="coerce").isna(),
+            pd.to_numeric(updated.get("close"), errors="coerce"),
+        )
+
+    if not _frame_has_actionable_bid_ask(updated):
+        return df_cache, False
+
+    return updated, True
+
+
 def _fetch_history_between_dates(
     *,
     asset: Asset,
@@ -407,6 +921,7 @@ def _fetch_history_between_dates(
     exchange: Optional[str],
     include_after_hours: bool,
     source: str,
+    source_was_explicit: bool,
 ) -> pd.DataFrame:
     conid = _resolve_conid(asset=asset, quote=quote, exchange=exchange)
     bar, bar_seconds, _cache_timestep = _timestep_to_ibkr_bar(timestep)
@@ -446,7 +961,7 @@ def _fetch_history_between_dates(
             )
             return pd.DataFrame()
 
-        df = _history_payload_to_frame(data)
+        df = _history_payload_to_frame(data, source_was_explicit=source_was_explicit)
         if df.empty:
             _record_missing_window(
                 asset=asset,
@@ -531,7 +1046,7 @@ def _ibkr_history_request(
     return result
 
 
-def _history_payload_to_frame(data: Any) -> pd.DataFrame:
+def _history_payload_to_frame(data: Any, *, source_was_explicit: bool) -> pd.DataFrame:
     df = pd.DataFrame(data)
     if df.empty:
         return df
@@ -549,10 +1064,16 @@ def _history_payload_to_frame(data: Any) -> pd.DataFrame:
     df = df.sort_index()
     df.index = df.index.tz_convert(LUMIBOT_DEFAULT_PYTZ)
     df["missing"] = False
-    # Default quote fields: treat bid/ask as the last-trade/mark series until we can derive a
-    # real bid/ask spread. This ensures the quote-fill model remains functional even when
-    # IBKR does not provide true NBBO history.
-    if "close" in df.columns:
+    # Default quote fields:
+    #
+    # When callers did not explicitly request a history `source`, we populate bid/ask with the
+    # close as a fallback so quote-based fill logic remains functional even before we derive a
+    # real spread (Bid_Ask + Midpoint).
+    #
+    # When the caller explicitly requests a history `source` (e.g., `source="Trades"` in a
+    # deterministic parity suite), we intentionally DO NOT synthesize bid/ask so the engine
+    # uses OHLC fills.
+    if (not source_was_explicit) and "close" in df.columns:
         df["bid"] = df["close"]
         df["ask"] = df["close"]
     return df
@@ -847,6 +1368,147 @@ def _get_crypto_daily_bars(
     return frame
 
 
+def _get_futures_daily_bars(
+    *,
+    asset: Asset,
+    quote: Optional[Asset],
+    start_dt: datetime,
+    end_dt: datetime,
+    exchange: Optional[str],
+    include_after_hours: bool,
+    source: str,
+) -> pd.DataFrame:
+    """Derive `day` bars aligned to the `us_futures` session (not midnight).
+
+    This is intentionally session-based because futures strategies commonly use
+    `self.set_market("us_futures")` and LumiBot's backtesting clock advances based on that calendar.
+    """
+
+    try:
+        import pandas_market_calendars as mcal
+    except Exception:
+        return pd.DataFrame()
+
+    start_utc = _to_utc(start_dt)
+    end_utc = _to_utc(end_dt)
+    if start_utc > end_utc:
+        start_utc, end_utc = end_utc, start_utc
+    start_local = start_utc.astimezone(LUMIBOT_DEFAULT_PYTZ)
+    end_local = end_utc.astimezone(LUMIBOT_DEFAULT_PYTZ)
+
+    cal = mcal.get_calendar("us_futures")
+    schedule = cal.schedule(
+        start_date=pd.Timestamp(start_utc.date()) - pd.Timedelta(days=2),
+        end_date=pd.Timestamp(end_utc.date()) + pd.Timedelta(days=2),
+    )
+    if schedule is None or schedule.empty:
+        return pd.DataFrame()
+
+    session_start = pd.Timestamp(schedule["market_open"].min()).tz_convert("UTC").to_pydatetime()
+    session_end = pd.Timestamp(schedule["market_close"].max()).tz_convert("UTC").to_pydatetime()
+    if session_start >= session_end:
+        return pd.DataFrame()
+
+    # Prefer hourly bars for speed (deriving daily from minute across long windows is too slow).
+    intraday = _get_cached_bars_for_source(
+        asset=asset,
+        quote=quote,
+        timestep="hour",
+        start_dt=session_start,
+        end_dt=session_end,
+        exchange=exchange,
+        include_after_hours=include_after_hours,
+        source=source,
+    )
+    intraday_timestep = "hour"
+    if intraday is None or intraday.empty:
+        intraday = _get_cached_bars_for_source(
+            asset=asset,
+            quote=quote,
+            timestep="minute",
+            start_dt=session_start,
+            end_dt=session_end,
+            exchange=exchange,
+            include_after_hours=include_after_hours,
+            source=source,
+        )
+        intraday_timestep = "minute"
+        if intraday is None or intraday.empty:
+            return pd.DataFrame()
+
+    if _enable_futures_bid_ask_derivation():
+        intraday, _ = _maybe_augment_futures_bid_ask(
+            df_cache=intraday,
+            asset=asset,
+            quote=quote,
+            timestep=intraday_timestep,
+            start_dt=session_start,
+            end_dt=session_end,
+            exchange=exchange,
+            include_after_hours=include_after_hours,
+        )
+
+    rows: list[dict[str, float]] = []
+    idx: list[pd.Timestamp] = []
+    minute_fallback: Optional[pd.DataFrame] = None
+    for _, sess in schedule.iterrows():
+        open_local = pd.Timestamp(sess["market_open"]).tz_convert("UTC").tz_convert(LUMIBOT_DEFAULT_PYTZ)
+        close_local = pd.Timestamp(sess["market_close"]).tz_convert("UTC").tz_convert(LUMIBOT_DEFAULT_PYTZ)
+        if close_local < start_local or open_local > end_local:
+            continue
+        window = intraday.loc[(intraday.index >= open_local) & (intraday.index <= close_local)]
+        if window.empty and intraday_timestep != "minute":
+            if minute_fallback is None:
+                minute_fallback = _get_cached_bars_for_source(
+                    asset=asset,
+                    quote=quote,
+                    timestep="minute",
+                    start_dt=session_start,
+                    end_dt=session_end,
+                    exchange=exchange,
+                    include_after_hours=include_after_hours,
+                    source=source,
+                )
+                if _enable_futures_bid_ask_derivation():
+                    minute_fallback, _ = _maybe_augment_futures_bid_ask(
+                        df_cache=minute_fallback,
+                        asset=asset,
+                        quote=quote,
+                        timestep="minute",
+                        start_dt=session_start,
+                        end_dt=session_end,
+                        exchange=exchange,
+                        include_after_hours=include_after_hours,
+                    )
+            if minute_fallback is not None and not minute_fallback.empty:
+                window = minute_fallback.loc[(minute_fallback.index >= open_local) & (minute_fallback.index <= close_local)]
+        if window.empty:
+            continue
+
+        open_px = float(window["open"].iloc[0]) if "open" in window.columns else float(window["close"].iloc[0])
+        high_px = float(pd.to_numeric(window.get("high"), errors="coerce").max()) if "high" in window.columns else float(window["close"].max())
+        low_px = float(pd.to_numeric(window.get("low"), errors="coerce").min()) if "low" in window.columns else float(window["close"].min())
+        close_px = float(pd.to_numeric(window.get("close"), errors="coerce").iloc[-1])
+        vol = float(pd.to_numeric(window.get("volume"), errors="coerce").fillna(0).sum()) if "volume" in window.columns else 0.0
+
+        payload: dict[str, float] = {"open": open_px, "high": high_px, "low": low_px, "close": close_px, "volume": vol}
+        if "bid" in window.columns:
+            payload["bid"] = float(pd.to_numeric(window.get("bid"), errors="coerce").iloc[-1])
+        if "ask" in window.columns:
+            payload["ask"] = float(pd.to_numeric(window.get("ask"), errors="coerce").iloc[-1])
+
+        rows.append(payload)
+        idx.append(close_local)
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, index=pd.DatetimeIndex(idx))
+    df = df.sort_index()
+    df.index = df.index.tz_convert(LUMIBOT_DEFAULT_PYTZ)
+    return df.loc[(df.index >= start_local) & (df.index <= end_local)]
+
+
 def _resolve_conid(*, asset: Asset, quote: Optional[Asset], exchange: Optional[str]) -> int:
     cache_file = Path(LUMIBOT_CACHE_FOLDER) / CACHE_SUBFOLDER / "conids.json"
     cache_manager = get_backtest_cache()
@@ -862,13 +1524,26 @@ def _resolve_conid(*, asset: Asset, quote: Optional[Asset], exchange: Optional[s
         except Exception:
             mapping = {}
 
-    key = _conid_key(asset=asset, quote=quote, exchange=exchange).to_key()
-    cached = mapping.get(key)
-    if isinstance(cached, int) and cached > 0:
-        return cached
+    # Conid keying is not fully uniform across historical caches (some runs key futures with
+    # quote_symbol="USD", others omit it). For robustness (and to avoid unnecessary remote
+    # lookups), try a small set of equivalent keys before falling back to the downloader.
+    primary = _conid_key(asset=asset, quote=quote, exchange=exchange)
+    candidates = [primary.to_key()]
+    asset_type = str(getattr(asset, "asset_type", "") or "").lower()
+    if asset_type in {"future", "cont_future"}:
+        if primary.quote_symbol:
+            candidates.append(IbkrConidKey(primary.asset_type, primary.symbol, "", primary.exchange, primary.expiration).to_key())
+        else:
+            candidates.append(IbkrConidKey(primary.asset_type, primary.symbol, "USD", primary.exchange, primary.expiration).to_key())
+
+    for key in candidates:
+        cached = mapping.get(key)
+        if isinstance(cached, int) and cached > 0:
+            return cached
 
     conid = _lookup_conid_remote(asset=asset, quote=quote, exchange=exchange)
-    mapping[key] = int(conid)
+    # Always persist under the primary key for forward consistency.
+    mapping[primary.to_key()] = int(conid)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8")
     try:
@@ -983,6 +1658,11 @@ def _lookup_conid_future(*, asset: Asset, exchange: Optional[str]) -> int:
         for contract in contracts:
             if str(contract.get("expirationDate") or "") == target:
                 return int(contract["conid"])
+        raise RuntimeError(
+            f"IBKR did not return a conid for {asset.symbol} expiring {target} on {desired_exchange}. "
+            "If this is an expired contract, IBKR Client Portal cannot reliably discover it. "
+            "Populate ibkr/conids.json via the one-time TWS conid backfill."
+        )
 
     # Default: earliest expiration (front month) – used for smoke tests like MES.
     def _exp_key(item: Dict[str, Any]) -> int:
@@ -1132,6 +1812,95 @@ def _write_cache_frame(path: Path, df: pd.DataFrame) -> None:
         get_backtest_cache().on_local_update(path, payload=_remote_payload_from_path(path))
     except Exception:
         pass
+
+
+def _contract_info_cache_file(conid: int) -> Path:
+    provider_root = Path(LUMIBOT_CACHE_FOLDER) / CACHE_SUBFOLDER
+    return provider_root / "future" / "contracts" / f"CONID_{int(conid)}.json"
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True, default=str, indent=2), encoding="utf-8")
+    try:
+        get_backtest_cache().on_local_update(path, payload=_remote_payload_from_path(path))
+    except Exception:
+        pass
+
+
+def _fetch_contract_info(conid: int) -> Dict[str, Any]:
+    base_url = _downloader_base_url()
+    url = f"{base_url}/ibkr/iserver/contract/{int(conid)}/info"
+    payload = queue_request(url=url, querystring=None, headers=None, timeout=None)
+    if payload is None:
+        return {}
+    if isinstance(payload, dict) and payload.get("error"):
+        raise RuntimeError(f"IBKR contract info error: {payload.get('error')}")
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _maybe_apply_future_contract_metadata(*, asset: Asset, exchange: Optional[str]) -> None:
+    """Best-effort: populate futures multiplier + min_tick for accurate PnL and tick rounding."""
+    asset_type = str(getattr(asset, "asset_type", "") or "").lower()
+    if asset_type not in {"future", "cont_future"}:
+        return
+
+    try:
+        conid = _resolve_conid(asset=asset, quote=None, exchange=exchange)
+    except Exception:
+        return
+
+    cache_file = _contract_info_cache_file(int(conid))
+    cache = get_backtest_cache()
+    try:
+        cache.ensure_local_file(cache_file, payload={"provider": "ibkr", "type": "contract_info", "conid": int(conid)})
+    except Exception:
+        pass
+
+    info = _read_json(cache_file)
+    if not info:
+        try:
+            info = _fetch_contract_info(int(conid))
+        except Exception:
+            info = {}
+        if info:
+            _write_json(cache_file, info)
+
+    if not info:
+        return
+
+    raw_mult = info.get("multiplier")
+    try:
+        mult_val = float(raw_mult) if raw_mult is not None else None
+    except Exception:
+        mult_val = None
+    if mult_val and mult_val > 0:
+        try:
+            asset.multiplier = int(mult_val) if float(mult_val).is_integer() else mult_val  # type: ignore[assignment]
+        except Exception:
+            pass
+
+    raw_tick = info.get("minTick") if "minTick" in info else info.get("min_tick")
+    try:
+        tick_val = float(raw_tick) if raw_tick is not None else None
+    except Exception:
+        tick_val = None
+    if tick_val and tick_val > 0:
+        try:
+            setattr(asset, "min_tick", tick_val)
+        except Exception:
+            pass
 
 
 def _remote_payload(
