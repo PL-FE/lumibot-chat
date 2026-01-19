@@ -29,6 +29,8 @@ from lumibot.tools.polygon_helper import get_price_data_from_polygon as polygon_
 
 load_dotenv()
 
+pytestmark = [pytest.mark.downloader]
+
 
 @pytest.mark.skipif(
     not os.environ.get("POLYGON_API_KEY")

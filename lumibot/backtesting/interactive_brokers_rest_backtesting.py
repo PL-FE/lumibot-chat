@@ -61,6 +61,42 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         legacy_key = (asset, quote_asset)
         return canonical_key, legacy_key
 
+    @staticmethod
+    def _previous_us_futures_session_open(dt_value: datetime) -> Optional[datetime]:
+        """Return the most recent `us_futures` session open at or before `dt_value`.
+
+        Futures backtests frequently start at midnight timestamps (e.g. Monday 00:00 ET), but the
+        `us_futures` session opens the prior day at ~18:00 ET and is closed for long stretches
+        (weekends/holidays). Prefetching from a naive `dt_value - 1 day` can land in a closed
+        interval and trigger unnecessary (and sometimes flaky) downloader fetch attempts.
+        """
+        try:
+            import pandas_market_calendars as mcal
+        except Exception:
+            return None
+
+        try:
+            ref = pd.Timestamp(dt_value)
+            if ref.tzinfo is None:
+                ref = ref.tz_localize("UTC")
+            ref = ref.tz_convert("UTC")
+
+            cal = mcal.get_calendar("us_futures")
+            schedule = cal.schedule(
+                start_date=ref.date() - timedelta(days=10),
+                end_date=ref.date() + timedelta(days=1),
+            )
+            if schedule is None or schedule.empty:
+                return None
+
+            opens = pd.to_datetime(schedule["market_open"], utc=True, errors="coerce").dropna()
+            opens = opens.loc[opens <= ref]
+            if opens.empty:
+                return None
+            return opens.max().to_pydatetime()
+        except Exception:
+            return None
+
     def get_last_price(self, asset, quote=None, exchange=None):
         """Return the best available last price for mark-to-market during IBKR backtests.
 
@@ -78,6 +114,17 @@ class InteractiveBrokersRESTBacktesting(PandasData):
 
         asset_type = str(getattr(base_asset, "asset_type", "") or "").lower()
         now = self.get_datetime()
+        # Futures backtests should not look ahead into the current (incomplete) bar. Interpret
+        # "last price at dt" as the last completed bar's close by nudging dt slightly earlier.
+        #
+        # NOTE: Continuous futures stitching is responsible for ensuring the bar immediately
+        # preceding a roll boundary is present (so the last-completed-bar semantics remain valid
+        # across contract transitions).
+        if asset_type in {"future", "cont_future"}:
+            try:
+                now = now - timedelta(microseconds=1)
+            except Exception:
+                pass
         if asset_type == "crypto" and now.hour == 0 and now.minute == 0 and now.second == 0 and now.microsecond == 0:
             day_key = (base_asset, quote_asset, "day")
             if day_key not in self._fully_loaded_series:
@@ -97,7 +144,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             day_data = self._data_store.get(day_key)
             if day_data is not None:
                 try:
-                    return day_data.get_last_price(self.get_datetime())
+                    return day_data.get_last_price(now)
                 except Exception:
                     pass
 
@@ -119,7 +166,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         data = self._data_store.get(minute_key)
         if data is not None:
             try:
-                return data.get_last_price(self.get_datetime())
+                return data.get_last_price(now)
             except Exception:
                 pass
         return super().get_last_price(asset, quote=quote, exchange=exchange)
@@ -258,7 +305,33 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         start_dt, _ = self.get_start_datetime_and_ts_unit(length, timestep, start_dt=end_dt, start_buffer=timedelta(0))
         asset_type = str(getattr(asset_separated, "asset_type", "") or "").lower()
         ts_unit = str(timestep or "").strip().lower()
-        if asset_type == "crypto" and ts_unit == "day":
+        if asset_type in {"future", "cont_future"} and ts_unit in {"minute", "hour", "day"}:
+            # Futures strategies frequently request very small slices (e.g., `length=2`) at the
+            # beginning of the backtest window. If we only fetch the tiny requested slice, IBKR's
+            # history endpoint can return slightly-stale bars and leave the Data object underfilled,
+            # causing strategies to see "no bars available" and skip trading entirely.
+            #
+            # Fix: on first access, prefetch the full backtest window for the series and reuse it.
+            quote_key = quote_asset if quote_asset is not None else Asset("USD", "forex")
+            key = (asset_separated, quote_key, ts_unit)
+            if key not in self._fully_loaded_series:
+                prev_open = self._previous_us_futures_session_open(self.datetime_start)
+                if prev_open is not None:
+                    prefetch_start = min(start_dt, prev_open)
+                else:
+                    prefetch_start = min(start_dt, self.datetime_start - timedelta(days=1))
+                prefetch_end = self.datetime_end
+                self._update_pandas_data(
+                    asset_separated,
+                    quote_asset,
+                    ts_unit,
+                    start_dt=prefetch_start,
+                    end_dt=prefetch_end,
+                    exchange=exchange or self.exchange,
+                    include_after_hours=True,
+                )
+                self._fully_loaded_series.add(key)
+        elif asset_type == "crypto" and ts_unit == "day":
             # Prefetch daily series for the full backtest window on first access so we do not
             # hammer the downloader once per simulated day.
             key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), "day")

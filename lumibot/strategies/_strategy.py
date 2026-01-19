@@ -1369,18 +1369,63 @@ class _Strategy:
 
                 self._benchmark_returns_df = df
 
-            # IBKR crypto backtests: compute benchmark from the backtest data source (not Yahoo).
-            # Yahoo symbols for crypto (e.g., "BTC") are inconsistent and can result in empty series,
-            # which breaks tearsheet generation. Using the backtest data ensures consistency and
-            # keeps the run fully offline from external market data sites.
+            # IBKR backtests:
+            # - For crypto benchmarks, prefer the IBKR data source (Yahoo crypto tickers are inconsistent).
+            # - For equity benchmarks (e.g., SPY), prefer Yahoo to avoid IBKR history flakiness impacting
+            #   tearsheet generation (benchmark is cosmetic; strategy stats are authoritative).
             elif str(getattr(self.broker.data_source, "SOURCE", "") or "").upper() == "INTERACTIVEBROKERSREST":
+                def _fallback_benchmark_from_strategy() -> None:
+                    """Fallback: use the strategy equity curve as a benchmark so tearsheets remain available."""
+                    try:
+                        if self._strategy_returns_df is None or self._strategy_returns_df.empty:
+                            return
+                        if "portfolio_value" not in self._strategy_returns_df.columns:
+                            return
+                        series = self._strategy_returns_df["portfolio_value"].astype(float).copy()
+                        first = float(series.dropna().iloc[0]) if not series.dropna().empty else None
+                        if first is None or first == 0:
+                            return
+                        bench = pd.DataFrame(index=self._strategy_returns_df.index)
+                        # Match the shape expected by plotting + tearsheet code:
+                        # - `plot_returns()` expects a `return` column
+                        # - tearsheets typically consume `symbol_cumprod`
+                        bench["return"] = series.pct_change(fill_method=None)
+                        bench["symbol_cumprod"] = (1 + bench["return"]).cumprod()
+                        self._benchmark_returns_df = bench
+                        self.logger.warning(
+                            "IBKR benchmark bars unavailable; using strategy equity curve as benchmark for tearsheet generation."
+                        )
+                    except Exception:
+                        return
+
                 benchmark_asset = self._benchmark_asset
                 if isinstance(benchmark_asset, str):
                     parts = [p.strip() for p in benchmark_asset.split("/") if p.strip()]
                     if len(parts) == 2:
-                        benchmark_asset = (Asset(symbol=parts[0], asset_type="crypto"), Asset(symbol=parts[1], asset_type="forex"))
+                        benchmark_asset = (
+                            Asset(symbol=parts[0], asset_type="crypto"),
+                            Asset(symbol=parts[1], asset_type="forex"),
+                        )
                     else:
-                        benchmark_asset = Asset(symbol=benchmark_asset, asset_type="crypto")
+                        try:
+                            self._benchmark_returns_df = get_symbol_returns(
+                                benchmark_asset,
+                                self._backtesting_start,
+                                backtesting_end_adjusted,
+                            )
+                        except Exception:
+                            _fallback_benchmark_from_strategy()
+                        return
+                elif isinstance(benchmark_asset, Asset) and str(getattr(benchmark_asset, "asset_type", "")).lower() == "stock":
+                    try:
+                        self._benchmark_returns_df = get_symbol_returns(
+                            benchmark_asset.symbol,
+                            self._backtesting_start,
+                            backtesting_end_adjusted,
+                        )
+                    except Exception:
+                        _fallback_benchmark_from_strategy()
+                    return
 
                 timestep = "minute"
                 if "D" in str(self._sleeptime):
@@ -1395,17 +1440,19 @@ class _Strategy:
                 )
                 if bars is None or getattr(bars, "df", None) is None:
                     self.logger.error(f"Couldn't get benchmark bars from IBKR data source: {benchmark_asset}")
+                    _fallback_benchmark_from_strategy()
                     return
                 df = bars.df
                 if df is None or df.empty or "close" not in df.columns:
                     self.logger.error(f"IBKR benchmark bars empty/invalid: {benchmark_asset}")
+                    _fallback_benchmark_from_strategy()
                     return
                 df = df.copy()
                 df["return"] = df["close"].pct_change(fill_method=None)
                 df["symbol_cumprod"] = (1 + df["return"]).cumprod()
                 self._benchmark_returns_df = df
 
-            if type(self.broker.data_source) == AlpacaBacktesting:
+            elif type(self.broker.data_source) == AlpacaBacktesting:
                 benchmark_asset = self._benchmark_asset
 
                 df = self.broker.data_source.get_historical_prices_between_dates(

@@ -1937,9 +1937,9 @@ def test_build_historical_chain_live_option_list(theta_terminal_cleanup):
     assert chain["Chains"]["PUT"], "PUT chain should contain expirations"
 
 
-# NOTE (2025-12-07): get_request now ONLY uses queue mode. Error handling behavior has changed:
-# - error_type in header no longer triggers ValueError (queue system handles errors differently)
-# - Exceptions from queue_request are propagated directly
+# NOTE (2026-01-15): get_request routes based on DATADOWNLOADER_BASE_URL:
+# - If DATADOWNLOADER_BASE_URL is set, it uses the downloader queue client (queue_request).
+# - Otherwise it uses direct HTTP to a locally-managed ThetaTerminal.
 # The test below is skipped as error_type handling has been removed from get_request.
 @pytest.mark.skip(reason="Obsolete: error_type handling removed from get_request - queue system handles errors differently")
 @patch('lumibot.tools.thetadata_queue_client.queue_request')
@@ -1966,8 +1966,10 @@ def test_get_request_error_in_json(mock_queue_request):
 
 
 @patch('lumibot.tools.thetadata_queue_client.queue_request')
-def test_get_request_exception_handling(mock_queue_request):
-    """Test that get_request handles exceptions from queue_request."""
+def test_get_request_exception_handling(mock_queue_request, monkeypatch):
+    """Test that downloader-mode get_request propagates exceptions from queue_request."""
+    monkeypatch.setenv("DATADOWNLOADER_BASE_URL", "http://test-server:8080")
+    monkeypatch.setenv("DATADOWNLOADER_API_KEY", "test-api-key")
     # Mock queue_request to raise an exception
     mock_queue_request.side_effect = Exception("Request permanently failed: test error")
 

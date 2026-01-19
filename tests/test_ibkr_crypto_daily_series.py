@@ -88,6 +88,7 @@ def test_ibkr_fetch_history_between_dates_does_not_break_early_on_short_chunks(m
         exchange="ZEROHASH",
         include_after_hours=True,
         source="Trades",
+        source_was_explicit=True,
     )
     assert calls["history"] >= 2, "Expected multiple short-chunk requests to reach start_dt"
     assert not df.empty

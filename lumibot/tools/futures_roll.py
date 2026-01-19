@@ -120,8 +120,17 @@ def _calculate_roll_trigger(year: int, month: int, rule: RollRule) -> datetime:
     else:
         anchor = _to_timezone(datetime(year, month, 15))
     if rule.offset_business_days <= 0:
-        return anchor
-    return _subtract_business_days(anchor, rule.offset_business_days)
+        roll = anchor
+    else:
+        roll = _subtract_business_days(anchor, rule.offset_business_days)
+
+    # Align roll boundaries away from exact midnight.
+    #
+    # WHY: Several data sources (notably IBKR Client Portal history) treat request boundaries as
+    # effectively exclusive/inclusive in a way that can drop or duplicate bars exactly at the
+    # roll timestamp. Shifting by a few minutes keeps the roll deterministic while avoiding
+    # edge-case gaps/overwrites at `00:00`.
+    return roll + timedelta(minutes=5)
 
 
 def _get_contract_months(rule: Optional[RollRule]) -> Tuple[int, ...]:

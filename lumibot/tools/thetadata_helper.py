@@ -339,8 +339,8 @@ WAIT_TIME = 60
 MAX_DAYS = 30
 CACHE_SUBFOLDER = "thetadata"
 DEFAULT_THETA_BASE = "http://127.0.0.1:25503"
-DEFAULT_DOWNLOADER_BASE_URL = "http://data-downloader.lumiwealth.com:8080"
-_downloader_base_env = os.environ.get("DATADOWNLOADER_BASE_URL")
+DEFAULT_DOWNLOADER_BASE_URL = "http://localhost:8080"
+_downloader_base_env = (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip() or None
 _theta_fallback_base = os.environ.get("THETADATA_BASE_URL", DEFAULT_THETA_BASE)
 
 
@@ -350,9 +350,9 @@ def _normalize_base_url(raw: Optional[str]) -> str:
     raw = raw.strip()
     if not raw:
         return DEFAULT_THETA_BASE
-    # Standardize away from deprecated/ephemeral endpoints.
-    if "44.192.43.146" in raw or "test-server" in raw:
-        raw = DEFAULT_DOWNLOADER_BASE_URL
+    # Do not rewrite environment-specific endpoints to any baked-in host.
+    # If a user has an old hard-coded host/IP, keep it (so it's debuggable) and
+    # allow downstream calls to fail loudly.
     if not raw.startswith(("http://", "https://")):
         raw = f"http://{raw}"
     return raw.rstrip("/")
@@ -383,9 +383,14 @@ _DEFAULT_BASE_URL = _normalize_base_url(_downloader_base_env or _theta_fallback_
 BASE_URL = _DEFAULT_BASE_URL
 DOWNLOADER_API_KEY = os.environ.get("DATADOWNLOADER_API_KEY")
 DOWNLOADER_KEY_HEADER = os.environ.get("DATADOWNLOADER_API_KEY_HEADER", "X-Downloader-Key")
-REMOTE_DOWNLOADER_ENABLED = _coerce_skip_flag(os.environ.get("DATADOWNLOADER_SKIP_LOCAL_START"), BASE_URL)
-if REMOTE_DOWNLOADER_ENABLED:
-    logger.info("[THETA][CONFIG] Remote downloader enabled at %s", BASE_URL)
+DOWNLOADER_MODE = bool(_downloader_base_env)
+# IMPORTANT:
+# - Default/public behavior: if DATADOWNLOADER_BASE_URL is NOT set, LumiBot manages a local ThetaTerminal.
+# - Internal behavior: if DATADOWNLOADER_BASE_URL IS set (even if it's localhost:8080), LumiBot must NEVER
+#   start/stop/kill a local ThetaTerminal process because it can steal/kill the single licensed session.
+REMOTE_DOWNLOADER_ENABLED = DOWNLOADER_MODE or _coerce_skip_flag(os.environ.get("DATADOWNLOADER_SKIP_LOCAL_START"), BASE_URL)
+if DOWNLOADER_MODE:
+    logger.info("[THETA][CONFIG] Data Downloader enabled at %s", BASE_URL)
     if DOWNLOADER_API_KEY:
         # Log a safe fingerprint so prod runs can confirm the key is present without leaking it.
         key_prefix = DOWNLOADER_API_KEY[:4]
@@ -532,7 +537,57 @@ def _interval_label_from_ms(interval_ms: int) -> str:
 def _coerce_json_payload(payload: Any) -> Dict[str, Any]:
     """Normalize ThetaData v2/v3 payloads into {'header':{'format':[...]}, 'response': [...] }."""
     if isinstance(payload, dict):
+        # ThetaTerminal v3 sometimes returns a dict with ONLY `response`, where the response is
+        # a list of row-dicts (already denormalized but without a header/format section).
+        if set(payload.keys()) == {"response"} and isinstance(payload.get("response"), list):
+            resp_list = payload.get("response") or []
+            if resp_list and isinstance(resp_list[0], dict):
+                # Preserve the first row's key order for stable column ordering.
+                columns: List[str] = list(resp_list[0].keys())
+                # Add any new keys encountered later (rare) without reordering existing columns.
+                for row in resp_list[1:]:
+                    if isinstance(row, dict):
+                        for k in row.keys():
+                            if k not in columns:
+                                columns.append(k)
+                rows = [[row.get(col) if isinstance(row, dict) else None for col in columns] for row in resp_list]
+                return {"header": {"format": columns}, "response": rows}
+            # Unknown response shape; wrap and let downstream handle.
+            return {"header": {"format": []}, "response": resp_list}
+
         if "response" in payload and "header" in payload:
+            # Some ThetaData endpoints return a v2-style envelope but keep the v3 columnar
+            # payload under `response` (dict-of-lists). Normalize that into row format so
+            # downstream callers can always build a DataFrame with `columns=header['format']`.
+            resp = payload.get("response")
+            if isinstance(resp, dict):
+                header = payload.get("header") or {}
+                header_format = header.get("format") if isinstance(header, dict) else None
+                columns = list(header_format) if isinstance(header_format, (list, tuple)) else list(resp.keys())
+                if not columns:
+                    return {"header": {"format": []}, "response": []}
+
+                lengths = []
+                for col in columns:
+                    values = resp.get(col, [])
+                    lengths.append(len(values) if isinstance(values, list) else 0)
+                num_rows = max(lengths) if lengths else 0
+
+                rows: List[List[Any]] = []
+                for idx in range(num_rows):
+                    row: List[Any] = []
+                    for col in columns:
+                        values = resp.get(col, [])
+                        if isinstance(values, list) and idx < len(values):
+                            row.append(values[idx])
+                        else:
+                            row.append(None)
+                    rows.append(row)
+
+                merged_header = dict(header) if isinstance(header, dict) else {"format": columns}
+                merged_header["format"] = columns
+                return {"header": merged_header, "response": rows}
+
             return payload
         # Columnar format -> convert to rows
         columns = list(payload.keys())
@@ -4917,150 +4972,423 @@ def get_request(
     password: Optional[str] = None,
     timeout: Optional[float] = None,
 ):
-    """Make a request to ThetaData via the queue system.
+    """Make a ThetaData request using either the internal Data Downloader or a local ThetaTerminal.
 
-    This function ONLY uses queue mode - there is no fallback to direct requests.
-    Queue mode provides:
-    - Reliable retry with exponential backoff for transient errors
-    - Dead letter queue for permanent failures
-    - Idempotency via correlation IDs
-    - Concurrency limiting to prevent overload
-    - Automatic pagination following (merges all pages into single response)
-
-    Args:
-        url: The ThetaData API URL
-        headers: Request headers
-        querystring: Query parameters
-        username: ThetaData username (unused - auth handled by Data Downloader)
-        password: ThetaData password (unused - auth handled by Data Downloader)
-
-    Returns:
-        dict: The response from ThetaData with 'header' and 'response' keys
-        None: If no data available (status 472)
-
-    Raises:
-        Exception: If the request permanently fails (moved to DLQ)
+    Selection rule (strict; no fallback on failure):
+    - If ``DATADOWNLOADER_BASE_URL`` is set: use the Data Downloader queue.
+      Requires ``DATADOWNLOADER_API_KEY``; LumiBot MUST NOT manage any local ThetaTerminal process.
+    - Otherwise: use direct HTTP requests to a locally-managed ThetaTerminal (auto-launches the jar).
     """
-    from lumibot.tools.thetadata_queue_client import queue_request
 
-    logger.debug("[THETA][QUEUE] Making request via queue: %s params=%s", url, querystring)
+    downloader_base_url = (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip()
+    downloader_mode = bool(downloader_base_url)
 
-    # -------------------------------------------------------------------------------------
-    # BOUNDED WAITS (2025-12-26)
-    # -------------------------------------------------------------------------------------
-    # The queue client defaults to waiting forever (QUEUE_TIMEOUT=0). That is dangerous in
-    # production: a single stuck downloader/Theta request can make a backtest appear "running"
-    # forever with no progress. We therefore apply conservative per-endpoint defaults unless
-    # an explicit timeout is provided by the caller.
-    #
-    # Override knobs (seconds; set to 0 to disable):
-    # - THETADATA_QUEUE_LIST_TIMEOUT (default 600)
-    # - THETADATA_QUEUE_HISTORY_TIMEOUT (default 1800)
-    # - THETADATA_QUEUE_DEFAULT_TIMEOUT (default 900)
-    # -------------------------------------------------------------------------------------
-    effective_timeout = timeout
-    if effective_timeout is None:
-        try:
-            list_timeout = float(os.environ.get("THETADATA_QUEUE_LIST_TIMEOUT", "600"))
-            history_timeout = float(os.environ.get("THETADATA_QUEUE_HISTORY_TIMEOUT", "1800"))
-            default_timeout = float(os.environ.get("THETADATA_QUEUE_DEFAULT_TIMEOUT", "900"))
-        except Exception:
-            list_timeout = 600.0
-            history_timeout = 1800.0
-            default_timeout = 900.0
+    if downloader_mode:
+        downloader_api_key = (os.environ.get("DATADOWNLOADER_API_KEY") or "").strip()
+        if not downloader_api_key:
+            raise RuntimeError(
+                "DATADOWNLOADER_BASE_URL is set but DATADOWNLOADER_API_KEY is missing. "
+                "Set DATADOWNLOADER_API_KEY or unset DATADOWNLOADER_BASE_URL to use local ThetaTerminal."
+            )
 
-        from urllib.parse import urlparse
+        from lumibot.tools.thetadata_queue_client import queue_request
 
-        request_path = (urlparse(url).path or "").lower()
-        if "/option/list/" in request_path:
-            effective_timeout = list_timeout if list_timeout > 0 else None
-        elif "/history/" in request_path:
-            effective_timeout = history_timeout if history_timeout > 0 else None
-        else:
-            effective_timeout = default_timeout if default_timeout > 0 else None
+        logger.debug("[THETA][QUEUE] Making request via queue: %s params=%s", url, querystring)
 
-    # =====================================================================================
-    # AUTOMATIC PAGINATION HANDLING (2025-12-07)
-    # =====================================================================================
-    # ThetaData returns large result sets across multiple pages. Each response includes a
-    # 'next_page' URL in the header if more data is available. This loop automatically
-    # follows all pagination links and merges results into a single response.
-    #
-    # Example: A 10-year daily price history might return 3 pages of ~1000 rows each.
-    # The caller receives a single response with all ~3000 rows merged.
-    # =====================================================================================
+        # -------------------------------------------------------------------------------------
+        # BOUNDED WAITS (2025-12-26)
+        # -------------------------------------------------------------------------------------
+        effective_timeout = timeout
+        if effective_timeout is None:
+            try:
+                list_timeout = float(os.environ.get("THETADATA_QUEUE_LIST_TIMEOUT", "600"))
+                history_timeout = float(os.environ.get("THETADATA_QUEUE_HISTORY_TIMEOUT", "1800"))
+                default_timeout = float(os.environ.get("THETADATA_QUEUE_DEFAULT_TIMEOUT", "900"))
+            except Exception:
+                list_timeout = 600.0
+                history_timeout = 1800.0
+                default_timeout = 900.0
 
-    all_responses = []  # Accumulates response data from each page
-    page_count = 0
+            from urllib.parse import urlparse
+
+            request_path = (urlparse(url).path or "").lower()
+            if "/option/list/" in request_path:
+                effective_timeout = list_timeout if list_timeout > 0 else None
+            elif "/history/" in request_path:
+                effective_timeout = history_timeout if history_timeout > 0 else None
+            else:
+                effective_timeout = default_timeout if default_timeout > 0 else None
+
+        all_responses = []
+        page_count = 0
+        next_page_url = None
+        processed_result = None
+
+        while True:
+            request_url = next_page_url if next_page_url else url
+            request_params = None if next_page_url else querystring
+
+            try:
+                result = queue_request(request_url, request_params, headers, timeout=effective_timeout)
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"ThetaData queue request timed out after {effective_timeout}s "
+                    f"(url={request_url}, params={request_params or querystring})"
+                ) from exc
+
+            if result is None:
+                if page_count == 0:
+                    logger.debug("[THETA][QUEUE] No data returned for request: %s", url)
+                    return None
+                break
+
+            if isinstance(result, dict):
+                # Standard queue response already in v2-style format.
+                if "header" in result and "response" in result:
+                    processed_result = result
+                else:
+                    processed_result = _convert_columnar_to_row_format(result)
+            else:
+                processed_result = result
+
+            if isinstance(processed_result, dict) and "response" in processed_result:
+                all_responses.append(processed_result["response"])
+            else:
+                all_responses.append(processed_result)
+
+            page_count += 1
+
+            next_page = None
+            if isinstance(processed_result, dict) and "header" in processed_result:
+                next_page = processed_result["header"].get("next_page")
+
+            if next_page and next_page != "null" and next_page != "":
+                next_page_url = next_page
+            else:
+                break
+
+        if processed_result is None:
+            return None
+
+        if page_count > 1 and isinstance(processed_result, dict):
+            processed_result["response"] = []
+            for page_response in all_responses:
+                if isinstance(page_response, list):
+                    processed_result["response"].extend(page_response)
+                else:
+                    processed_result["response"].append(page_response)
+        elif page_count == 1 and all_responses and isinstance(processed_result, dict):
+            processed_result["response"] = all_responses[0]
+
+        return processed_result
+
+    # -------------------------------------------------------------------------
+    # Local ThetaTerminal mode (direct HTTP)
+    # -------------------------------------------------------------------------
+    if username is None:
+        username = (os.environ.get("THETADATA_USERNAME") or "").strip() or None
+    if password is None:
+        password = (os.environ.get("THETADATA_PASSWORD") or "").strip() or None
+    if username is None or password is None:
+        raise ValueError(
+            "ThetaData credentials are required to start ThetaTerminal. "
+            "Provide them via get_request(..., username=..., password=...) or configure "
+            "THETADATA_USERNAME/THETADATA_PASSWORD."
+        )
+
+    all_responses = []
     next_page_url = None
+    page_count = 0
+    consecutive_disconnects = 0
+    restart_budget = 3
+    querystring = dict(querystring or {})
+    if "format" not in querystring:
+        is_v2_request = "/v2/" in url
+        if not is_v2_request:
+            querystring["format"] = "json"
+    session_reset_budget = 5
+    session_reset_in_progress = False
+    awaiting_session_validation = False
+    http_retry_limit = HTTP_RETRY_LIMIT
+    last_status_code: Optional[int] = None
+    last_failure_detail: Optional[str] = None
+    queue_full_attempts = 0
+    queue_full_wait_total = 0.0
+    service_unavailable_attempts = 0
+    service_unavailable_wait_total = 0.0
+
+    check_connection(username=username, password=password, wait_for_connection=False)
 
     while True:
-        # For first request, use original URL with querystring.
-        # For subsequent pages, use the next_page URL (which includes all params)
+        counter = 0
         request_url = next_page_url if next_page_url else url
         request_params = None if next_page_url else querystring
+        json_resp = None
 
-        try:
-            result = queue_request(request_url, request_params, headers, timeout=effective_timeout)
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"ThetaData queue request timed out after {effective_timeout}s "
-                f"(url={request_url}, params={request_params or querystring})"
-            ) from exc
+        while True:
+            sleep_duration = 0.0
+            try:
+                CONNECTION_DIAGNOSTICS["network_requests"] += 1
 
-        if result is None:
-            # ThetaData returns None for "no data" (HTTP 472 status)
-            if page_count == 0:
-                logger.debug("[THETA][QUEUE] No data returned for request: %s", url)
-                return None
-            # If we already have pages, return what we have
-            break
+                request_headers = _build_request_headers(headers)
 
-        # Normalize response format - ThetaData can return different structures
-        if isinstance(result, dict):
-            if "header" in result and "response" in result:
-                # Standard v2 format: {"header": {...}, "response": [...]}
-                processed_result = result
-            else:
-                # ThetaData v3 columnar format: {"open": [1.0, 2.0], "close": [1.1, 2.1]}
-                # Convert to row format that our code expects
-                processed_result = _convert_columnar_to_row_format(result)
-        else:
-            # Unexpected format - wrap for safety
-            processed_result = {"header": {"format": []}, "response": result}
+                slot_label = f"local:{request_url.split('?')[0]}"
+                with _acquire_theta_slot(slot_label):
+                    response = requests.get(
+                        request_url,
+                        headers=request_headers,
+                        params=request_params,
+                        timeout=timeout,
+                    )
+                status_code = response.status_code
+                if status_code == 472:
+                    symbol = querystring.get("root", querystring.get("symbol", "unknown"))
+                    expiration = querystring.get("expiration", querystring.get("exp"))
+                    strike = querystring.get("strike")
+                    right = querystring.get("right")
 
-        # Accumulate this page's data
+                    if expiration and strike:
+                        right_str = right.upper() if right else "?"
+                        asset_desc = f"{symbol} {expiration} ${strike} {right_str} (option)"
+                    elif expiration:
+                        asset_desc = f"{symbol} exp:{expiration}"
+                    else:
+                        asset_desc = f"{symbol} (stock/index)"
+
+                    def format_date(d):
+                        if not d or d == "?":
+                            return "?"
+                        d_str = str(d).replace("-", "")
+                        if len(d_str) == 8:
+                            return f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
+                        return str(d)
+
+                    start_date = format_date(querystring.get("start_date", querystring.get("start", "?")))
+                    end_date = format_date(querystring.get("end_date", querystring.get("end", "?")))
+                    endpoint = url.split("/")[-1].split("?")[0] if url else "unknown"
+
+                    logger.info(
+                        "[THETA][NO_DATA] No data for %s | endpoint: %s | date range: %s to %s | "
+                        "ThetaData returned no records for this request. This will be cached to avoid re-fetching.",
+                        asset_desc,
+                        endpoint,
+                        start_date,
+                        end_date,
+                    )
+                    consecutive_disconnects = 0
+                    session_reset_in_progress = False
+                    awaiting_session_validation = False
+                    return None
+                elif status_code == 571:
+                    check_connection(username=username, password=password, wait_for_connection=True)
+                    time.sleep(CONNECTION_RETRY_SLEEP)
+                    continue
+                elif status_code == 474:
+                    consecutive_disconnects += 1
+                    if consecutive_disconnects >= 2:
+                        if restart_budget <= 0:
+                            raise ValueError("Cannot connect to Theta Data!")
+                        restart_budget -= 1
+                        start_theta_data_client(username=username, password=password)
+                        CONNECTION_DIAGNOSTICS["terminal_restarts"] = CONNECTION_DIAGNOSTICS.get("terminal_restarts", 0) + 1
+                        check_connection(username=username, password=password, wait_for_connection=True)
+                        time.sleep(max(BOOT_GRACE_PERIOD, CONNECTION_RETRY_SLEEP))
+                        consecutive_disconnects = 0
+                        counter = 0
+                    else:
+                        check_connection(username=username, password=password, wait_for_connection=True)
+                        time.sleep(CONNECTION_RETRY_SLEEP)
+                    continue
+                elif status_code == 500 and "BadSession" in (response.text or ""):
+                    if awaiting_session_validation:
+                        raise ThetaDataSessionInvalidError(
+                            "ThetaData session remained invalid after a clean restart."
+                        )
+                    if not session_reset_in_progress:
+                        if session_reset_budget <= 0:
+                            raise ValueError("ThetaData session invalid after multiple restarts.")
+                        session_reset_budget -= 1
+                        session_reset_in_progress = True
+                        restart_started = time.monotonic()
+                        start_theta_data_client(username=username, password=password)
+                        CONNECTION_DIAGNOSTICS["terminal_restarts"] = CONNECTION_DIAGNOSTICS.get("terminal_restarts", 0) + 1
+                        while True:
+                            try:
+                                check_connection(username=username, password=password, wait_for_connection=True)
+                                break
+                            except ThetaDataConnectionError:
+                                time.sleep(CONNECTION_RETRY_SLEEP)
+                        wait_elapsed = time.monotonic() - restart_started
+                        logger.info(
+                            "ThetaTerminal restarted after BadSession (pid=%s, wait=%.1fs).",
+                            THETA_DATA_PID,
+                            wait_elapsed,
+                        )
+                    else:
+                        try:
+                            check_connection(username=username, password=password, wait_for_connection=True)
+                        except ThetaDataConnectionError:
+                            time.sleep(CONNECTION_RETRY_SLEEP)
+                            continue
+                    time.sleep(max(CONNECTION_RETRY_SLEEP, 5))
+                    next_page_url = None
+                    request_url = url
+                    request_params = querystring
+                    consecutive_disconnects = 0
+                    counter = 0
+                    json_resp = None
+                    awaiting_session_validation = True
+                    continue
+                elif status_code == 410:
+                    raise RuntimeError(
+                        "ThetaData responded with 410 GONE. Ensure all requests use the v3 REST endpoints "
+                        "on http://127.0.0.1:25503/v3/..."
+                    )
+                elif status_code in (471, 473, 476):
+                    raise RuntimeError(
+                        f"ThetaData request rejected with status {status_code}: {response.text.strip()[:500]}"
+                    )
+                elif status_code == 503:
+                    payload = {}
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = {}
+
+                    is_queue_full = isinstance(payload, dict) and payload.get("error") == "queue_full"
+                    active = payload.get("active") if isinstance(payload, dict) else None
+                    waiting = payload.get("waiting") if isinstance(payload, dict) else None
+                    error_detail = payload.get("detail") if isinstance(payload, dict) else response.text[:200]
+
+                    backoff_delay = min(
+                        QUEUE_FULL_BACKOFF_MAX,
+                        max(QUEUE_FULL_BACKOFF_BASE, 0.1) * (2 ** min(service_unavailable_attempts, 6)),
+                    )
+                    backoff_delay += random.uniform(0, max(QUEUE_FULL_BACKOFF_JITTER, 0.0))
+
+                    if is_queue_full:
+                        queue_full_attempts += 1
+                        queue_full_wait_total += backoff_delay
+
+                    service_unavailable_attempts += 1
+                    service_unavailable_wait_total += backoff_delay
+
+                    if service_unavailable_wait_total > SERVICE_UNAVAILABLE_MAX_WAIT:
+                        raise ThetaRequestError(
+                            f"ThetaData service unavailable after {service_unavailable_wait_total:.0f}s of retries",
+                            status_code=503,
+                            body=error_detail,
+                        )
+
+                    if is_queue_full:
+                        logger.warning(
+                            "ThetaData 503 queue_full (active=%s waiting=%s). Sleeping %.2fs before retry (attempt=%d).",
+                            active,
+                            waiting,
+                            backoff_delay,
+                            service_unavailable_attempts,
+                        )
+                    else:
+                        logger.warning(
+                            "ThetaData returned 503 Service Unavailable: %s. Sleeping %.2fs before retry (attempt=%d).",
+                            error_detail,
+                            backoff_delay,
+                            service_unavailable_attempts,
+                        )
+
+                    time.sleep(backoff_delay)
+                    continue
+                elif status_code != 200:
+                    check_connection(username=username, password=password, wait_for_connection=True)
+                    consecutive_disconnects = 0
+                    last_status_code = status_code
+                    last_failure_detail = response.text[:200]
+                    sleep_duration = min(
+                        CONNECTION_RETRY_SLEEP * max(counter + 1, 1),
+                        HTTP_RETRY_BACKOFF_MAX,
+                    )
+                else:
+                    try:
+                        json_payload = response.json()
+                    except ValueError as exc:
+                        csv_fallback = None
+                        try:
+                            import io
+
+                            csv_fallback = pd.read_csv(io.StringIO(response.text))
+                        except Exception:
+                            csv_fallback = None
+
+                        if csv_fallback is not None and not csv_fallback.empty:
+                            json_payload = {
+                                "header": {"format": list(csv_fallback.columns)},
+                                "response": csv_fallback.values.tolist(),
+                            }
+                        else:
+                            last_status_code = status_code
+                            last_failure_detail = str(exc)
+                            sleep_duration = min(
+                                CONNECTION_RETRY_SLEEP * max(counter + 1, 1),
+                                HTTP_RETRY_BACKOFF_MAX,
+                            )
+                            break
+
+                    json_resp = _coerce_json_payload(json_payload)
+                    session_reset_in_progress = False
+                    consecutive_disconnects = 0
+                    queue_full_attempts = 0
+                    queue_full_wait_total = 0.0
+
+                    if "error_type" in json_resp["header"] and json_resp["header"]["error_type"] != "null":
+                        if json_resp["header"]["error_type"] == "NO_DATA":
+                            return None
+                        error_label = json_resp["header"].get("error_type")
+                        check_connection(username=username, password=password, wait_for_connection=True)
+                        raise ValueError(f"ThetaData returned error_type={error_label}")
+                    break
+
+            except ThetaDataConnectionError as exc:
+                logger.error("Theta Data connection failed after supervised restarts: %s", exc)
+                raise
+            except ValueError:
+                raise
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.warning("Exception during request (attempt %s): %s", counter + 1, e)
+                check_connection(username=username, password=password, wait_for_connection=True)
+                last_status_code = None
+                last_failure_detail = str(e)
+                if counter == 0:
+                    time.sleep(5)
+
+            counter += 1
+            if counter >= http_retry_limit:
+                raise ThetaRequestError(
+                    "Cannot connect to Theta Data!",
+                    status_code=last_status_code,
+                    body=last_failure_detail,
+                )
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
+        if json_resp is None:
+            continue
+
         page_count += 1
-        if processed_result.get("response"):
-            all_responses.append(processed_result["response"])
+        all_responses.append(json_resp["response"])
 
-        # Check for more pages - ThetaData provides 'next_page' URL in header
-        next_page = None
-        if isinstance(processed_result, dict) and "header" in processed_result:
-            next_page = processed_result["header"].get("next_page")
-
+        next_page = json_resp["header"].get("next_page")
         if next_page and next_page != "null" and next_page != "":
-            logger.info("[THETA][PAGINATION] Page %d downloaded, fetching next page: %s", page_count, next_page)
             next_page_url = next_page
         else:
-            # No more pages - exit pagination loop
             break
 
-    # Merge all pages into a single response
     if page_count > 1:
-        total_rows = sum(len(r) for r in all_responses if isinstance(r, list))
-        logger.info("[THETA][PAGINATION] Merged %d pages from ThetaData (%d total rows)", page_count, total_rows)
-        processed_result["response"] = []
+        json_resp["response"] = []
         for page_response in all_responses:
-            if isinstance(page_response, list):
-                processed_result["response"].extend(page_response)
-            else:
-                processed_result["response"].append(page_response)
-    elif page_count == 1 and all_responses:
-        # Single page - use as-is
-        processed_result["response"] = all_responses[0]
+            json_resp["response"].extend(page_response)
 
-    return processed_result
+    return json_resp
 
 
 def get_historical_eod_data(

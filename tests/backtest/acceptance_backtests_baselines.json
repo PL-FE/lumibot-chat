@@ -8,14 +8,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 300,
       "metrics_centipercent": {
-        "cagr": 4818,
+        "cagr": 4630,
         "max_drawdown": -3430,
-        "total_return": 84600
+        "total_return": 84589
       },
       "metrics_raw": {
-        "cagr": "48.18%",
+        "cagr": "46.30%",
         "max_drawdown": "-34.30%",
-        "total_return": "846.00%"
+        "total_return": "845.89%"
       },
       "script_filename": "AAPL Deep Dip Calls (Copy 4).py",
       "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
@@ -32,14 +32,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 120,
       "metrics_centipercent": {
-        "cagr": 995,
-        "max_drawdown": -116,
-        "total_return": 0
+        "cagr": -990,
+        "max_drawdown": -129,
+        "total_return": -37
       },
       "metrics_raw": {
-        "cagr": "9.95%",
-        "max_drawdown": "-1.16%",
-        "total_return": "0.00%"
+        "cagr": "-9.90%",
+        "max_drawdown": "-1.29%",
+        "total_return": "-0.37%"
       },
       "script_filename": "Leaps Buy Hold (Alpha Picks).py",
       "settings_backtesting_end": "2025-10-14 23:59:00-04:00",
@@ -56,14 +56,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 180,
       "metrics_centipercent": {
-        "cagr": 4216,
+        "cagr": 4090,
         "max_drawdown": -4840,
-        "total_return": 858500
+        "total_return": 824304
       },
       "metrics_raw": {
-        "cagr": "42.16%",
+        "cagr": "40.90%",
         "max_drawdown": "-48.40%",
-        "total_return": "8,585.00%"
+        "total_return": "8,243.04%"
       },
       "script_filename": "TQQQ 200-Day MA.py",
       "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
@@ -80,14 +80,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -2102,
-        "max_drawdown": -2630,
-        "total_return": -1900
+        "cagr": -2226,
+        "max_drawdown": -3116,
+        "total_return": -2034
       },
       "metrics_raw": {
-        "cagr": "-21.02%",
-        "max_drawdown": "-26.30%",
-        "total_return": "-19.00%"
+        "cagr": "-22.26%",
+        "max_drawdown": "-31.16%",
+        "total_return": "-20.34%"
       },
       "script_filename": "Backdoor Butterfly 0 DTE (Copy).py",
       "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
@@ -104,14 +104,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 300,
       "metrics_centipercent": {
-        "cagr": 111,
+        "cagr": 103,
         "max_drawdown": -9930,
-        "total_return": 1400
+        "total_return": 1416
       },
       "metrics_raw": {
-        "cagr": "1.11%",
+        "cagr": "1.03%",
         "max_drawdown": "-99.30%",
-        "total_return": "14.00%"
+        "total_return": "14.16%"
       },
       "script_filename": "Meli Deep Drawdown Calls.py",
       "settings_backtesting_end": "2025-12-17 23:59:00-05:00",
@@ -128,14 +128,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -382,
-        "max_drawdown": -1338,
-        "total_return": -300
+        "cagr": -530,
+        "max_drawdown": -2690,
+        "total_return": -480
       },
       "metrics_raw": {
-        "cagr": "-3.82%",
-        "max_drawdown": "-13.38%",
-        "total_return": "-3.00%"
+        "cagr": "-5.30%",
+        "max_drawdown": "-26.90%",
+        "total_return": "-4.80%"
       },
       "script_filename": "Backdoor Butterfly 0 DTE (Copy) - with SMART LIMITS.py",
       "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
@@ -152,14 +152,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -1172,
-        "max_drawdown": -2872,
-        "total_return": -1100
+        "cagr": -1253,
+        "max_drawdown": -3128,
+        "total_return": -1210
       },
       "metrics_raw": {
-        "cagr": "-11.72%",
-        "max_drawdown": "-28.72%",
-        "total_return": "-11.00%"
+        "cagr": "-12.53%",
+        "max_drawdown": "-31.28%",
+        "total_return": "-12.10%"
       },
       "script_filename": "SPX Short Straddle Intraday (Copy).py",
       "settings_backtesting_end": "2025-12-25 23:59:00-05:00",
@@ -167,6 +167,54 @@
       "slug": "spx_short_straddle_repro",
       "start_date": "2025-01-06",
       "strategy_name": "SPXShortStraddle"
+    },
+    {
+      "backtest_time_seconds": 8.748265125090256,
+      "baseline_run_id": "IbkrMesFuturesAcceptance_2026-01-18_17-19_MyTLU5",
+      "data_source": "ibkr",
+      "end_date": "2025-12-11",
+      "lumibot_version": "4.4.33",
+      "max_backtest_time_seconds": 300,
+      "metrics_centipercent": {
+        "cagr": -446,
+        "max_drawdown": -29,
+        "total_return": -3
+      },
+      "metrics_raw": {
+        "cagr": "-4.46%",
+        "max_drawdown": "-0.29%",
+        "total_return": "-0.03%"
+      },
+      "script_filename": "IBKR MES Futures Acceptance.py",
+      "settings_backtesting_end": "2025-12-10 23:59:00-05:00",
+      "settings_backtesting_start": "2025-12-08 00:00:00-05:00",
+      "slug": "ibkr_mes_futures_acceptance",
+      "start_date": "2025-12-08",
+      "strategy_name": "IbkrMesFuturesAcceptance"
+    },
+    {
+      "backtest_time_seconds": 36.08439366705716,
+      "baseline_run_id": "IbkrCryptoAcceptance_2026-01-14_17-39_k9nEa1",
+      "data_source": "ibkr",
+      "end_date": "2025-12-18",
+      "lumibot_version": "4.4.33",
+      "max_backtest_time_seconds": 180,
+      "metrics_centipercent": {
+        "cagr": 223,
+        "max_drawdown": -9,
+        "total_return": 2
+      },
+      "metrics_raw": {
+        "cagr": "2.23%",
+        "max_drawdown": "-0.09%",
+        "total_return": "0.02%"
+      },
+      "script_filename": "IBKR Crypto Acceptance.py",
+      "settings_backtesting_end": "2025-12-17 23:59:00-05:00",
+      "settings_backtesting_start": "2025-12-15 00:00:00-05:00",
+      "slug": "ibkr_crypto_acceptance_btc_usd",
+      "start_date": "2025-12-15",
+      "strategy_name": "IbkrCryptoAcceptance"
     }
   ],
   "notes": "Percent metrics are stored as centipercent integers (0.01% units) for strict comparisons.",

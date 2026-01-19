@@ -1,22 +1,26 @@
 Interactive Brokers (REST) Backtesting
 ======================================
 
-LumiBot supports backtesting with **Interactive Brokers Client Portal (REST)** via the shared **Data Downloader** service.
+LumiBot supports backtesting with **Interactive Brokers Client Portal (REST)**.
 
-This backtesting path does **not** use the legacy TWS API.
+The primary data path uses Client Portal (REST) via the LumiBot Data Downloader (it does **not** require the legacy TWS API for bar history).
+
+For **expired futures** contract discovery (conids), IBKR Client Portal cannot reliably discover old contracts. In that
+case, LumiBot relies on an **offline conid registry** (populated via a one-time TWS backfill in internal deployments).
+
+Status
+------
+
+IBKR REST backtesting is under active development and is not yet a fully-supported public workflow in the open-source
+distribution.
+
+If you want early access or have a specific use case, please open an issue (or contact the maintainers) so we can
+prioritize it.
 
 Quick Start
 -----------
 
-1. Ensure you have access to a Data Downloader deployment that supports IBKR (``/ibkr/...`` routes).
-2. Configure the downloader connection:
-
-.. code-block:: bash
-
-   export DATADOWNLOADER_BASE_URL="http://data-downloader.lumiwealth.com:8080"
-   export DATADOWNLOADER_API_KEY="..."
-
-3. Select IBKR for backtesting:
+Select IBKR as the backtesting data source:
 
 .. code-block:: bash
 
@@ -27,6 +31,19 @@ Supported Data
 
 - **Futures**: contract bars via IBKR historical endpoints (1-minute+ bars).
 - **Spot crypto**: IBKR crypto bars (availability depends on region and IBKR product support).
+
+Expired Futures Contracts (conids)
+----------------------------------
+
+IBKR futures history requires a contract identifier (``conid``). IBKR Client Portal cannot reliably discover ``conid``
+values for **expired** futures contracts, which makes explicit-contract backtests fail unless the mapping is already
+known.
+
+LumiBot supports an offline conid registry (cache-backed, optionally S3-mirrored):
+
+- ``LUMIBOT_CACHE_FOLDER/ibkr/conids.json``
+
+Internal runbook (engineering): ``docs/investigations/2026-01-18_IBKR_EXPIRED_FUTURES_CONID_BACKFILL.md``.
 
 Caching
 -------
@@ -64,3 +81,15 @@ Authentication / Session Behavior
 The Client Portal Gateway is session-based; if the session becomes unauthenticated, the gateway must be re-authenticated. IBKR documents the expected authentication lifecycle and recommends using ``/iserver/auth/ssodh/init`` to re-authenticate in most scenarios:
 
 - https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/
+
+Configuration Notes
+-------------------
+
+Common environment variables for IBKR REST backtesting:
+
+- ``IBKR_HISTORY_SOURCE`` (default: ``Trades``)
+- ``IBKR_FUTURES_EXCHANGE`` (default: ``CME``)
+- ``IBKR_CRYPTO_VENUE`` (default: ``ZEROHASH``)
+- ``LUMIBOT_IBKR_ENABLE_FUTURES_BID_ASK`` (default: disabled; opt-in quote derivation for futures)
+
+See :ref:`environment_variables` for details.

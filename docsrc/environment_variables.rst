@@ -132,27 +132,6 @@ BACKTESTING_PROFILE
 - Output:
   - Produces a ``*_profile_yappi.csv`` artifact alongside other backtest artifacts.
 
-ThetaData via remote downloader
--------------------------------
-
-DATADOWNLOADER_BASE_URL
-^^^^^^^^^^^^^^^^^^^^^^^
-
-- Purpose: Points LumiBot at a remote downloader service that can fetch ThetaData on demand.
-- Example: ``http://data-downloader.lumiwealth.com:8080``
-
-DATADOWNLOADER_API_KEY / DATADOWNLOADER_API_KEY_HEADER
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-- Purpose: Authentication for the downloader service.
-- Values: provided by your runtime environment (**do not hardcode**).
-
-DATADOWNLOADER_SKIP_LOCAL_START
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-- Purpose: Prevent any local downloader/ThetaTerminal bootstrap logic from running (production backtests must use the remote downloader).
-- Values: ``1`` / ``true`` enable; unset/``0`` disable.
-
 ThetaData option-chain building (performance)
 ---------------------------------------------
 
@@ -403,6 +382,34 @@ IB_API_URL
 - Purpose: Base URL for IB REST API endpoint.
 - Values: URL string.
 
+IBKR_HISTORY_SOURCE
+^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Select which IBKR Client Portal history source to use for OHLC bars in IBKR REST backtests.
+- Values: ``Trades`` / ``Midpoint`` / ``Bid_Ask`` (case-insensitive; hyphen/underscore variants accepted).
+- Default: ``Trades``.
+
+IBKR_FUTURES_EXCHANGE
+^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Default futures exchange for IBKR REST backtesting when ``exchange=`` is not provided.
+- Values: Exchange code string (for example: ``CME``).
+- Default: ``CME``.
+
+IBKR_CRYPTO_VENUE
+^^^^^^^^^^^^^^^^
+
+- Purpose: Default IBKR crypto venue when backtesting spot crypto via IBKR REST.
+- Values: Venue/exchange string (for example: ``ZEROHASH``).
+- Default: ``ZEROHASH``.
+
+LUMIBOT_IBKR_ENABLE_FUTURES_BID_ASK
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Purpose: Opt-in derivation of per-bar futures bid/ask quotes using IBKR ``Bid_Ask`` + ``Midpoint`` history sources.
+- Values: ``true``/``false`` (or ``1``/``0``).
+- Default: disabled.
+
 Schwab broker
 -------------
 
@@ -563,6 +570,14 @@ THETADATA_USERNAME / THETADATA_PASSWORD
 - Purpose: ThetaData API credentials.
 - Values: Obtain from ThetaData (**do not hardcode**).
 - Note: Required for ThetaData backtesting and live data.
+
+THETADATA_BASE_URL
+^^^^^^^^^^^^^^^^^^
+
+- Purpose: Base URL for the local ThetaTerminal REST API.
+- Default: ``http://127.0.0.1:25503``
+- Values: URL string.
+- Note: You typically do not need to set this; LumiBot auto-manages a local ThetaTerminal for ThetaData usage.
 
 DATABENTO_API_KEY
 ^^^^^^^^^^^^^^^^^

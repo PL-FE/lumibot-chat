@@ -68,6 +68,13 @@ AGENTS.md
 tests/backtest/_acceptance_runs/
 tests/backtest/_acceptance_warm_runs/
 
+# Parity + manual run artifacts (local)
+tests/backtest/_parity_runs/
+tests/backtest/_manual_visual_runs/
+
+# Prod-like local runner output
+backtest_runs/
+
 # Local tool configs (untracked, user-specific)
 context*.json
 !context7.json

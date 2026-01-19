@@ -52,4 +52,3 @@ def test_ibkr_crypto_get_quote_prefers_daily_series_at_midnight(monkeypatch):
     assert float(getattr(q, "price", 0.0)) == 101.5
     assert calls, "Expected IBKR price data fetch to seed the daily series"
     assert all(call["timestep"] == "day" for call in calls)
-
