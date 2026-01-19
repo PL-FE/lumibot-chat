@@ -2,6 +2,39 @@
 
 This document is the **canonical manual acceptance suite** for LumiBot backtesting (ThetaData) and release validation.
 
+## IBKR acceptance backtests (Crypto + Futures)
+
+This repo’s acceptance harness (`tests/backtest/test_acceptance_backtests_ci.py`) includes deterministic, cache-backed:
+- **IBKR crypto acceptance** (minute bars)
+- **IBKR CME equity futures acceptance** (minute/day bars; fixed contract in 2025)
+
+Key invariant (same as ThetaData acceptance):
+- Acceptance runs must be **deterministic** and **queue-free** (warm S3 cache invariant).
+
+Implementation note:
+- `Strategy._dump_settings()` records `thetadata_queue_telemetry`, which is a **global downloader/queue counter**
+  because IBKR REST backtesting also routes through `queue_request()`. IBKR acceptance will therefore assert:
+  - `thetadata_queue_telemetry.submit_requests == 0`
+
+Current IBKR slugs (in `tests/backtest/acceptance_backtests_baselines.json`):
+- `ibkr_crypto_acceptance_btc_usd`
+- `ibkr_mes_futures_acceptance`
+
+Local runbook (requires downloader + S3 env; do not paste secrets into logs):
+- Warm S3 (tripwire OFF): `python3 scripts/warm_acceptance_backtests_cache.py --slug ibkr_crypto_acceptance_btc_usd --slug ibkr_mes_futures_acceptance`
+- Run only IBKR acceptance locally: `python3 -m pytest -q tests/backtest/test_acceptance_backtests_ci.py -k ibkr`
+
+IBKR note: historical series can legitimately omit the final 1–3 bars of a requested window (minute/hour). LumiBot
+treats cache coverage within this tolerance as “good enough” to avoid repeated downloader retries in deterministic runs
+(see `lumibot/tools/ibkr_helper.py`).
+
+Futures-specific note: backtest windows can begin/end inside long `us_futures` closed intervals (weekends/holidays).
+LumiBot treats fully closed boundary gaps as cache-satisfied (no fetch attempts), keeping acceptance deterministic and
+queue-free.
+
+For design details and live-broker alignment notes, see:
+- `docs/IBKR_FUTURES_BACKTESTING.md`
+
 ## Update protocol (read this before editing)
 
 - **Append only**: never overwrite history rows; add a new row per run.

@@ -161,8 +161,10 @@ DataSource (ABC)
 **Flow:**
 1. `ThetaDataBacktestingPandas` inherits from `PandasData`
 2. Calls `thetadata_helper.get_price_data()` to fetch data
-3. Data comes from **Data Downloader** (remote HTTP service)
-4. Uses S3 cache for performance
+3. Data comes from either:
+   - a **local ThetaTerminal** (default / public), or
+   - the internal **Data Downloader** service (when `DATADOWNLOADER_BASE_URL` is set).
+4. Uses S3 cache for performance (when enabled)
 
 **Key Functions:**
 - `get_price_data()` - Main entry point (line 1248)
@@ -170,9 +172,14 @@ DataSource (ABC)
 
 ### ThetaData Data Downloader (remote service)
 
-Backtests are intended to use the **remote downloader** service, not a locally-started ThetaTerminal.
+This is an **internal/proprietary** service that can proxy ThetaData requests and provide queuing/concurrency controls.
 
-- Base URL: `http://localhost:8080` (local) or `https://<your-downloader-host>:8080` (remote)
+- Selection rule:
+  - If `DATADOWNLOADER_BASE_URL` is set, LumiBot routes ThetaData through the downloader queue and **must not** manage
+    any local ThetaTerminal process (single-session constraint).
+  - Otherwise, LumiBot auto-manages a local ThetaTerminal.
+
+- Base URL (internal): `http://localhost:8080` (local) or `https://<your-downloader-host>:8080` (remote)
 - Avoid hard-coded downloader IPs (they can change on redeploy)
 - Local downloader code checkout: `Documents/Development/botspot_data_downloader`
 

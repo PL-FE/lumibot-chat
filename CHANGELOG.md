@@ -2,6 +2,16 @@
 
 ## 4.4.34 - Unreleased
 
+### Added
+- IBKR futures: add acceptance backtest strategy covering market/limit/stop/stop-limit/trailing/smart-limit and OCO/OTO/bracket semantics.
+- IBKR futures: add parity/apitest helpers + scripts to compare IBKR runs against stored DataBento artifact baselines.
+- Docs: add IBKR futures backtesting notes and DataBento parity guidance.
+
+### Changed
+- IBKR futures backtesting: interpret `get_last_price(dt)` as the last completed bar close (avoid lookahead bias).
+- Continuous futures (IBKR): stitch rolled segments with a 1-minute overlap and deterministic de-duplication.
+- US futures gap handling (IBKR): replace flaky calendar logic with a simple rule-based “closed interval” detector to reduce repeated downloader fetches.
+
 ## 4.4.33 - 2026-01-12
 
 ### Fixed
