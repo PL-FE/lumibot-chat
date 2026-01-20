@@ -552,10 +552,21 @@ class Alpaca(Broker):
         trail_price_value = getattr(response, 'trail_price', None) or resp_raw.get('trail_price')
         trail_percent_value = getattr(response, 'trail_percent', None) or resp_raw.get('trail_percent')
         stop_limit_price = limit_price_value if order_type_value == Order.OrderType.STOP_LIMIT or order_type_value == "stop_limit" else None
+        # Average fill price: prefer raw dict first, support both Alpaca field names,
+        # then fall back to explicit attributes on the response object
+        avg_fill_price_value = (
+            (resp_raw.get('filled_avg_price') if isinstance(resp_raw, dict) else None)
+            or (resp_raw.get('avg_fill_price') if isinstance(resp_raw, dict) else None)
+            or getattr(response, 'filled_avg_price', None)
+            or getattr(response, 'avg_fill_price', None)
+        )
 
         # Time in force and status
         time_in_force_value = getattr(response, 'time_in_force', None) or resp_raw.get('time_in_force')
         status_value = getattr(response, 'status', None) or resp_raw.get('status')
+
+        if status_value in ('filled', 'fill', 'partially_filled') and avg_fill_price_value is None:
+            logger.warning(f"Filled or partially filled order with no average price available for {resp_symbol}.\n{resp_raw}")
 
         # Identifier
         identifier_value = getattr(response, 'id', None) or resp_raw.get('id')
@@ -578,7 +589,7 @@ class Alpaca(Broker):
             ),
             quantity=float(Decimal(qty_value)),
             side=side_value,
-            avg_fill_price=getattr(response, 'filled_avg_price', None),
+            avg_fill_price=avg_fill_price_value,
             limit_price=limit_price_value if order_type_value != Order.OrderType.STOP_LIMIT else None,
             stop_price=stop_price_value,
             stop_limit_price=stop_limit_price,
@@ -587,12 +598,13 @@ class Alpaca(Broker):
             time_in_force=time_in_force_value,
             order_class=order_class_value,
             order_type=order_type_value if order_type_value != "trailing_stop" else Order.OrderType.TRAIL,
-            date_created=getattr(response, 'created_at', None),
+            # Prefer raw first to avoid MagicMock traps
+            date_created=(resp_raw.get('created_at') if isinstance(resp_raw, dict) else None) or getattr(response, 'created_at', None),
             # TODO: remove hardcoding in case Alpaca allows crypto to crypto trading
             quote=Asset(symbol="USD", asset_type="forex"),
         )
         order.set_identifier(identifier_value)
-        order.broker_create_date = getattr(response, 'created_at', None)
+        order.broker_create_date = (resp_raw.get('created_at') if isinstance(resp_raw, dict) else None) or getattr(response, 'created_at', None)
         order.broker_update_date = getattr(response, 'updated_at', None)
         order.status = status_value
         order.update_raw(response)
@@ -1225,8 +1237,19 @@ class Alpaca(Broker):
                         # Update the stored order with new data and dispatch the event
                         stored_order.update_raw(alpaca_order)
 
+                        # Capture and propagate average filled price from Alpaca into the stored order
+                        try:
+                            avg_price = (
+                                getattr(alpaca_order, 'filled_avg_price', None)
+                                or getattr(alpaca_order, 'avg_fill_price', None)
+                            )
+                            if avg_price is not None:
+                                stored_order.avg_fill_price = avg_price
+                        except Exception:
+                            pass
+
                         # Dispatch the appropriate event based on the new status
-                        if order.status == "filled" or order.status == "fill":
+                        if order.status == "filled" or order.status == "fill": 
                             # Get price and quantity with proper fallbacks for Alpaca API
                             price = (getattr(alpaca_order, 'filled_avg_price', None) or
                                    getattr(alpaca_order, 'avg_fill_price', None) or
@@ -1271,6 +1294,17 @@ class Alpaca(Broker):
                         if individual_order.status != order.status:
                             logger.debug(f"OAuth Polling: Individual order status changed - {order_id}: {order.status} -> {individual_order.status}")
                             order.update_raw(individual_order)
+
+                            # Capture and propagate average filled price for individual lookup
+                            try:
+                                avg_price = (
+                                    getattr(individual_order, 'filled_avg_price', None)
+                                    or getattr(individual_order, 'avg_fill_price', None)
+                                )
+                                if avg_price is not None:
+                                    order.avg_fill_price = avg_price
+                            except Exception:
+                                pass
 
                             # Dispatch appropriate event based on new status
                             if individual_order.status in ["filled", "fill"]:
@@ -1359,6 +1393,22 @@ class Alpaca(Broker):
 
                     price = trade_update.price
                     filled_quantity = trade_update.qty
+
+                    # Propagate average filled price to stored order if available
+                    try:
+                        # Prefer any available average fill price fields
+                        avg_price = getattr(logged_order, 'filled_avg_price', None)
+                        if avg_price is None:
+                            avg_price = getattr(logged_order, 'avg_fill_price', None)
+                        if avg_price is None:
+                            avg_price = getattr(trade_update, 'avg_fill_price', None)
+                        if avg_price is None:
+                            avg_price = getattr(trade_update, 'price', None)
+                        if avg_price is not None:
+                            stored_order.avg_fill_price = avg_price
+                    except Exception:
+                        pass
+
                     self._process_trade_event(
                         stored_order,
                         type_event,

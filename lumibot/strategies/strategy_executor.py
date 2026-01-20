@@ -1354,7 +1354,7 @@ class StrategyExecutor(Thread):
                 # Second with 0 in front if less than 10
                 kwargs["second"] = f"0{second}" if second < 10 else str(second)
 
-                self.strategy.logger.warning(
+                self.strategy.logger.info(
                     f"The strategy will run at {kwargs['hour']}:{kwargs['minute']}:{kwargs['second']} every day. "
                     f"If instead you want to start right now and run every {time_raw} days then set "
                     f"force_start_immediately=True in the strategy's class initialization code. Or set "

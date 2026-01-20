@@ -29,15 +29,10 @@ from lumibot.tools.polygon_helper import get_price_data_from_polygon as polygon_
 
 load_dotenv()
 
-pytestmark = [pytest.mark.downloader]
+# Mark this module as requiring external API/data downloads.
+# Centralized skipping is handled in tests/conftest.py
+pytestmark = [pytest.mark.apitest, pytest.mark.downloader]
 
-
-@pytest.mark.skipif(
-    not os.environ.get("POLYGON_API_KEY")
-    or not os.environ.get("THETADATA_USERNAME")
-    or not os.environ.get("THETADATA_PASSWORD"),
-    reason="Requires Polygon + ThetaData credentials",
-)
 class TestDailyDataTimestampComparison:
     """
     Comprehensive daily data comparison between ThetaData and Polygon.

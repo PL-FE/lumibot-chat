@@ -72,10 +72,8 @@ def _fetch_day_ohlc_polygon(symbol: str, start: datetime.datetime, end: datetime
     )
 
 
-@pytest.mark.skipif(
-    not POLYGON_API_KEY or not THETADATA_USERNAME or not THETADATA_PASSWORD,
-    reason="Requires both Polygon and ThetaData credentials"
-)
+@pytest.mark.apitest
+@pytest.mark.downloader
 class TestAccuracyVerification:
     """Accuracy verification test suite"""
 

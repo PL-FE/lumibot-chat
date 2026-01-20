@@ -239,3 +239,97 @@ def _restore_alpaca_trading_stream():
         _AlpacaTradingStream.close = _ALPACA_TRADING_STREAM_ORIGINAL_CLOSE
     if _AlpacaTradingStream is not None and _ALPACA_TRADING_STREAM_ORIGINAL_RUN_FOREVER is not None:
         _AlpacaTradingStream._run_forever = _ALPACA_TRADING_STREAM_ORIGINAL_RUN_FOREVER
+
+
+# Centralized credential validation and skipping for API-dependent tests
+def _is_placeholder(value: str) -> bool:
+    if value is None:
+        return True
+    v = str(value).strip().lower()
+    if not v:
+        return True
+    placeholders = {
+        "<your key here>",
+        "<your api key>",
+        "<api key>",
+        "uname",
+        "username",
+        "password",
+        "<username>",
+        "<password>",
+        "none",
+        "null",
+        "changeme",
+    }
+    return v in placeholders
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item):
+    """
+    Skip API/data-provider tests only for the providers they actually require.
+
+    Markers:
+      - apitest: general external API usage
+      - downloader: tests that hit remote/downloader services
+      - polygon: requires Polygon credentials
+      - thetadata: requires ThetaData credentials
+
+    Behavior:
+      - If a test is marked with polygon and/or thetadata, only those
+        provider credentials are required.
+      - If a test has apitest/downloader but no provider-specific markers,
+        require both providers (legacy behavior for mixed-provider tests).
+    """
+    has_apitest = item.get_closest_marker("apitest") is not None
+    has_downloader = item.get_closest_marker("downloader") is not None
+    if not (has_apitest or has_downloader):
+        # Non-API tests are not gated
+        return
+
+    requires_polygon = item.get_closest_marker("polygon") is not None
+    requires_theta = item.get_closest_marker("thetadata") is not None
+
+    # Determine which providers are required
+    if requires_polygon or requires_theta:
+        need_polygon = requires_polygon
+        need_theta = requires_theta
+    else:
+        # No provider-specific markers: assume both may be used
+        need_polygon = True
+        need_theta = True
+
+    missing = []
+
+    # Validate only the required credentials
+    if need_polygon:
+        polygon_key = os.environ.get("POLYGON_API_KEY")
+        if _is_placeholder(polygon_key):
+            missing.append("POLYGON_API_KEY")
+
+    if need_theta:
+        theta_user = os.environ.get("THETADATA_USERNAME")
+        theta_pass = os.environ.get("THETADATA_PASSWORD")
+        if _is_placeholder(theta_user):
+            missing.append("THETADATA_USERNAME")
+        if _is_placeholder(theta_pass):
+            missing.append("THETADATA_PASSWORD")
+
+    # Downloader-specific requirement: shared downloader API key
+    # Only enforce when tests are explicitly marked with `downloader`.
+    if has_downloader:
+        downloader_key = os.environ.get("DATADOWNLOADER_API_KEY")
+        if _is_placeholder(downloader_key):
+            missing.append("DATADOWNLOADER_API_KEY")
+
+        # Enforce the shared downloader endpoint is specified as well
+        downloader_base = os.environ.get("DATADOWNLOADER_BASE_URL")
+        if _is_placeholder(downloader_base):
+            missing.append("DATADOWNLOADER_BASE_URL")
+
+    if missing:
+        reason = (
+            "Skipping API test due to missing/placeholder credentials: "
+            + ", ".join(missing)
+        )
+        pytest.skip(reason)
