@@ -7164,3 +7164,8 @@ timestamp,test_name,data_source,trading_days,execution_time_seconds,git_commit,l
 2026-01-21T23:49:04.242855,test_tqqq_theta_integration,unknown,,0.419,f529dd9b,4.4.34,,,,,Auto-tracked from test_theta_strategies_integration
 2026-01-21T23:49:04.884007,test_meli_theta_integration,unknown,,0.27,f529dd9b,4.4.34,,,,,Auto-tracked from test_theta_strategies_integration
 2026-01-21T23:49:05.702991,test_pltr_minute_theta_integration,unknown,,0.439,f529dd9b,4.4.34,,,,,Auto-tracked from test_theta_strategies_integration
+2026-01-22T03:15:03.284318,test_acceptance_aapl_deep_dip_calls,unknown,,34.713,1ed3de0f,4.4.36,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-22T03:15:36.941192,test_acceptance_leaps_alpha_picks,unknown,,33.519,1ed3de0f,4.4.36,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-22T03:16:17.250021,test_acceptance_tqqq_sma200,unknown,,40.186,1ed3de0f,4.4.36,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-22T03:20:57.688842,test_acceptance_backdoor_butterfly,unknown,,280.312,1ed3de0f,4.4.36,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-22T03:22:21.831322,test_acceptance_meli_deep_drawdown,unknown,,83.988,1ed3de0f,4.4.36,,,,,Auto-tracked from test_acceptance_backtests_ci
