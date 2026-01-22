@@ -2,6 +2,10 @@
 
 These rules are mandatory whenever you work on ThetaData integrations.
 
+## Backtesting Accuracy (Definition)
+
+Backtesting “accuracy” is measured against live broker behavior when possible (replay a live-traded interval and reproduce fills + PnL within tolerances). Vendor parity (e.g., stored DataBento artifacts) is a regression signal, not absolute truth.
+
 ## Multi-Agent Collaboration (CRITICAL)
 This repo is frequently edited by **multiple AI sessions**. To avoid lost work:
 
