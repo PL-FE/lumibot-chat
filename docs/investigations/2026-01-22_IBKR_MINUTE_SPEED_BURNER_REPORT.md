@@ -63,6 +63,8 @@ Record wall time and iterations/sec for each milestone. Keep results append-only
 | 2026-01-22 | Source-tree stubbed benchmark (200 iters) | 1.072 | 1.491 | `scripts/bench_ibkr_speed_burner_stubbed.py` |
 | 2026-01-22 | Native multi-minute cache keys + slice fast-path | 0.936 | 1.383 | Fix `15min` → `15minute` keying; benchmark runs with `IS_BACKTESTING=true` quiet logs; 11 series loads |
 | 2026-01-22 | Warm-cache (cache-only) benchmark | 0.579 | 0.849 | `scripts/bench_ibkr_speed_burner_warm_cache.py` (queue-free; 2 futures + 3 crypto) |
+| 2026-01-22 | Re-measure stubbed (commit `804d13eb`) | 0.571 | 0.770 | `scripts/bench_ibkr_speed_burner_stubbed.py` (200 iters; `LUMIBOT_DISABLE_DOTENV=1`) |
+| 2026-01-22 | Re-measure warm-cache (commit `804d13eb`) | 0.334 | 0.485 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 200` (queue-free; `LUMIBOT_DISABLE_DOTENV=1`) |
 | 2026-01-22 | Remove synthetic bars across gaps | TBD | TBD | Correctness + avoids fake work |
 | 2026-01-22 | Prefetch once → slice forever | TBD | TBD | Eliminates refetch/window thrash |
 | 2026-01-22 | DataFrame slice fast-path | TBD | TBD | Avoid per-call DataFrame rebuild |
@@ -81,6 +83,8 @@ This table uses a longer loop length to catch that early:
 | 2026-01-22 | Faster asof + avoid unused dataline dicts | 2000 | 6.069 | 9.137 | `Data.get_iter_count()` uses index searchsorted; `Data.get_bars()` slices native df before `_get_bars_dict()` |
 | 2026-01-22 | Skip per-slice dropna/fillna + faster Bars derived cols | 2000 | 3.797 | 5.305 | Same as above; also includes a benchmark guard to avoid accumulating unfillable orders when the clock exceeds the cached window |
 | 2026-01-22 | Same (scaling check) | 20000 | 26.296 | 34.779 | `python3 scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 20000` |
+| 2026-01-22 | Re-measure (commit `804d13eb`) | 2000 | 3.895 | 5.861 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 2000` (`LUMIBOT_DISABLE_DOTENV=1`) |
+| 2026-01-22 | Re-measure (commit `804d13eb`) | 20000 | 28.940 | 37.817 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 20000` (`LUMIBOT_DISABLE_DOTENV=1`) |
 
 ---
 
