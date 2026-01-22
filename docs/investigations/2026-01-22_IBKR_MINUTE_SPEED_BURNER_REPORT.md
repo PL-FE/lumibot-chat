@@ -77,6 +77,7 @@ This table uses a longer loop length to catch that early:
 | Date | Change | Iterations | Futures time (s) | Crypto time (s) | Notes |
 |------|--------|------------|------------------|-----------------|-------|
 | 2026-01-22 | Warm-cache (cache-only) benchmark | 2000 | 6.737 | 9.460 | `python3 scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 2000` |
+| 2026-01-22 | Faster asof + avoid unused dataline dicts | 2000 | 6.069 | 9.137 | `Data.get_iter_count()` uses index searchsorted; `Data.get_bars()` slices native df before `_get_bars_dict()` |
 
 ---
 

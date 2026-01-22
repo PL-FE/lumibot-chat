@@ -466,17 +466,24 @@ class Data:
         if getattr(self, "iter_index_dict", None) is None:
             self.repair_times_and_fill(self.df.index)
 
+        # Normalize dt to a python datetime for fast dict lookups.
+        # Callers can pass `pd.Timestamp` (common in pandas-heavy code paths); mixing Timestamp and
+        # datetime keys leads to misses and forces an expensive `asof()` fallback.
+        dt_key = dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt
+
         # Search for dt in self.iter_index_dict
-        if dt in self.iter_index_dict:
-            i = self.iter_index_dict[dt]
+        if dt_key in self.iter_index_dict:
+            i = self.iter_index_dict[dt_key]
         else:
             # If not found, get the last known data.
             #
-            # NOTE: `iter_index.asof(dt)` returns the index position of the last bar <= dt.
+            # NOTE: `Series.asof()` is convenient but slow in tight loops. Use the underlying
+            # DatetimeIndex binary search instead.
+            #
             # Call sites that slice with an exclusive end bound must apply the +1 themselves
             # where appropriate (daily bars), otherwise `get_last_price()` and other direct
             # indexers can go out-of-bounds when dt is after the last bar.
-            i = self.iter_index.asof(dt)
+            i = int(self.df.index.searchsorted(dt_key, side="right")) - 1
 
         return i
 
@@ -488,6 +495,7 @@ class Data:
                 raise TypeError(f"Length must be an integer. {type(kwargs.get('length', 1))} was provided.")
 
             dt = args[0]
+            dt_key = dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt
             length = kwargs.get("length", 1)
             timeshift = kwargs.get("timeshift", 0)
 
@@ -499,9 +507,9 @@ class Data:
                 kwargs["timeshift"] = timeshift
 
             # Check if the iter date is outside of this data's date range.
-            if dt < self.datetime_start:
+            if dt_key < self.datetime_start:
                 raise ValueError(
-                    f"The date you are looking for ({dt}) for ({self.asset}) is outside of the data's date range ({self.datetime_start} to {self.datetime_end}). This could be because the data for this asset does not exist for the date you are looking for, or something else."
+                    f"The date you are looking for ({dt_key}) for ({self.asset}) is outside of the data's date range ({self.datetime_start} to {self.datetime_end}). This could be because the data for this asset does not exist for the date you are looking for, or something else."
                 )
 
             # For daily data, compare dates (not timestamps) to handle timezone issues.
@@ -518,43 +526,43 @@ class Data:
                 else:
                     datetime_end_utc = self.datetime_end
                 datetime_end_date = datetime_end_utc.date()
-                dt_date = dt.date()
+                dt_date = dt_key.date()
                 dt_exceeds_end = dt_date > datetime_end_date
             else:
-                dt_exceeds_end = dt > self.datetime_end
+                dt_exceeds_end = dt_key > self.datetime_end
 
             if dt_exceeds_end:
                 strict_end_check = getattr(self, "strict_end_check", False)
                 if strict_end_check:
                     raise ValueError(
-                        f"The date you are looking for ({dt}) for ({self.asset}) is after the available data's end ({self.datetime_end}) with length={length} and timeshift={timeshift}; data refresh required instead of using stale bars."
+                        f"The date you are looking for ({dt_key}) for ({self.asset}) is after the available data's end ({self.datetime_end}) with length={length} and timeshift={timeshift}; data refresh required instead of using stale bars."
                     )
-                gap = dt - self.datetime_end
+                gap = dt_key - self.datetime_end
                 max_gap = datetime.timedelta(days=3)
                 if gap > max_gap:
                     raise ValueError(
-                        f"The date you are looking for ({dt}) for ({self.asset}) is after the available data's end ({self.datetime_end}) with length={length} and timeshift={timeshift}; data refresh required instead of using stale bars."
+                        f"The date you are looking for ({dt_key}) for ({self.asset}) is after the available data's end ({self.datetime_end}) with length={length} and timeshift={timeshift}; data refresh required instead of using stale bars."
                     )
                 logger.warning(
-                    f"The date you are looking for ({dt}) is after the available data's end ({self.datetime_end}) by {gap}. Using the last available bar (within tolerance of {max_gap})."
+                    f"The date you are looking for ({dt_key}) is after the available data's end ({self.datetime_end}) by {gap}. Using the last available bar (within tolerance of {max_gap})."
                 )
 
             # Search for dt in self.iter_index_dict
             if getattr(self, "iter_index_dict", None) is None:
                 self.repair_times_and_fill(self.df.index)
 
-            if dt in self.iter_index_dict:
-                i = self.iter_index_dict[dt]
+            if dt_key in self.iter_index_dict:
+                i = self.iter_index_dict[dt_key]
             else:
                 # If not found, get the last known data
-                i = self.iter_index.asof(dt)
+                i = int(self.df.index.searchsorted(dt_key, side="right")) - 1
 
             data_index = i + 1 - length - timeshift
             is_data = data_index >= 0
             if not is_data:
                 # Log a warning
                 logger.warning(
-                    f"The date you are looking for ({dt}) is outside of the data's date range ({self.datetime_start} to {self.datetime_end}) after accounting for a length of {kwargs.get('length', 1)} and a timeshift of {kwargs.get('timeshift', 0)}. Keep in mind that the length you are requesting must also be available in your data, in this case we are {data_index} rows away from the data you need."
+                    f"The date you are looking for ({dt_key}) is outside of the data's date range ({self.datetime_start} to {self.datetime_end}) after accounting for a length of {kwargs.get('length', 1)} and a timeshift of {kwargs.get('timeshift', 0)}. Keep in mind that the length you are requesting must also be available in your data, in this case we are {data_index} rows away from the data you need."
                 )
                 try:
                     idx_vals = self.df.index
@@ -564,7 +572,7 @@ class Data:
                         "[DATA][CHECK] asset=%s timestep=%s dt=%s length=%s timeshift=%s iter_index=%s idx_min=%s idx_max=%s rows=%s",
                         getattr(self.asset, "symbol", self.asset),
                         getattr(self, "timestep", None),
-                        dt,
+                        dt_key,
                         length,
                         timeshift,
                         i,
@@ -920,30 +928,12 @@ class Data:
             "close": "last",
             "volume": "sum",
         }
-        if timestep == "day" and self.timestep == "minute":
-            # If the data is minute data and we are requesting daily data then multiply the length by 1440
-            length = length * 1440
-            unit = "D"
-            data = self._get_bars_dict(dt, length=length, timestep="minute", timeshift=timeshift)
-
-        elif timestep == 'day' and self.timestep == 'day':
-            unit = "D"
-            data = self._get_bars_dict(dt, length=length, timestep=timestep, timeshift=timeshift)
-
-        else:
-            unit = "min"  # Guaranteed to be minute timestep at this point
-            length = length * quantity
-            data = self._get_bars_dict(dt, length=length, timestep=timestep, timeshift=timeshift)
-
-        if data is None:
-            return None
 
         # Fast-path: requesting native bars (1 minute or 1 day) from a Data object that is already in
-        # that native timestep can avoid a full resample/agg per call.
+        # that native timestep can avoid building dataline dicts and a resample/agg per call.
         #
-        # This is critical for intraday strategies that call `get_historical_prices()` tens of thousands
-        # of times (e.g., RSI computations every bar). Resample is orders-of-magnitude slower than
-        # slicing when quantity==1 and the index is unique.
+        # IMPORTANT: this block must run *before* `_get_bars_dict()` to avoid paying for an unused
+        # dataline slice when we can slice `self.df` directly.
         if (
             quantity == 1
             and self._index_is_unique
@@ -1001,6 +991,24 @@ class Data:
                 df = df.dropna(subset=required)
 
             return df.tail(n=int(num_periods))
+
+        if timestep == "day" and self.timestep == "minute":
+            # If the data is minute data and we are requesting daily data then multiply the length by 1440
+            length = length * 1440
+            unit = "D"
+            data = self._get_bars_dict(dt, length=length, timestep="minute", timeshift=timeshift)
+
+        elif timestep == 'day' and self.timestep == 'day':
+            unit = "D"
+            data = self._get_bars_dict(dt, length=length, timestep=timestep, timeshift=timeshift)
+
+        else:
+            unit = "min"  # Guaranteed to be minute timestep at this point
+            length = length * quantity
+            data = self._get_bars_dict(dt, length=length, timestep=timestep, timeshift=timeshift)
+
+        if data is None:
+            return None
 
         df = pd.DataFrame(data).assign(datetime=lambda df: pd.to_datetime(df['datetime'])).set_index('datetime')
         if "dividend" in df.columns:
