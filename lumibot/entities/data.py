@@ -413,7 +413,12 @@ class Data:
         # Set up iter_index and iter_index_dict for later use.
         iter_index = pd.Series(df.index)
         self.iter_index = pd.Series(iter_index.index, index=iter_index)
-        self.iter_index_dict = self.iter_index.to_dict()
+        # PERF: `to_dict()` produces keys as `pd.Timestamp`, which do not hash-equal to
+        # `datetime.datetime` objects. Many hot paths pass python datetimes, causing dictionary
+        # misses and forcing an expensive `Series.asof()` fallback.
+        #
+        # Store a second mapping keyed by python datetimes so `dt in iter_index_dict` is fast.
+        self.iter_index_dict = {ts.to_pydatetime(): int(pos) for ts, pos in self.iter_index.items()}
 
         # Populate the datalines dictionary (assuming to_datalines is defined elsewhere).
         self.datalines = dict()
