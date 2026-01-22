@@ -29,9 +29,19 @@ Each iteration intentionally stresses the hot path:
 
 - Unit-style stubbed runner (no network): `tests/test_ibkr_speed_burner_stubbed.py`
 - Local benchmark script (no network): `scripts/bench_ibkr_speed_burner_stubbed.py`
+- Local warm-cache runner (cache-only, asserts queue-free): `scripts/bench_ibkr_speed_burner_warm_cache.py`
 
 Future (acceptance / cache-backed):
 - Add a prodlike runner in `scripts/` that hits the cache and asserts queue-free behavior.
+
+### Warm-cache prerequisites
+
+The warm-cache runner is intentionally strict:
+- it refuses to download data (queue-free invariant)
+- it fails fast if the required parquet cache objects are missing
+
+If it fails due to missing cache, warm the cache once (via apitest/downloader or a manual backtest run),
+then re-run the warm-cache benchmark.
 
 ---
 
@@ -43,6 +53,7 @@ Record wall time and iterations/sec for each milestone. Keep results append-only
 |------|--------|------------------|-----------------|-------|
 | 2026-01-22 | Source-tree stubbed benchmark (200 iters) | 1.072 | 1.491 | `scripts/bench_ibkr_speed_burner_stubbed.py` |
 | 2026-01-22 | Native multi-minute cache keys + slice fast-path | 0.936 | 1.383 | Fix `15min` → `15minute` keying; benchmark runs with `IS_BACKTESTING=true` quiet logs; 11 series loads |
+| 2026-01-22 | Warm-cache (cache-only) benchmark | TBD | TBD | `scripts/bench_ibkr_speed_burner_warm_cache.py` (fails fast if cache missing) |
 | 2026-01-22 | Remove synthetic bars across gaps | TBD | TBD | Correctness + avoids fake work |
 | 2026-01-22 | Prefetch once → slice forever | TBD | TBD | Eliminates refetch/window thrash |
 | 2026-01-22 | DataFrame slice fast-path | TBD | TBD | Avoid per-call DataFrame rebuild |
