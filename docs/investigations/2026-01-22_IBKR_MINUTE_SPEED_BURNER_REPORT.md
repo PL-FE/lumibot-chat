@@ -30,6 +30,7 @@ Each iteration intentionally stresses the hot path:
 - Unit-style stubbed runner (no network): `tests/test_ibkr_speed_burner_stubbed.py`
 - Local benchmark script (no network): `scripts/bench_ibkr_speed_burner_stubbed.py`
 - Local warm-cache runner (cache-only, asserts queue-free): `scripts/bench_ibkr_speed_burner_warm_cache.py`
+- Cache warmer (cold run, populates parquet): `scripts/warm_ibkr_speed_burner_data.py`
 
 Future (acceptance / cache-backed):
 - Add a prodlike runner in `scripts/` that hits the cache and asserts queue-free behavior.
@@ -41,7 +42,9 @@ The warm-cache runner is intentionally strict:
 - it fails fast if the required parquet cache objects are missing
 
 If it fails due to missing cache, warm the cache once (via apitest/downloader or a manual backtest run),
-then re-run the warm-cache benchmark.
+then re-run the warm-cache benchmark. The simplest warm step for this benchmark is:
+
+- `python3 scripts/warm_ibkr_speed_burner_data.py`
 
 ---
 

@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+"""
+warm_ibkr_speed_burner_data.py
+
+One-time cache warmer for the IBKR speed burner benchmarks.
+
+This script intentionally DOES hit the downloader (cold run) to populate parquet cache so that
+warm-cache benchmarks can be measured as queue-free and bounded.
+
+It does not print any secrets; it relies on environment variables already configured in the shell.
+"""
+
+import os
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+
+def _force_source_tree_imports() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo_root))
+
+
+def _lock_down_env() -> None:
+    # Avoid recursive `.env` discovery (latency + accidental secrets loading).
+    os.environ.setdefault("LUMIBOT_DISABLE_DOTENV", "true")
+    os.environ.setdefault("IS_BACKTESTING", "true")
+
+
+def _load_repo_dotenv_if_needed() -> None:
+    """Best-effort local `.env` load for developer convenience.
+
+    This script is explicitly a cache warmer and needs downloader credentials.
+    We avoid LumiBot's recursive `.env` discovery (which logs) and instead load only the
+    repo-local `.env` if present, without printing any values.
+    """
+    if (os.environ.get("DATADOWNLOADER_BASE_URL") or "").strip() and (os.environ.get("DATADOWNLOADER_API_KEY") or "").strip():
+        return
+    try:
+        from dotenv import dotenv_values
+    except Exception:
+        return
+
+    repo_root = Path(__file__).resolve().parents[1]
+    env_path = repo_root / ".env"
+    if not env_path.exists():
+        return
+
+    values = dotenv_values(env_path)
+    for key in ("DATADOWNLOADER_BASE_URL", "DATADOWNLOADER_API_KEY", "DATADOWNLOADER_API_KEY_HEADER"):
+        val = (values.get(key) or "").strip()
+        if val and not (os.environ.get(key) or "").strip():
+            os.environ[key] = val
+
+
+def _require_env(name: str) -> str:
+    val = (os.environ.get(name) or "").strip()
+    if not val:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return val
+
+
+def main() -> int:
+    _lock_down_env()
+    _force_source_tree_imports()
+
+    # Require downloader creds. This script is explicitly for warming caches.
+    _load_repo_dotenv_if_needed()
+    _require_env("DATADOWNLOADER_BASE_URL")
+    _require_env("DATADOWNLOADER_API_KEY")
+
+    from lumibot.entities import Asset
+    import lumibot.tools.ibkr_helper as ibkr_helper
+
+    # Match the warm-cache benchmark window.
+    # `bench_ibkr_speed_burner_warm_cache.py` uses America/New_York 09:30–19:30, which corresponds
+    # to 14:30–00:30 UTC on this date.
+    window_start = datetime(2025, 12, 8, 14, 30, tzinfo=timezone.utc)
+    window_end = datetime(2025, 12, 9, 0, 30, tzinfo=timezone.utc)
+
+    fut_mes = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
+    fut_mnq = Asset("MNQ", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=2)
+    btc = Asset("BTC", asset_type=Asset.AssetType.CRYPTO)
+    eth = Asset("ETH", asset_type=Asset.AssetType.CRYPTO)
+    sol = Asset("SOL", asset_type=Asset.AssetType.CRYPTO)
+
+    # Pull enough history for lookbacks (minute=100, day=20) + a bit of padding.
+    minute_start = window_start - timedelta(hours=4)
+    day_start = window_start - timedelta(days=60)
+
+    assets = [
+        (fut_mes, "minute", minute_start, window_end),
+        (fut_mnq, "minute", minute_start, window_end),
+        (fut_mes, "15minute", minute_start, window_end),
+        (fut_mes, "day", day_start, window_end),
+        (fut_mnq, "day", day_start, window_end),
+        (btc, "minute", minute_start, window_end),
+        (eth, "minute", minute_start, window_end),
+        (sol, "minute", minute_start, window_end),
+        (btc, "day", day_start, window_end),
+        (eth, "day", day_start, window_end),
+        (sol, "day", day_start, window_end),
+    ]
+
+    for asset, timestep, start, end in assets:
+        df = ibkr_helper.get_price_data(
+            asset=asset,
+            quote=None,
+            timestep=timestep,
+            start_dt=start,
+            end_dt=end,
+            exchange=None,
+            include_after_hours=True,
+            source="Trades",
+        )
+        if df is None or df.empty:
+            raise RuntimeError(f"Failed to warm {asset} timestep={timestep}: empty dataframe")
+
+    print("IBKR speed burner warm: OK (parquet cache populated)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
