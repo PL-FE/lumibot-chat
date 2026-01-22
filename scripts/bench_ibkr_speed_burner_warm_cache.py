@@ -41,6 +41,10 @@ def _lock_down_env() -> None:
     os.environ.setdefault("IS_BACKTESTING", "true")
     os.environ.setdefault("BACKTESTING_QUIET_LOGS", "true")
 
+    # Keep benchmark artifacts/caches inside the repo so we don't write into user cache folders
+    # outside `~/Documents/Development/`.
+    os.environ.setdefault("LUMIBOT_CACHE_FOLDER", "tests/backtest/_ibkr_speed_burner_cache")
+
     # SAFETY: this benchmark must not require the downloader; set placeholders so we do not print
     # private hostnames in logs if any import-time config emits them.
     os.environ.setdefault("DATADOWNLOADER_BASE_URL", "http://localhost:8080")
@@ -108,7 +112,9 @@ def main() -> int:
 
     tz = pytz.timezone("America/New_York")
     start = tz.localize(datetime(2025, 12, 8, 9, 30))
-    end = tz.localize(datetime(2025, 12, 8, 19, 30))
+    # IBKR minute bars represent the last *completed* minute. Using a slightly earlier end avoids
+    # chasing the final partial minute which can force unnecessary downloader fetch attempts.
+    end = tz.localize(datetime(2025, 12, 8, 19, 28))
 
     fut_mes = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
     fut_mnq = Asset("MNQ", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=2)

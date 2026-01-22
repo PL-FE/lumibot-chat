@@ -46,6 +46,12 @@ then re-run the warm-cache benchmark. The simplest warm step for this benchmark 
 
 - `python3 scripts/warm_ibkr_speed_burner_data.py`
 
+Notes:
+- Both scripts default `LUMIBOT_CACHE_FOLDER` to `tests/backtest/_ibkr_speed_burner_cache` (gitignored).
+- The futures window in this benchmark uses an expired contract month. The warm step requires a
+  populated IBKR conid registry (`<cache>/ibkr/conids.json`), which can be sourced from the
+  one-time TWS conid backfill.
+
 ---
 
 ## Results table (fill in as we iterate)
@@ -56,7 +62,7 @@ Record wall time and iterations/sec for each milestone. Keep results append-only
 |------|--------|------------------|-----------------|-------|
 | 2026-01-22 | Source-tree stubbed benchmark (200 iters) | 1.072 | 1.491 | `scripts/bench_ibkr_speed_burner_stubbed.py` |
 | 2026-01-22 | Native multi-minute cache keys + slice fast-path | 0.936 | 1.383 | Fix `15min` → `15minute` keying; benchmark runs with `IS_BACKTESTING=true` quiet logs; 11 series loads |
-| 2026-01-22 | Warm-cache (cache-only) benchmark | TBD | TBD | `scripts/bench_ibkr_speed_burner_warm_cache.py` (fails fast if cache missing) |
+| 2026-01-22 | Warm-cache (cache-only) benchmark | 0.579 | 0.849 | `scripts/bench_ibkr_speed_burner_warm_cache.py` (queue-free; 2 futures + 3 crypto) |
 | 2026-01-22 | Remove synthetic bars across gaps | TBD | TBD | Correctness + avoids fake work |
 | 2026-01-22 | Prefetch once → slice forever | TBD | TBD | Eliminates refetch/window thrash |
 | 2026-01-22 | DataFrame slice fast-path | TBD | TBD | Avoid per-call DataFrame rebuild |
