@@ -1025,6 +1025,11 @@ def _prepare_tearsheet_returns(strategy_df: pd.DataFrame, benchmark_df: pd.DataF
     if pd.notna(first_strategy_idx):
         first_strategy_idx = pd.to_datetime(first_strategy_idx)
         initial_equity = _strategy_df.loc[first_strategy_idx, "portfolio_value"]
+        # Some backtests record multiple portfolio snapshots at the same timestamp. In that case
+        # `.loc[...]` returns a Series; pick the last value to preserve the later
+        # `df.index.duplicated(keep="last")` de-dup semantics.
+        if isinstance(initial_equity, pd.Series):
+            initial_equity = initial_equity.iloc[-1]
         anchor_idx = first_strategy_idx.normalize() - pd.Timedelta(microseconds=1)
         anchor_row = pd.DataFrame(
             {
@@ -1243,15 +1248,16 @@ def create_tearsheet(
             _write_placeholder_tearsheet(f"QuantStats error: {exc}")
             return
 
-    # QuantStats occasionally emits malformed percent cells for short/degenerate windows
-    # (e.g., "-" or "%" for Max Drawdown). Our CI acceptance harness relies on these values
-    # being valid percent strings at 0.01% resolution, so patch the headline metrics using
-    # LumiBot's own deterministic computations when QuantStats output is missing/invalid.
+    # QuantStats occasionally emits malformed or low-precision percent cells
+    # (e.g., "-" or "-11%" instead of "-11.89%"). Our CI acceptance harness pins to 0.01%
+    # resolution, so normalize the headline metrics using stable computations over the exact
+    # return series passed into QuantStats (df_final).
     try:
         import re
 
         if isinstance(result, pd.DataFrame) and "Strategy" in result.columns:
-            percent_re = re.compile(r"^-?\\d[\\d,]*(?:\\.\\d+)?%$")
+            # Acceptance baselines are pinned to 0.01% resolution.
+            percent_re = re.compile(r"^-?\\d[\\d,]*\\.\\d{2}%$")
 
             def _is_valid_percent(value: object) -> bool:
                 if value is None:
@@ -1262,37 +1268,35 @@ def create_tearsheet(
             def _fmt_percent(value: float) -> str:
                 return f"{float(value) * 100.0:.2f}%"
 
-            def _safe_total_return(df: pd.DataFrame) -> float:
-                try:
-                    return float(total_return(df))
-                except Exception:
-                    return 0.0
+            try:
+                import quantstats_lumi as _qs
 
-            def _safe_cagr(df: pd.DataFrame) -> float:
-                try:
-                    return float(cagr(df))
-                except Exception:
-                    return 0.0
+                strat_returns = _qs.utils._prepare_returns(df_final["strategy"].astype(float))
+                bench_returns = _qs.utils._prepare_returns(df_final["benchmark"].astype(float))
 
-            def _safe_max_drawdown(df: pd.DataFrame) -> float:
-                try:
-                    # Lumibot's `max_drawdown()` returns a positive fraction; tearsheets use a negative percent.
-                    return -float(max_drawdown(df).get("drawdown") or 0.0)
-                except Exception:
-                    return 0.0
-
-            headline = {
-                "Total Return": _safe_total_return,
-                "CAGR% (Annual Return)": _safe_cagr,
-                "Max Drawdown": _safe_max_drawdown,
-            }
+                headline_values = {
+                    "Total Return": (
+                        float(_qs.stats.comp(strat_returns)),
+                        float(_qs.stats.comp(bench_returns)),
+                    ),
+                    "CAGR% (Annual Return)": (
+                        float(_qs.stats.cagr(strat_returns)),
+                        float(_qs.stats.cagr(bench_returns)),
+                    ),
+                    "Max Drawdown": (
+                        float(_qs.stats.max_drawdown(strat_returns)),  # negative fraction
+                        float(_qs.stats.max_drawdown(bench_returns)),  # negative fraction
+                    ),
+                }
+            except Exception:
+                headline_values = {}
 
             # Best-effort detect benchmark column (QuantStats names it using `df_final["benchmark"].name`).
             # QuantStats emits metrics with `Metric` as the index name, not a column.
             benchmark_cols = [c for c in result.columns if c != "Strategy"]
             benchmark_col = benchmark_cols[0] if benchmark_cols else None
 
-            for metric_name, fn in headline.items():
+            for metric_name, pair in headline_values.items():
                 idx = None
                 if "Metric" in result.columns:
                     row = result.index[result["Metric"] == metric_name]
@@ -1305,10 +1309,10 @@ def create_tearsheet(
                     continue
 
                 if not _is_valid_percent(result.at[idx, "Strategy"]):
-                    result.at[idx, "Strategy"] = _fmt_percent(fn(strategy_df))
+                    result.at[idx, "Strategy"] = _fmt_percent(pair[0])
 
                 if benchmark_col is not None and not _is_valid_percent(result.at[idx, benchmark_col]):
-                    result.at[idx, benchmark_col] = _fmt_percent(fn(benchmark_df))
+                    result.at[idx, benchmark_col] = _fmt_percent(pair[1])
     except Exception:  # pragma: no cover
         pass
 
