@@ -121,6 +121,9 @@ IBKR documents futures order handling rules (including stop/stop-limit behavior 
 Links (public):
 - https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php
 
+LumiBot truth-probes (read-only / safe):
+- `tests/backtest/test_ibkr_futures_downloader_apitest.py` (contract info + trading hours metadata via Client Portal)
+
 Backtesting implications:
 - “stop triggers outside RTH” can be a configurable property in live; backtesting must document what we assume.
 - futures gaps (maintenance/holiday) must be treated as “no fills until next actionable data”.
