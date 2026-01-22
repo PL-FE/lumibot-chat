@@ -49,6 +49,17 @@ When behavior differs across brokers, we need broker-scoped semantics (or a docu
 
 ## Broker notes (public sources, summarized)
 
+## Verified behavior table (append-only)
+
+This table is intentionally small and focuses on “closed session / no data” semantics.
+
+| Broker | Asset class | What we know (public docs) | Source | Verification |
+|--------|------------|-----------------------------|--------|--------------|
+| IBKR | US futures | Simulated stop orders only trigger during **regular trading hours** unless configured otherwise. | https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php | Needs LumiBot `apitest` probes for our IBKR live path (paper/live) |
+| Tradovate | Futures | GTC orders placed outside active hours can appear as **Suspended** until conditions allow activation; indicates “accepted/held”, not necessarily rejected. | https://support.tradovate.com/s/article/Tradovate-Order-Statuses?language=en_US | Needs LumiBot `apitest` probes (Tradovate demo/live) |
+| ProjectX | Futures | Order placement API returns `{ success, errorCode, errorMessage }`; docs do not specify “market closed” behavior or which codes represent it. | https://gateway.docs.projectx.com/docs/api-reference/order/order-place/ | Needs LumiBot `apitest` probes (ProjectX demo/live) |
+| Coinbase | Crypto | Market orders buy/sell at “market price”; stop orders trigger based on **last trade price**. | https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/guides/orders | Needs LumiBot `apitest` probes for execution-price conventions (bid/ask vs trade) |
+
 ### Alpaca (equities)
 
 Alpaca supports extended hours trading windows and documents explicit session times.
@@ -114,6 +125,29 @@ Backtesting implications:
 - “stop triggers outside RTH” can be a configurable property in live; backtesting must document what we assume.
 - futures gaps (maintenance/holiday) must be treated as “no fills until next actionable data”.
 
+### Tradovate (futures)
+
+Tradovate’s order status definitions explicitly call out orders placed outside of active trading hours.
+
+Link (public):
+- https://support.tradovate.com/s/article/Tradovate-Order-Statuses?language=en_US
+
+Backtesting implications:
+- Some orders can be accepted and remain non-working until the session is active (status: “Suspended”).
+- This supports a default backtesting stance of “accept-and-hold until data resumes” (still data-driven: no fill without OHLC/quotes).
+
+### ProjectX (futures)
+
+ProjectX publishes an API reference for placing and managing orders.
+
+Links (public):
+- https://gateway.docs.projectx.com/docs/api-reference/order/order-place/
+- https://gateway.docs.projectx.com/docs/category/orders/
+
+Backtesting implications:
+- The API surface is documented (order types, params), but market-closed/reject semantics are not clearly specified in the public reference.
+- We should treat this as “unknown until probed” and rely on data-driven backtesting rules in the meantime.
+
 ### Crypto (Coinbase; 24/7)
 
 Crypto markets are 24/7, but:
@@ -148,4 +182,3 @@ Maintain a small table in this doc (append-only) for each broker:
 - order type
 - expected behavior (accept/hold/reject; eligible-to-fill)
 - last verified date + environment (paper/live)
-
