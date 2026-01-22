@@ -88,23 +88,29 @@ def main() -> int:
 
     # Pull enough history for lookbacks (minute=100, day=20) + a bit of padding.
     minute_start = window_start - timedelta(hours=4)
-    day_start = window_start - timedelta(days=60)
+    # Futures daily bars are aligned to the `us_futures` session calendar (weekends/holidays), so
+    # requesting extra padding is reasonable.
+    futures_day_start = window_start - timedelta(days=90)
+    # Crypto daily bars are currently derived from intraday history; avoid warming enormous minute
+    # ranges by keeping padding small but sufficient for length=20.
+    crypto_day_start = window_start - timedelta(days=30)
 
     assets = [
         (fut_mes, "minute", minute_start, window_end),
         (fut_mnq, "minute", minute_start, window_end),
         (fut_mes, "15minute", minute_start, window_end),
-        (fut_mes, "day", day_start, window_end),
-        (fut_mnq, "day", day_start, window_end),
+        (fut_mes, "day", futures_day_start, window_end),
+        (fut_mnq, "day", futures_day_start, window_end),
         (btc, "minute", minute_start, window_end),
         (eth, "minute", minute_start, window_end),
         (sol, "minute", minute_start, window_end),
-        (btc, "day", day_start, window_end),
-        (eth, "day", day_start, window_end),
-        (sol, "day", day_start, window_end),
+        (btc, "day", crypto_day_start, window_end),
+        (eth, "day", crypto_day_start, window_end),
+        (sol, "day", crypto_day_start, window_end),
     ]
 
     for asset, timestep, start, end in assets:
+        print(f"WARM start asset={getattr(asset, 'symbol', asset)} type={getattr(asset, 'asset_type', '')} timestep={timestep}")
         df = ibkr_helper.get_price_data(
             asset=asset,
             quote=None,
@@ -117,6 +123,7 @@ def main() -> int:
         )
         if df is None or df.empty:
             raise RuntimeError(f"Failed to warm {asset} timestep={timestep}: empty dataframe")
+        print(f"WARM ok asset={getattr(asset, 'symbol', asset)} timestep={timestep} rows={len(df)}")
 
     print("IBKR speed burner warm: OK (parquet cache populated)")
     return 0
