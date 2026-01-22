@@ -2015,19 +2015,10 @@ class BacktestingBroker(Broker):
                     #
                     # Default (`-1`) includes the current bar while avoiding pulling far-future bars.
                     #
-                    # For IBKR futures parity vs DataBento baselines, we intentionally include one
-                    # additional bar (`-2`) and then select the *next* bar for execution (see
-                    # `should_use_next_bar` below). This mirrors the "submit at bar close -> execute
-                    # next bar" model used in our historical futures baselines.
-                    is_ibkr_futures = (
-                        data_source_name in {"INTERACTIVEBROKERSREST"}
-                        and str(getattr(order.asset, "asset_type", "") or "").lower() in {"future", "cont_future"}
-                        and str(timestep) != "day"
-                    )
-                    if is_ibkr_futures:
-                        timeshift = -2
-                    else:
-                        timeshift = 0 if str(timestep) == "day" else -1
+                    # NOTE (IBKR futures): we intentionally avoid the older "force next bar" behavior
+                    # here. Correctness is driven by data availability (no synthetic bars) and by
+                    # ensuring orders do not fill during gaps (handled below).
+                    timeshift = 0 if str(timestep) == "day" else -1
                     ohlc = self.data_source.get_historical_prices(
                         asset=asset,
                         length=2,
@@ -2279,30 +2270,29 @@ class BacktestingBroker(Broker):
                         and str(getattr(self.data_source, "_timestep", "minute")) != "day"
                     )
                     if should_use_next_bar:
-                        df_next = df_original[df_original.index > self.datetime]
-                        if len(df_next) == 0:
-                            df = df_original[df_original.index >= self.datetime]
-                        else:
-                            next_dt = df_next.index[0]
+                        # IMPORTANT (no synthetic bars / no fills in gaps):
+                        # IBKR historical bars can include real gaps (maintenance windows,
+                        # holiday early closes, weekend). If the backtest clock lands on a
+                        # timestamp with no bar, no fill is possible.
+                        #
+                        # We intentionally avoid the legacy "jump to next bar while keeping the
+                        # older timestamp" behavior. Orders remain working and become eligible to
+                        # fill once the clock reaches a bar timestamp.
+                        #
+                        # See: docs/BACKTESTING_SESSION_GAPS_AND_DATA_GAPS.md
+                        now_ts = pd.Timestamp(self.datetime)
+                        try:
+                            if getattr(df_original.index, "tz", None) is not None:
+                                if now_ts.tz is None:
+                                    now_ts = now_ts.tz_localize(df_original.index.tz)
+                                else:
+                                    now_ts = now_ts.tz_convert(df_original.index.tz)
+                        except Exception:
+                            pass
 
-                            # IMPORTANT (no synthetic bars / no fills in gaps):
-                            # IBKR historical bars can include real gaps (maintenance windows,
-                            # holiday early closes, weekend). If the backtest clock lands on a
-                            # timestamp with no bar, we must not "fill using the next bar" while
-                            # keeping the older timestamp. The order should remain working and
-                            # only be eligible to fill once the clock reaches a timestamp where
-                            # actionable data exists.
-                            #
-                            # See: docs/BACKTESTING_SESSION_GAPS_AND_DATA_GAPS.md
-                            on_bar_boundary = self.datetime in df_original.index
-
-                            if not on_bar_boundary:
-                                # No bar exists at the current timestamp -> no fill is possible.
-                                # Keep the order pending until the clock reaches `next_dt` (or
-                                # until it is cancelled by strategy logic / end-of-backtest).
-                                continue
-
-                            df = df_next
+                        if now_ts not in df_original.index:
+                            continue
+                        df = df_original[df_original.index >= now_ts]
                     else:
                         df = df_original[df_original.index >= self.datetime]
 

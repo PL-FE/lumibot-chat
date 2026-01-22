@@ -356,6 +356,22 @@ class InteractiveBrokersRESTBacktesting(PandasData):
                     include_after_hours=True,
                 )
                 self._fully_loaded_series.add(key)
+        elif asset_type == "crypto" and ts_unit == "minute":
+            # Crypto is 24/7 but IBKR history calls are still expensive. Intraday strategies can call
+            # `get_historical_prices()` tens of thousands of times; prefetch the full window once
+            # and then slice in-memory for warm-cache speed.
+            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), "minute")
+            if key not in self._fully_loaded_series:
+                self._update_pandas_data(
+                    asset_separated,
+                    quote_asset,
+                    "minute",
+                    start_dt=self.datetime_start,
+                    end_dt=self.datetime_end,
+                    exchange=exchange or self.exchange,
+                    include_after_hours=True,
+                )
+                self._fully_loaded_series.add(key)
         else:
             self._update_pandas_data(
                 asset_separated,
