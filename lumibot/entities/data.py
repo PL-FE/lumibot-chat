@@ -852,6 +852,62 @@ class Data:
         if timestep != "minute" and timestep != "day":
             raise ValueError(f"Only minute and day are supported for timestep. You provided: {timestep}")
 
+        # Fast-path: when the underlying dataset is already in the requested multi-minute cadence
+        # (e.g., IBKR-native "15min" bars loaded into a minute-based Data object), avoid building
+        # a minute-level window and resampling on every call. Slice the native series directly.
+        #
+        # This is a key component of "prefetch once → slice forever" speed: a strategy that requests
+        # 15-minute history every iteration should not pay a resample cost every time.
+        native_qty = getattr(self, "_native_timestep_quantity", 1)
+        native_unit = str(getattr(self, "_native_timestep_unit", "") or "").strip().lower()
+        if (
+            timestep == "minute"
+            and self.timestep == "minute"
+            and int(quantity) > 1
+            and self._index_is_unique
+            and int(native_qty) == int(quantity)
+            and native_unit == "minute"
+        ):
+            try:
+                iter_count = self.get_iter_count(dt)
+                if pd.isna(iter_count):
+                    iter_count = 0
+            except Exception:
+                iter_count = self.get_iter_count(dt)
+
+            if isinstance(timeshift, datetime.timedelta):
+                timeshift = int(timeshift.total_seconds() / 60)
+
+            end_row = int(iter_count) - int(timeshift or 0)
+            data_len = len(self.df.index)
+            end_row = max(0, min(end_row, data_len))
+            start_row = max(0, end_row - int(num_periods))
+            if start_row > end_row:
+                start_row = end_row
+            if start_row == end_row and end_row > 0:
+                start_row = max(0, end_row - 1)
+
+            df = self.df.iloc[start_row:end_row]
+            if df is None or df.empty:
+                return None
+
+            cols = ["open", "high", "low", "close", "volume"]
+            if "dividend" in df.columns:
+                cols.append("dividend")
+            cols = [c for c in cols if c in df.columns]
+            df = df[cols]
+
+            if "volume" in df.columns:
+                df["volume"] = df["volume"].fillna(0)
+            if "dividend" in df.columns:
+                df["dividend"] = df["dividend"].fillna(0)
+
+            required = [c for c in ("open", "high", "low", "close") if c in df.columns]
+            if required:
+                df = df.dropna(subset=required)
+
+            return df.tail(n=int(num_periods))
+
         agg_column_map = {
             "open": "first",
             "high": "max",

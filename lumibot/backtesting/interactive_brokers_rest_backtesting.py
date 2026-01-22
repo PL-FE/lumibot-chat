@@ -8,6 +8,7 @@ import pandas as pd
 from lumibot.data_sources import PandasData
 from lumibot.entities import Asset, Data
 import lumibot.tools.ibkr_helper as ibkr_helper
+from lumibot.tools.helpers import parse_timestep_qty_and_unit
 from lumibot.tools.thetadata_queue_client import set_queue_client_id
 
 logger = logging.getLogger(__name__)
@@ -55,11 +56,26 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         # forward-filling the last available price for the rest of the run.
         self._fully_loaded_series: set[tuple] = set()
 
-    def _build_dataset_keys(self, asset: Asset, quote: Optional[Asset], ts_unit: str) -> tuple[tuple, tuple]:
+    def _build_dataset_keys(self, asset: Asset, quote: Optional[Asset], dataset_key: str) -> tuple[tuple, tuple]:
         quote_asset = quote if quote is not None else Asset("USD", "forex")
-        canonical_key = (asset, quote_asset, ts_unit)
+        canonical_key = (asset, quote_asset, dataset_key)
         legacy_key = (asset, quote_asset)
         return canonical_key, legacy_key
+
+    @staticmethod
+    def _normalize_timestep_key(timestep: str) -> str:
+        """Normalize a user-facing timestep into a stable series key.
+
+        - Preserves multi-minute multipliers (e.g., "15min" -> "15minute") so cached datasets do
+          not collide with "minute".
+        - Keeps the `Data.timestep` base unit as "minute"/"day" for compatibility.
+        """
+        qty, unit = parse_timestep_qty_and_unit(timestep)
+        qty = int(qty)
+        unit = str(unit)
+        if qty == 1:
+            return unit
+        return f"{qty}{unit}"
 
     @staticmethod
     def _previous_us_futures_session_open(dt_value: datetime) -> Optional[datetime]:
@@ -232,21 +248,21 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         self,
         asset: Asset,
         quote: Optional[Asset],
-        timestep: str,
+        dataset_key: str,
         start_dt: datetime,
         end_dt: datetime,
         *,
         exchange: Optional[str],
         include_after_hours: bool,
     ) -> None:
-        canonical_key, legacy_key = self._build_dataset_keys(asset, quote, timestep)
+        canonical_key, legacy_key = self._build_dataset_keys(asset, quote, dataset_key)
         existing = self._data_store.get(canonical_key)
         existing_df = getattr(existing, "df", None) if existing is not None else None
 
         df = ibkr_helper.get_price_data(
             asset=asset,
             quote=quote,
-            timestep=timestep,
+            timestep=dataset_key,
             start_dt=start_dt,
             end_dt=end_dt,
             exchange=exchange,
@@ -263,7 +279,15 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         else:
             merged = df
 
-        data = Data(asset, merged, timestep=timestep, quote=quote)
+        # `Data` supports only base units ("minute"/"day"). Store multi-minute datasets under a
+        # separate key (e.g., "15minute") and annotate the instance so it can fast-path slices
+        # without resampling on every call.
+        qty, unit = parse_timestep_qty_and_unit(dataset_key)
+        unit = str(unit)
+        data_timestep = unit if unit in {"minute", "day"} else "minute"
+        data = Data(asset, merged, timestep=data_timestep, quote=quote)
+        data._native_timestep_quantity = int(qty)  # type: ignore[attr-defined]
+        data._native_timestep_unit = unit  # type: ignore[attr-defined]
         # CRITICAL: Pandas backtesting expects each Data object to have `iter_index`/datalines
         # built so prices advance as the backtest clock advances. Normally this is done via
         # PandasData.load_data() -> Data.repair_times_and_fill(...), but IBKR loads data lazily.
@@ -283,7 +307,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             pass
         self._data_store[canonical_key] = data
         # Only write the legacy key for minute data to avoid collisions with daily bars.
-        if timestep == "minute":
+        if dataset_key == "minute":
             self._data_store[legacy_key] = data
 
     def _pull_source_symbol_bars(
@@ -306,6 +330,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         if timestep is None:
             timestep = self.get_timestep()
 
+        dataset_key = self._normalize_timestep_key(timestep)
         end_dt = self.get_datetime()
         # IBKR crypto/futures trade outside equity calendars; do not add the default 5-day padding.
         start_dt, ts_unit = self.get_start_datetime_and_ts_unit(
@@ -321,7 +346,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             #
             # Fix: on first access, prefetch the full backtest window for the series and reuse it.
             quote_key = quote_asset if quote_asset is not None else Asset("USD", "forex")
-            key = (asset_separated, quote_key, ts_unit)
+            key = (asset_separated, quote_key, dataset_key)
             if key not in self._fully_loaded_series:
                 prev_open = self._previous_us_futures_session_open(self.datetime_start)
                 if prev_open is not None:
@@ -332,7 +357,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
                 self._update_pandas_data(
                     asset_separated,
                     quote_asset,
-                    ts_unit,
+                    dataset_key,
                     start_dt=prefetch_start,
                     end_dt=prefetch_end,
                     exchange=exchange or self.exchange,
@@ -342,14 +367,14 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         elif asset_type == "crypto" and ts_unit == "day":
             # Prefetch daily series for the full backtest window on first access so we do not
             # hammer the downloader once per simulated day.
-            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), "day")
+            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), dataset_key)
             if key not in self._fully_loaded_series:
                 prefetch_start = min(start_dt, self.datetime_start - timedelta(days=max(7, int(length) + 5)))
                 prefetch_end = self.datetime_end
                 self._update_pandas_data(
                     asset_separated,
                     quote_asset,
-                    "day",
+                    dataset_key,
                     start_dt=prefetch_start,
                     end_dt=prefetch_end,
                     exchange=exchange or self.exchange,
@@ -360,12 +385,12 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             # Crypto is 24/7 but IBKR history calls are still expensive. Intraday strategies can call
             # `get_historical_prices()` tens of thousands of times; prefetch the full window once
             # and then slice in-memory for warm-cache speed.
-            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), "minute")
+            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), dataset_key)
             if key not in self._fully_loaded_series:
                 self._update_pandas_data(
                     asset_separated,
                     quote_asset,
-                    "minute",
+                    dataset_key,
                     start_dt=self.datetime_start,
                     end_dt=self.datetime_end,
                     exchange=exchange or self.exchange,
@@ -376,7 +401,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             self._update_pandas_data(
                 asset_separated,
                 quote_asset,
-                ts_unit,
+                dataset_key,
                 start_dt=start_dt,
                 end_dt=end_dt,
                 exchange=exchange or self.exchange,
@@ -406,10 +431,11 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         if start_date is None or end_date is None:
             return None
 
+        dataset_key = self._normalize_timestep_key(timestep)
         self._update_pandas_data(
             asset_separated,
             quote_asset,
-            timestep,
+            dataset_key,
             start_dt=start_date,
             end_dt=end_date,
             exchange=exchange or self.exchange,

@@ -88,14 +88,29 @@ def _day_df(index: pd.DatetimeIndex, start_price: float) -> pd.DataFrame:
     )
 
 
+def _multi_minute_df(source: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    return (
+        source.resample(f"{minutes}min")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+
+
 def test_ibkr_speed_burner_prefetches_once_and_slices_forever(monkeypatch):
     import lumibot.tools.ibkr_helper as ibkr_helper
+
+    # SAFETY: avoid printing private downloader hostnames/API keys from local `.env` in unit test logs.
+    monkeypatch.setenv("DATADOWNLOADER_BASE_URL", "http://localhost:8080")
+    monkeypatch.setenv("DATADOWNLOADER_API_KEY", "<redacted>")
+    monkeypatch.setenv("LUMIBOT_DISABLE_DOTENV", "true")
+    monkeypatch.setenv("IS_BACKTESTING", "true")
+    monkeypatch.setenv("BACKTESTING_QUIET_LOGS", "true")
 
     # 2–3 symbols each (user requirement); keep the dataset small enough for unit tests but
     # large enough to catch per-iteration refetching.
     tz = "America/New_York"
     minute_index = pd.date_range("2025-12-08 09:30", periods=600, freq="1min", tz=tz)  # 10 hours
-    day_index = pd.date_range("2025-12-01 00:00", periods=40, freq="1D", tz=tz)
+    day_index = pd.date_range("2025-09-01 00:00", periods=200, freq="1D", tz=tz)
 
     fut_mes = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
     fut_mnq = Asset("MNQ", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=2)
@@ -116,6 +131,9 @@ def test_ibkr_speed_burner_prefetches_once_and_slices_forever(monkeypatch):
         ("SOL", "minute"): _minute_df(minute_index, 100.0),
         ("SOL", "day"): _day_df(day_index, 95.0),
     }
+    # Multi-minute dataset: the IBKR layer should fetch native multi-minute bars when requested,
+    # and we should cache them separately from 1-minute bars.
+    datasets[("MES", "15minute")] = _multi_minute_df(datasets[("MES", "minute")], 15)
 
     calls: dict[tuple[str, str], int] = {}
 
@@ -168,6 +186,7 @@ def test_ibkr_speed_burner_prefetches_once_and_slices_forever(monkeypatch):
     bars_15m = futures.get_historical_prices(fut_mes, length=10, timestep="15min")
     assert bars_15m is not None
     assert len(bars_15m.df) == 10
+    assert (bars_15m.df.index[1] - bars_15m.df.index[0]) == pd.Timedelta(minutes=15)
 
     # Run a few hundred iterations of each loop. This is a correctness/speed-structure test:
     # it should not refetch the same series per iteration.

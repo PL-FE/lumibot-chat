@@ -12,6 +12,7 @@ bench_ibkr_speed_burner_stubbed.py
 
 import os
 import sys
+import logging
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -32,7 +33,11 @@ def _lock_down_env() -> None:
     os.environ["DATADOWNLOADER_API_KEY"] = "<redacted>"
     os.environ.setdefault("DATADOWNLOADER_API_KEY_HEADER", "X-Downloader-Key")
 
+    # Avoid recursive `.env` discovery (latency + accidental secrets loading) during benchmarks.
+    os.environ.setdefault("LUMIBOT_DISABLE_DOTENV", "true")
+
     # Reduce logging noise for benchmarks.
+    os.environ.setdefault("IS_BACKTESTING", "true")
     os.environ.setdefault("BACKTESTING_QUIET_LOGS", "true")
     os.environ.setdefault("BACKTESTING_LOG_ITERATION_HEARTBEAT", "false")
     os.environ.setdefault("BACKTESTING_CAPTURE_LOCALS", "false")
@@ -54,9 +59,22 @@ def _day_df(index: pd.DatetimeIndex, start_price: float) -> pd.DataFrame:
     )
 
 
+def _multi_minute_df(source: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    return (
+        source.resample(f"{minutes}min")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+
+
 def main() -> int:
     _lock_down_env()
     _force_source_tree_imports()
+
+    # Keep benchmark output readable. LumiBot logging is designed for interactive runs, but in
+    # microbenchmarks the per-order INFO logs dominate stdout and can skew timing.
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger("lumibot").setLevel(logging.WARNING)
 
     from lumibot.backtesting import BacktestingBroker
     from lumibot.backtesting.interactive_brokers_rest_backtesting import InteractiveBrokersRESTBacktesting
@@ -108,7 +126,8 @@ def main() -> int:
 
     tz = "America/New_York"
     minute_index = pd.date_range("2025-12-08 09:30", periods=600, freq="1min", tz=tz)
-    day_index = pd.date_range("2025-12-01 00:00", periods=40, freq="1D", tz=tz)
+    # Provide enough daily history for `length=20` at the chosen intraday timestamps.
+    day_index = pd.date_range("2025-09-01 00:00", periods=200, freq="1D", tz=tz)
 
     fut_mes = Asset("MES", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=5)
     fut_mnq = Asset("MNQ", asset_type=Asset.AssetType.FUTURE, expiration=date(2025, 12, 19), multiplier=2)
@@ -128,6 +147,7 @@ def main() -> int:
         ("SOL", "minute"): _minute_df(minute_index, 100.0),
         ("SOL", "day"): _day_df(day_index, 95.0),
     }
+    datasets[("MES", "15minute")] = _multi_minute_df(datasets[("MES", "minute")], 15)
 
     calls: dict[tuple[str, str], int] = {}
 

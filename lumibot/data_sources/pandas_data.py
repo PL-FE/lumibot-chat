@@ -351,10 +351,12 @@ class PandasData(DataSourceBacktesting):
 
     def find_asset_in_data_store(self, asset, quote=None, timestep=None):
         requested_unit = None
+        normalized_key = None
         if timestep is not None:
             try:
-                _, requested_unit = parse_timestep_qty_and_unit(str(timestep))
+                qty, requested_unit = parse_timestep_qty_and_unit(str(timestep))
             except Exception:
+                qty, requested_unit = 1, str(timestep)
                 requested_unit = str(timestep)
             requested_unit = (requested_unit or "").strip().lower()
             if requested_unit in {"m", "min", "mins"}:
@@ -365,6 +367,16 @@ class PandasData(DataSourceBacktesting):
                 requested_unit = "hour"
             elif requested_unit in {"d", "day", "days"}:
                 requested_unit = "day"
+
+            # Normalize timestep key so "15min" can match cached datasets stored as "15minute".
+            try:
+                qty = int(qty)
+            except Exception:
+                qty = 1
+            if requested_unit and requested_unit in {"minute", "hour", "day"}:
+                normalized_key = requested_unit if qty == 1 else f"{qty}{requested_unit}"
+            else:
+                normalized_key = str(timestep)
 
         def _accepts_timestep(data_obj) -> bool:
             if requested_unit is None:
@@ -383,8 +395,12 @@ class PandasData(DataSourceBacktesting):
         if timestep is not None:
             base_quote = quote if quote is not None else Asset("USD", "forex")
             candidates.append((asset, base_quote, timestep))
+            if normalized_key is not None and str(normalized_key) != str(timestep):
+                candidates.append((asset, base_quote, normalized_key))
             if quote is not None:
                 candidates.append((asset, Asset("USD", "forex"), timestep))
+                if normalized_key is not None and str(normalized_key) != str(timestep):
+                    candidates.append((asset, Asset("USD", "forex"), normalized_key))
 
         if quote is not None:
             candidates.append((asset, quote))
