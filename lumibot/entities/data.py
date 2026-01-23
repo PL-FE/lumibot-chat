@@ -536,6 +536,7 @@ class Data:
         # Reset the per-series cursor used by `get_iter_count()` (safe; backtests are single-threaded).
         self._iter_count_cursor_ns = None
         self._iter_count_cursor_i = 0
+        self._iter_count_last_dt_key = None
 
         # Populate the datalines dictionary (assuming to_datalines is defined elsewhere).
         self.datalines = dict()
@@ -612,9 +613,17 @@ class Data:
         # datetime keys leads to misses and forces an expensive `asof()` fallback.
         dt_key = dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt
 
+        # PERF: repeated calls in the same iteration commonly ask for the same `(data, dt)`.
+        # Short-circuit before any dict membership/search work.
+        last_dt_key = getattr(self, "_iter_count_last_dt_key", None)
+        if last_dt_key == dt_key:
+            cursor_i = getattr(self, "_iter_count_cursor_i", None)
+            if cursor_i is not None:
+                return int(cursor_i)
+
         # Fast-path: exact bar timestamp lookup.
-        if dt_key in self.iter_index_dict:
-            i = self.iter_index_dict[dt_key]
+        i = self.iter_index_dict.get(dt_key)
+        if i is not None:
             index_ns = getattr(self, "_index_values_ns", None)
             if index_ns is not None:
                 try:
@@ -623,6 +632,7 @@ class Data:
                 except Exception:
                     self._iter_count_cursor_ns = None
             self._iter_count_cursor_i = int(i)
+            self._iter_count_last_dt_key = dt_key
             return i
 
         # Fast-path: monotonic cursor (common in backtests where dt advances by 1 bar).
@@ -643,18 +653,21 @@ class Data:
                         i += 1
                     self._iter_count_cursor_ns = dt_ns
                     self._iter_count_cursor_i = i
+                    self._iter_count_last_dt_key = dt_key
                     return i
 
                 # Fallback: binary search on the integer index.
                 i = int(np.searchsorted(index_ns, dt_ns, side="right")) - 1
                 self._iter_count_cursor_ns = dt_ns
                 self._iter_count_cursor_i = i
+                self._iter_count_last_dt_key = dt_key
                 return i
 
         # Fallback: pandas searchsorted (kept for safety when the fast-path index is unavailable).
         i = int(self.df.index.searchsorted(dt_key, side="right")) - 1
         self._iter_count_cursor_ns = None
         self._iter_count_cursor_i = int(i)
+        self._iter_count_last_dt_key = dt_key
         return i
 
     def check_data(func):
