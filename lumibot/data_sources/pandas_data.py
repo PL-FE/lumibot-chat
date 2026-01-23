@@ -35,6 +35,9 @@ class PandasData(DataSourceBacktesting):
         self._date_index = None
         self._date_supply = None
         self._timestep = "minute"
+        # PERF: `find_asset_in_data_store()` is called in tight loops (quotes + history). Cache the
+        # resolved key for repeated `(asset, quote, timestep)` lookups within a backtest run.
+        self._find_asset_in_data_store_cache = {}
 
     @staticmethod
     def _set_pandas_data_keys(pandas_data):
@@ -72,6 +75,8 @@ class PandasData(DataSourceBacktesting):
     def load_data(self):
         self._data_store = self.pandas_data
         self._date_index = self.update_date_index()
+        # Invalidate lookup cache whenever we reload/replace the underlying data store.
+        self._find_asset_in_data_store_cache.clear()
 
         if len(self._data_store.values()) > 0:
             self._timestep = list(self._data_store.values())[0].timestep
@@ -350,6 +355,16 @@ class PandasData(DataSourceBacktesting):
         return result
 
     def find_asset_in_data_store(self, asset, quote=None, timestep=None):
+        # PERF: Avoid rebuilding candidate lists and repeatedly probing `_data_store` when the same
+        # `(asset, quote, timestep)` is requested every iteration (common in backtests).
+        try:
+            cache_key = (asset, quote, timestep)
+            cached = self._find_asset_in_data_store_cache.get(cache_key)
+            if cached is not None or cache_key in self._find_asset_in_data_store_cache:
+                return cached
+        except Exception:
+            cache_key = None
+
         requested_unit = None
         normalized_key = None
         if timestep is not None:
@@ -416,7 +431,11 @@ class PandasData(DataSourceBacktesting):
                 if data_obj is None:
                     continue
                 if _accepts_timestep(data_obj):
+                    if cache_key is not None:
+                        self._find_asset_in_data_store_cache[cache_key] = key
                     return key
+        if cache_key is not None:
+            self._find_asset_in_data_store_cache[cache_key] = None
         return None
 
     def _pull_source_symbol_bars(
