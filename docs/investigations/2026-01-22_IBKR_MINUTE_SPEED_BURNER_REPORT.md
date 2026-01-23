@@ -110,6 +110,7 @@ Environment (protocol baseline):
 | 2026-01-23 | Speed up Order side/type checks (commit `aa341282`) | 0.458 | 0.690 | median of 3; warm-cache; `--iterations 2000`; no profiler; uses identity comparisons in hot `Order` helpers |
 | 2026-01-23 | Avoid `DataFrame.empty` in `Data.get_bars()` (commit `3a264c0e`) | 0.450 | 0.671 | median of 3; warm-cache; `--iterations 2000`; no profiler; removes expensive `DataFrame.empty` checks in tight loops |
 | 2026-01-23 | Cache `Bars` `df.columns` flags (commit `00c96d43`) | 0.439 | 0.653 | median of 3; warm-cache; `--iterations 2000`; no profiler; removes repeated `Index.__contains__` probes in `Bars.__init__` |
+| 2026-01-23 | Use identity checks for remaining `OrderClass` comparisons (commit `e5102b68`) | 0.418 | 0.622 | median of 3; warm-cache; `--iterations 2000`; no profiler; speed change within noise, but reduces enum comparison overhead |
 
 ### Long-run sanity (iterations scaling)
 
@@ -148,6 +149,7 @@ This table uses a longer loop length to catch that early:
 | 2026-01-23 | Speed up Order side/type checks (commit `aa341282`) | 20000 | 2.253 | 1.947 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.200s (~15.0× vs 62.911s baseline) |
 | 2026-01-23 | Avoid `DataFrame.empty` in `Data.get_bars()` (commit `3a264c0e`) | 20000 | 2.152 | 1.842 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.991s (~15.8× vs 62.911s baseline) |
 | 2026-01-23 | Cache `Bars` `df.columns` flags (commit `00c96d43`) | 20000 | 2.077 | 1.718 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.795s (~16.6× vs 62.911s baseline) |
+| 2026-01-23 | Use identity checks for remaining `OrderClass` comparisons (commit `e5102b68`) | 20000 | 2.052 | 1.748 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.800s (~16.6× vs 62.911s baseline) |
 
 ---
 

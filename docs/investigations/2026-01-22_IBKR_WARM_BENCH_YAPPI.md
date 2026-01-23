@@ -395,3 +395,24 @@ Capture:
 
 Key delta:
 - `Index.__contains__` disappears from the profile (0 calls), since `Bars.__init__` now caches column presence flags per `df.columns` object.
+
+### 2026-01-23 — Use identity checks for remaining `OrderClass` comparisons (commit `e5102b68`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_e5102b68_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~89%
+- `pandas_numpy`: ~5%
+- `stdlib_wait`: ~3%
+- `other`: ~2%
+- `progress_logging`: ~1%
+
+Key delta:
+- No major shift in bucket breakdown (this is a micro-cut).
+- Top self-time hotspots remain dominated by the order/event pipeline and per-call history/bar access:
+  - `Order.__init__`
+  - `BacktestingBroker._process_trade_event`
+  - `Data.get_bars` / `Data.get_iter_count`
+  - `BacktestingBroker.process_pending_orders` / `_execute_filled_order`
+  - `Bars.__init__`
