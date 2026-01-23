@@ -357,10 +357,17 @@ class PandasData(DataSourceBacktesting):
     def find_asset_in_data_store(self, asset, quote=None, timestep=None):
         # PERF: Avoid rebuilding candidate lists and repeatedly probing `_data_store` when the same
         # `(asset, quote, timestep)` is requested every iteration (common in backtests).
+        #
+        # IMPORTANT: Do not treat a cached `None` as authoritative.
+        #
+        # Some backtesting data sources (notably ThetaDataBacktestingPandas) *mutate* `_data_store`
+        # during the run by fetching/warming new datasets on-demand. If we cache "misses" (None),
+        # a lookup performed *before* the dataset is fetched will poison all future lookups for that
+        # `(asset, quote, timestep)` and make the freshly loaded data unreachable.
         try:
             cache_key = (asset, quote, timestep)
             cached = self._find_asset_in_data_store_cache.get(cache_key)
-            if cached is not None or cache_key in self._find_asset_in_data_store_cache:
+            if cached is not None:
                 return cached
         except Exception:
             cache_key = None
@@ -434,8 +441,6 @@ class PandasData(DataSourceBacktesting):
                     if cache_key is not None:
                         self._find_asset_in_data_store_cache[cache_key] = key
                     return key
-        if cache_key is not None:
-            self._find_asset_in_data_store_cache[cache_key] = None
         return None
 
     def _pull_source_symbol_bars(

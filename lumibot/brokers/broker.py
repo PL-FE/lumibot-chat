@@ -2219,9 +2219,13 @@ class Broker(ABC):
             else:
                 self.logger.warning(f"Unknown trade event type: {type_event}")
 
-        # PERF: backtesting data sources store the current dt on `_datetime`. Avoid the extra
-        # method call overhead in the hot-path trade-event logger.
-        current_dt = self.data_source._datetime if is_backtesting else self.data_source.get_datetime()
+        # PERF: backtesting data sources often store the current dt on `_datetime`. Avoid the extra
+        # method call overhead in the hot-path trade-event logger, but fall back to `get_datetime()`
+        # for stubbed sources used in unit tests.
+        if is_backtesting:
+            current_dt = getattr(self.data_source, "_datetime", None) or self.data_source.get_datetime()
+        else:
+            current_dt = self.data_source.get_datetime()
         # Cache the audit-enabled flag when available (BacktestingBroker sets this in __init__).
         audit_enabled = getattr(self, "_backtest_audit_enabled", None)
         if audit_enabled is None:
