@@ -731,7 +731,14 @@ class BacktestingBroker(Broker):
 
         return orders
 
-    def _cancel_open_orders_for_asset(self, strategy_name: str, asset: Asset, exclude_identifiers: set | None = None):
+    def _cancel_open_orders_for_asset(
+        self,
+        strategy_name: str,
+        asset: Asset,
+        exclude_identifiers: set | None = None,
+        *,
+        cancel_sides: set | None = None,
+    ):
         """Cancel any still-active orders for the given asset in backtesting.
 
         When a position is force-closed (manual exit or cash settlement) we need to ensure any
@@ -776,6 +783,16 @@ class BacktestingBroker(Broker):
             for child in getattr(tracked_order, "child_orders", []) or []:
                 child_order_identifiers.add(child.identifier)
 
+        def _matches_cancel_sides(order: Order) -> bool:
+            if cancel_sides is None:
+                return True
+            if getattr(order, "side", None) in cancel_sides:
+                return True
+            for child in getattr(order, "child_orders", []) or []:
+                if _matches_cancel_sides(child):
+                    return True
+            return False
+
         for tracked_order in open_orders:
             if tracked_order.identifier in exclude_identifiers:
                 continue
@@ -785,6 +802,8 @@ class BacktestingBroker(Broker):
             if tracked_order.identifier in child_order_identifiers:
                 continue
             if tracked_order.asset != asset:
+                continue
+            if not _matches_cancel_sides(tracked_order):
                 continue
             if in_stream_thread:
                 _cancel_inline(tracked_order)
@@ -823,6 +842,27 @@ class BacktestingBroker(Broker):
             if position.quantity == 0:
                 logger.info(f"Position {position} liquidated")
                 self._filled_positions.remove(position)
+                # If the position is flat after this fill, ensure any remaining close-only orders
+                # (stops/trailing stops/limits) do not continue to trade against a zero position.
+                #
+                # WHY: Some strategies (including example strategies) submit multiple exit orders
+                # without explicitly wrapping them in a BRACKET/OCO. In broker reality, "SELL"
+                # is treated as closing a long position unless the user explicitly requests a short
+                # side (SELL_SHORT / SELL_TO_OPEN). When a long position is liquidated, remaining
+                # close-only SELL orders should be canceled rather than opening an unintended short.
+                cancel_sides = None
+                if getattr(order, "side", None) in {Order.OrderSide.SELL, Order.OrderSide.SELL_TO_CLOSE}:
+                    cancel_sides = {Order.OrderSide.SELL, Order.OrderSide.SELL_TO_CLOSE}
+                elif getattr(order, "side", None) in {Order.OrderSide.BUY_TO_COVER, Order.OrderSide.BUY_TO_CLOSE}:
+                    cancel_sides = {Order.OrderSide.BUY_TO_COVER, Order.OrderSide.BUY_TO_CLOSE}
+
+                if cancel_sides is not None:
+                    self._cancel_open_orders_for_asset(
+                        order.strategy,
+                        order.asset,
+                        {order.identifier},
+                        cancel_sides=cancel_sides,
+                    )
         else:
             self._filled_positions.append(position)  # New position, add it to the tracker
 
