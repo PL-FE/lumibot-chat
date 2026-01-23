@@ -2,7 +2,7 @@
 
 YAPPI profiling notes for the IBKR warm-run minute-level speed burner (futures + crypto).
 
-**Last Updated:** 2026-01-22  
+**Last Updated:** 2026-01-23  
 **Status:** Active  
 **Audience:** Developers, AI Agents  
 
@@ -112,4 +112,25 @@ Key delta:
 - pandas share drops substantially, and the dominant hotspots shift toward LumiBot-side overhead:
   - `Bars.__init__`
   - `BacktestingBroker._process_trade_event`
+  - `PandasData.find_asset_in_data_store`
+
+### 2026-01-23 — Precompute derived `return` once + skip per-slice Bars inserts
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_returns_precompute_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~58%
+- `pandas_numpy`: ~28%
+- `other`: ~9%
+- `stdlib_wait`: ~4%
+- `progress_logging`: ~1%
+
+Key delta:
+- `Bars.__init__` and pandas `__setitem__/BlockManager.insert` no longer show up as dominant hotspots because
+  `return` is precomputed once per dataset (in `Data.repair_times_and_fill`) and `Bars` skips derived-column work
+  when those columns are already present.
+- Remaining inclusive hotspots are now mostly LumiBot-side broker/order pipeline and data-source lookup:
+  - `BacktestingBroker._submit_order` / `process_pending_orders`
+  - `InteractiveBrokersRESTBacktesting.get_quote`
   - `PandasData.find_asset_in_data_store`

@@ -2,7 +2,7 @@
 
 > Rolling speed report for the IBKR minute-level “speed burner” benchmarks (futures + crypto). This is the paper trail for “10×–100× faster”.
 
-**Last Updated:** 2026-01-22
+**Last Updated:** 2026-01-23
 **Status:** Active
 **Audience:** Developers, AI Agents
 
@@ -91,6 +91,7 @@ Environment (protocol baseline):
 | 2026-01-22 | Prefetch once → slice forever | TBD | TBD | Eliminates refetch/window thrash |
 | 2026-01-22 | DataFrame slice fast-path | TBD | TBD | Avoid per-call DataFrame rebuild |
 | 2026-01-22 | Skip per-slice dropna/fillna + faster Bars derived cols | 3.797 | 5.305 | `Data.get_bars()` avoids redundant `dropna()`/`fillna()` when the dataset is already complete; `Bars` uses NumPy for derived columns |
+| 2026-01-23 | Precompute derived `return` once + skip per-slice Bars inserts (commit `2c61dfbb`) | 1.541 | 2.338 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 
 ### Long-run sanity (iterations scaling)
 
@@ -110,6 +111,7 @@ This table uses a longer loop length to catch that early:
 | 2026-01-22 | Same (scaling check) | 20000 | 26.296 | 34.779 | `python3 scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 20000` |
 | 2026-01-22 | Re-measure (commit `804d13eb`) | 2000 | 3.895 | 5.861 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 2000` (`LUMIBOT_DISABLE_DOTENV=1`) |
 | 2026-01-22 | Re-measure (commit `804d13eb`) | 20000 | 28.940 | 37.817 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 20000` (`LUMIBOT_DISABLE_DOTENV=1`) |
+| 2026-01-23 | Precompute derived `return` once + skip per-slice Bars inserts (commit `2c61dfbb`) | 20000 | 7.811 | 7.197 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 
 ---
 
