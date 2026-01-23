@@ -931,10 +931,12 @@ class BacktestingBroker(Broker):
         # Optional audit trail (submission-time context).
         #
         # Invariant: audit collection must never break backtests; any errors must be swallowed.
-        try:
-            self._audit_merge(order, self._audit_submit_fields(order), overwrite=False)
-        except Exception:
-            pass
+        audit_enabled = self._audit_enabled()
+        if audit_enabled:
+            try:
+                self._audit_merge(order, self._audit_submit_fields(order), overwrite=False)
+            except Exception:
+                pass
 
         # Submit regular and Bracket/OTO orders now.
         # OCO orders have no parent orders, so do not submit this "main" order. The children of an OCO will be
@@ -960,10 +962,11 @@ class BacktestingBroker(Broker):
             for child in order.child_orders:
                 # Ensure OCO child orders get the same submission-time audit context (and do not
                 # rely solely on the parent placeholder).
-                try:
-                    self._audit_merge(child, self._audit_submit_fields(child), overwrite=False)
-                except Exception:
-                    pass
+                if audit_enabled:
+                    try:
+                        self._audit_merge(child, self._audit_submit_fields(child), overwrite=False)
+                    except Exception:
+                        pass
 
                 child.parent_identifier = order.identifier
                 child.update_raw(child)
