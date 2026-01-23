@@ -1507,7 +1507,14 @@ class BacktestingBroker(Broker):
 
     def calculate_trade_cost(self, order: Order, strategy, price: float):
         """Calculate the trade cost of an order for a given strategy"""
-        trade_cost = 0
+        # PERF: Trade fees are frequently empty in backtests/benchmarks. Avoid per-fill string
+        # normalization and Decimal math when there are no configured fees.
+        buy_fees = getattr(strategy, "buy_trading_fees", None) or []
+        sell_fees = getattr(strategy, "sell_trading_fees", None) or []
+        if not buy_fees and not sell_fees:
+            return Decimal("0")
+
+        trade_cost = Decimal("0")
         trading_fees = []
         side_value = str(order.side).lower() if order.side is not None else ""
         order_type_attr = getattr(order, "order_type", None)
@@ -1516,9 +1523,9 @@ class BacktestingBroker(Broker):
         else:
             order_type_value = str(order_type_attr).lower() if order_type_attr is not None else ""
         if side_value in ("buy", "buy_to_open", "buy_to_cover"):
-            trading_fees = strategy.buy_trading_fees
+            trading_fees = buy_fees
         elif side_value in ("sell", "sell_to_close", "sell_short", "sell_to_open"):
-            trading_fees = strategy.sell_trading_fees
+            trading_fees = sell_fees
 
         for trading_fee in trading_fees:
             if trading_fee.taker is True and order_type_value in {"market", "stop"}:

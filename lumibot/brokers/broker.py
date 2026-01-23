@@ -1926,6 +1926,16 @@ class Broker(ABC):
         payload = dict(order=order)
         subscriber = self._get_subscriber(order.strategy)
         if subscriber:
+            # PERF: Many strategies do not override `Strategy.on_new_order()` (base impl is `pass`).
+            # Avoid enqueueing/processing a no-op event in high-churn backtests.
+            try:
+                strategy_obj = getattr(subscriber, "strategy", None)
+                handler = getattr(strategy_obj, "on_new_order", None)
+                func = getattr(handler, "__func__", handler)
+                if getattr(func, "__qualname__", "") == "Strategy.on_new_order":
+                    return
+            except Exception:
+                pass
             subscriber.add_event(subscriber.NEW_ORDER, payload)
 
     def _on_canceled_order(self, order):
@@ -1938,6 +1948,16 @@ class Broker(ABC):
         payload = dict(order=order)
         subscriber = self._get_subscriber(order.strategy)
         if subscriber:
+            # PERF: Many strategies do not override `Strategy.on_canceled_order()` (base impl is `pass`).
+            # Avoid enqueueing/processing a no-op event in high-churn backtests.
+            try:
+                strategy_obj = getattr(subscriber, "strategy", None)
+                handler = getattr(strategy_obj, "on_canceled_order", None)
+                func = getattr(handler, "__func__", handler)
+                if getattr(func, "__qualname__", "") == "Strategy.on_canceled_order":
+                    return
+            except Exception:
+                pass
             subscriber.add_event(subscriber.CANCELED_ORDER, payload)
 
     def _on_partially_filled_order(self, position, order, price, quantity, multiplier):

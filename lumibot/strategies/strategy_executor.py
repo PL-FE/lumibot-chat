@@ -1136,6 +1136,15 @@ class StrategyExecutor(Thread):
     def _on_filled_order(self, position, order, price, quantity, multiplier):
         self.strategy.on_filled_order(position, order, price, quantity, multiplier)
 
+        # PERF: In backtesting we never send Discord notifications (`Strategy.send_discord_message`
+        # hard-returns), but building the formatted message is still non-trivial work and can
+        # dominate high-churn backtests (100k+ fills). Skip the message construction entirely.
+        if self.strategy.is_backtesting:
+            # Let our listener know that an order has been filled (set in the callback)
+            if hasattr(self.strategy, "_filled_order_callback") and callable(self.strategy._filled_order_callback):
+                self.strategy._filled_order_callback(self, position, order, price, quantity, multiplier)
+            return
+
         # Get the portfolio value
         # NOTE: In backtesting/unit-test harnesses we can process fills before portfolio value has
         # been computed (or with a zero/empty portfolio). This event should not crash the run just
