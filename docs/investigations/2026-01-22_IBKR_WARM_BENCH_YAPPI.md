@@ -134,3 +134,42 @@ Key delta:
   - `BacktestingBroker._submit_order` / `process_pending_orders`
   - `InteractiveBrokersRESTBacktesting.get_quote`
   - `PandasData.find_asset_in_data_store`
+
+### 2026-01-23 — Cache `_data_store` key lookups (`PandasData.find_asset_in_data_store`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_findasset_cache_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~56%
+- `pandas_numpy`: ~30%
+
+Key delta:
+- `PandasData.find_asset_in_data_store` drops from a top inclusive hotspot to ~0.06s total for ~50k calls in the
+  benchmark (cache hits), confirming the cache removed repeated candidate-list construction and dict probes.
+
+### 2026-01-23 — Skip submit-time audit work when disabled
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_audit_lazy_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~58%
+- `pandas_numpy`: ~29%
+
+Key delta:
+- `_audit_submit_fields()` no longer runs when audits are disabled (default), removing a large amount of quote work
+  from the order submission hot path.
+
+### 2026-01-23 — Lazy order events (allocation reduction)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_1e7ab862_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~59%
+- `pandas_numpy`: ~32%
+
+Key delta:
+- `Order.__init__` no longer allocates multiple `threading.Event()` objects per order (lazy allocation). This removes
+  large numbers of internal `threading.Condition` allocations and reduces per-order overhead in high-churn backtests.

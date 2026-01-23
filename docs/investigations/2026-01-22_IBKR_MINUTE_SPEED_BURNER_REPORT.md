@@ -92,6 +92,9 @@ Environment (protocol baseline):
 | 2026-01-22 | DataFrame slice fast-path | TBD | TBD | Avoid per-call DataFrame rebuild |
 | 2026-01-22 | Skip per-slice dropna/fillna + faster Bars derived cols | 3.797 | 5.305 | `Data.get_bars()` avoids redundant `dropna()`/`fillna()` when the dataset is already complete; `Bars` uses NumPy for derived columns |
 | 2026-01-23 | Precompute derived `return` once + skip per-slice Bars inserts (commit `2c61dfbb`) | 1.541 | 2.338 | median of 3; warm-cache; `--iterations 2000`; no profiler |
+| 2026-01-23 | Cache `_data_store` key lookups (commit `12dc32e5`) | 1.471 | 2.289 | median of 3; warm-cache; `--iterations 2000`; no profiler |
+| 2026-01-23 | Skip submit-time audit work when disabled (commit `eee1c670`) | 1.135 | 1.807 | median of 3; warm-cache; `--iterations 2000`; no profiler |
+| 2026-01-23 | Lazy order events (commit `1e7ab862`) | 1.063 | 1.540 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 
 ### Long-run sanity (iterations scaling)
 
@@ -112,6 +115,9 @@ This table uses a longer loop length to catch that early:
 | 2026-01-22 | Re-measure (commit `804d13eb`) | 2000 | 3.895 | 5.861 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 2000` (`LUMIBOT_DISABLE_DOTENV=1`) |
 | 2026-01-22 | Re-measure (commit `804d13eb`) | 20000 | 28.940 | 37.817 | `scripts/bench_ibkr_speed_burner_warm_cache.py --iterations 20000` (`LUMIBOT_DISABLE_DOTENV=1`) |
 | 2026-01-23 | Precompute derived `return` once + skip per-slice Bars inserts (commit `2c61dfbb`) | 20000 | 7.811 | 7.197 | median of 3; warm-cache; `--iterations 20000`; no profiler |
+| 2026-01-23 | Cache `_data_store` key lookups (commit `12dc32e5`) | 20000 | 7.071 | 6.483 | median of 3; warm-cache; `--iterations 20000`; no profiler |
+| 2026-01-23 | Skip submit-time audit work when disabled (commit `eee1c670`) | 20000 | 6.302 | 6.838 | median of 3; warm-cache; `--iterations 20000`; no profiler |
+| 2026-01-23 | Lazy order events (commit `1e7ab862`) | 20000 | 5.639 | 6.289 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 
 ---
 
