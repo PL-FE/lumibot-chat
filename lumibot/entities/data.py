@@ -43,6 +43,9 @@ _DATA_QUOTE_FIELDS = {
     "ask_exchange": ("ask_exchange", 0),
 }
 
+# PERF: module-level sentinel used to avoid eager-evaluating fallbacks in `getattr()` hot paths.
+_MISSING = object()
+
 # Set the option to raise an error if downcasting is not possible (if available in this pandas version)
 try:
     pd.set_option('future.no_silent_downcasting', True)
@@ -265,6 +268,11 @@ class Data:
             bars_cols.append("dividend")
         self._bars_cols = [c for c in bars_cols if c in self.df.columns]
         self._bars_df = None
+        # PERF: `get_bars()` performs repeated `col in df.columns` membership checks which go
+        # through `Index.__contains__` (hot in minute backtests). Cache the schema facts once.
+        self._bars_has_volume = "volume" in self._bars_cols
+        self._bars_has_dividend = "dividend" in self._bars_cols
+        self._bars_required_cols = [c for c in ("open", "high", "low", "close") if c in self._bars_cols]
 
     def set_times(self, trading_hours_start, trading_hours_end):
         """Set the start and end times for the data. The default is 0001 hrs to 2359 hrs.
@@ -1076,20 +1084,30 @@ class Data:
             if df is None or df.empty:
                 return None
 
+            # PERF: avoid `col in df.columns` membership checks (`Index.__contains__`) on every call.
+            has_volume = getattr(self, "_bars_has_volume", _MISSING)
+            if has_volume is _MISSING:
+                has_volume = "volume" in df.columns
+            has_dividend = getattr(self, "_bars_has_dividend", _MISSING)
+            if has_dividend is _MISSING:
+                has_dividend = "dividend" in df.columns
+
             # PERF: avoid fillna on every slice unless the dataset actually contains NaNs.
             needs_copy = False
-            if "volume" in df.columns and getattr(self, "_volume_has_nan", False):
+            if has_volume and getattr(self, "_volume_has_nan", False):
                 needs_copy = True
-            if "dividend" in df.columns and getattr(self, "_dividend_has_nan", False):
+            if has_dividend and getattr(self, "_dividend_has_nan", False):
                 needs_copy = True
             if needs_copy:
                 df = df.copy()
-                if "volume" in df.columns and getattr(self, "_volume_has_nan", False):
+                if has_volume and getattr(self, "_volume_has_nan", False):
                     df["volume"] = df["volume"].fillna(0)
-                if "dividend" in df.columns and getattr(self, "_dividend_has_nan", False):
+                if has_dividend and getattr(self, "_dividend_has_nan", False):
                     df["dividend"] = df["dividend"].fillna(0)
 
-            required = [c for c in ("open", "high", "low", "close") if c in df.columns]
+            required = getattr(self, "_bars_required_cols", None)
+            if required is None:
+                required = [c for c in ("open", "high", "low", "close") if c in df.columns]
             if required and getattr(self, "_ohlc_has_nan", True):
                 df = df.dropna(subset=required)
 
@@ -1162,20 +1180,30 @@ class Data:
             if df is None or df.empty:
                 return None
 
+            # PERF: avoid `col in df.columns` membership checks (`Index.__contains__`) on every call.
+            has_volume = getattr(self, "_bars_has_volume", _MISSING)
+            if has_volume is _MISSING:
+                has_volume = "volume" in df.columns
+            has_dividend = getattr(self, "_bars_has_dividend", _MISSING)
+            if has_dividend is _MISSING:
+                has_dividend = "dividend" in df.columns
+
             # PERF: avoid fillna on every slice unless the dataset actually contains NaNs.
             needs_copy = False
-            if "volume" in df.columns and getattr(self, "_volume_has_nan", False):
+            if has_volume and getattr(self, "_volume_has_nan", False):
                 needs_copy = True
-            if "dividend" in df.columns and getattr(self, "_dividend_has_nan", False):
+            if has_dividend and getattr(self, "_dividend_has_nan", False):
                 needs_copy = True
             if needs_copy:
                 df = df.copy()
-                if "volume" in df.columns and getattr(self, "_volume_has_nan", False):
+                if has_volume and getattr(self, "_volume_has_nan", False):
                     df["volume"] = df["volume"].fillna(0)
-                if "dividend" in df.columns and getattr(self, "_dividend_has_nan", False):
+                if has_dividend and getattr(self, "_dividend_has_nan", False):
                     df["dividend"] = df["dividend"].fillna(0)
 
-            required = [c for c in ("open", "high", "low", "close") if c in df.columns]
+            required = getattr(self, "_bars_required_cols", None)
+            if required is None:
+                required = [c for c in ("open", "high", "low", "close") if c in df.columns]
             if required and getattr(self, "_ohlc_has_nan", True):
                 df = df.dropna(subset=required)
 

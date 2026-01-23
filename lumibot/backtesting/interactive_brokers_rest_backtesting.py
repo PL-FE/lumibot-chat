@@ -13,6 +13,8 @@ from lumibot.tools.thetadata_queue_client import set_queue_client_id
 
 logger = logging.getLogger(__name__)
 
+_USD_FOREX = Asset("USD", "forex")
+
 
 class InteractiveBrokersRESTBacktesting(PandasData):
     """Backtesting data source that fetches historical data from IBKR via the Data Downloader.
@@ -57,7 +59,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         self._fully_loaded_series: set[tuple] = set()
 
     def _build_dataset_keys(self, asset: Asset, quote: Optional[Asset], dataset_key: str) -> tuple[tuple, tuple]:
-        quote_asset = quote if quote is not None else Asset("USD", "forex")
+        quote_asset = quote if quote is not None else _USD_FOREX
         canonical_key = (asset, quote_asset, dataset_key)
         legacy_key = (asset, quote_asset)
         return canonical_key, legacy_key
@@ -332,6 +334,17 @@ class InteractiveBrokersRESTBacktesting(PandasData):
 
         dataset_key = self._normalize_timestep_key(timestep)
         end_dt = self.get_datetime()
+
+        # PERF: warm-cache minute backtests call `_pull_source_symbol_bars()` in tight loops. Once a
+        # (asset, quote, timestep) series has been prefetched for the full backtest window, we can
+        # skip start/end datetime calculations and downloader bookkeeping and slice immediately.
+        quote_key = quote_asset if quote_asset is not None else _USD_FOREX
+        fully_loaded_key = (asset_separated, quote_key, dataset_key)
+        if fully_loaded_key in self._fully_loaded_series:
+            return super()._pull_source_symbol_bars(
+                asset_separated, length, timestep, timeshift, quote_asset, exchange, include_after_hours
+            )
+
         # IBKR crypto/futures trade outside equity calendars; do not add the default 5-day padding.
         start_dt, ts_unit = self.get_start_datetime_and_ts_unit(
             length, timestep, start_dt=end_dt, start_buffer=timedelta(0)
@@ -345,7 +358,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             # causing strategies to see "no bars available" and skip trading entirely.
             #
             # Fix: on first access, prefetch the full backtest window for the series and reuse it.
-            quote_key = quote_asset if quote_asset is not None else Asset("USD", "forex")
+            quote_key = quote_asset if quote_asset is not None else _USD_FOREX
             key = (asset_separated, quote_key, dataset_key)
             if key not in self._fully_loaded_series:
                 prev_open = self._previous_us_futures_session_open(self.datetime_start)
@@ -367,7 +380,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
         elif asset_type == "crypto" and ts_unit == "day":
             # Prefetch daily series for the full backtest window on first access so we do not
             # hammer the downloader once per simulated day.
-            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), dataset_key)
+            key = (asset_separated, quote_asset if quote_asset is not None else _USD_FOREX, dataset_key)
             if key not in self._fully_loaded_series:
                 prefetch_start = min(start_dt, self.datetime_start - timedelta(days=max(7, int(length) + 5)))
                 prefetch_end = self.datetime_end
@@ -385,7 +398,7 @@ class InteractiveBrokersRESTBacktesting(PandasData):
             # Crypto is 24/7 but IBKR history calls are still expensive. Intraday strategies can call
             # `get_historical_prices()` tens of thousands of times; prefetch the full window once
             # and then slice in-memory for warm-cache speed.
-            key = (asset_separated, quote_asset if quote_asset is not None else Asset("USD", "forex"), dataset_key)
+            key = (asset_separated, quote_asset if quote_asset is not None else _USD_FOREX, dataset_key)
             if key not in self._fully_loaded_series:
                 self._update_pandas_data(
                     asset_separated,
@@ -407,9 +420,22 @@ class InteractiveBrokersRESTBacktesting(PandasData):
                 exchange=exchange or self.exchange,
                 include_after_hours=include_after_hours,
             )
-        return super()._pull_source_symbol_bars(
-            asset_separated, length, timestep, timeshift, quote_asset, exchange, include_after_hours
-        )
+        # PERF: avoid `PandasData.find_asset_in_data_store()` candidate generation on every call.
+        # IBKR uses stable canonical keys; slice directly from the cached `Data` object.
+        canonical_key, legacy_key = self._build_dataset_keys(asset_separated, quote_asset, dataset_key)
+        data = self._data_store.get(canonical_key)
+        if data is None and dataset_key == "minute":
+            data = self._data_store.get(legacy_key)
+        if data is None:
+            return super()._pull_source_symbol_bars(
+                asset_separated, length, timestep, timeshift, quote_asset, exchange, include_after_hours
+            )
+
+        now = self.get_datetime()
+        try:
+            return data.get_bars(now, length=length, timestep=timestep, timeshift=timeshift)
+        except ValueError:
+            return None
 
     def get_historical_prices_between_dates(
         self,

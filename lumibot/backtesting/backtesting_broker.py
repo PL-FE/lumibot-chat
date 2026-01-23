@@ -1708,6 +1708,34 @@ class BacktestingBroker(Broker):
             dt = None
             open = high = low = close = volume = None
 
+            # PERF: MARKET orders dominate many warm-cache backtests (minute strategies, speed-burner).
+            # When bid/ask are already present in the cached Data series, we can fill immediately
+            # without constructing a `Quote` object or running the full quote normalization stack.
+            if (
+                not audit_enabled
+                and order.order_type == Order.OrderType.MARKET
+                and (order.is_buy_order() or order.is_sell_order())
+                and not self._is_option_asset(getattr(order, "asset", None))
+            ):
+                fast_bid, fast_ask = self._fast_get_bid_ask_for_fill(order.asset, order.quote)
+                fast_bid = self._coerce_price(fast_bid)
+                fast_ask = self._coerce_price(fast_ask)
+                if fast_bid is not None and self._is_invalid_price(fast_bid):
+                    fast_bid = None
+                if fast_ask is not None and self._is_invalid_price(fast_ask):
+                    fast_ask = None
+
+                required_price = fast_ask if order.is_buy_order() else fast_bid
+                if required_price is not None and not self._is_invalid_price(required_price):
+                    setattr(order, "_price_source", "quote")
+                    self._execute_filled_order(
+                        order=order,
+                        price=required_price,
+                        filled_quantity=filled_quantity,
+                        strategy=strategy,
+                    )
+                    continue
+
             # PERFORMANCE: Prefer quote-based fills when bid/ask are present so we avoid
             # fetching trade-only OHLC bars (which can be sparse/missing, especially for
             # options). When bid/ask are unavailable we fall back to the OHLC-based model.
@@ -2530,6 +2558,99 @@ class BacktestingBroker(Broker):
 
     def _bar_has_missing_prices(self, *values) -> bool:
         return any(self._is_invalid_price(val) for val in values)
+
+    def _fast_get_bid_ask_for_fill(self, asset: Asset, quote: Optional[Asset]) -> tuple[Optional[float], Optional[float]]:
+        """Fast-path for bid/ask retrieval in backtesting order fills.
+
+        Why this exists:
+        - `process_pending_orders()` can execute tens/hundreds of thousands of MARKET orders in a
+          minute-cadence backtest.
+        - The default `Broker.get_quote()` path constructs a `Quote` object and performs several
+          layers of validation/normalization. That is correct, but expensive.
+        - For warm-cache speed, order fills should be able to read bid/ask directly from the
+          already-loaded `Data` object when available.
+
+        Safety:
+        - This is best-effort. On any failure, it returns (None, None) and callers must fall back
+          to the canonical `get_quote()` path to preserve broker-specific semantics.
+        - Currently scoped to IBKR REST backtesting only (explicit perf target).
+        """
+        data_source = getattr(self, "data_source", None)
+        if data_source is None or data_source.__class__.__name__ != "InteractiveBrokersRESTBacktesting":
+            return None, None
+
+        now = getattr(self, "datetime", None)
+        if now is None:
+            return None, None
+
+        # Match IBKR's `get_quote()` special-case for crypto at midnight: use the daily series.
+        timestep = getattr(data_source, "_timestep", None) or "minute"
+        if (
+            str(getattr(asset, "asset_type", "") or "").lower() == "crypto"
+            and now.hour == 0
+            and now.minute == 0
+            and now.second == 0
+            and now.microsecond == 0
+        ):
+            timestep = "day"
+
+        cache = getattr(self, "_fast_quote_data_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_fast_quote_data_cache", cache)
+
+        cache_key = (asset, quote, str(timestep))
+        if cache_key in cache:
+            data_obj, bid_line, ask_line = cache[cache_key]
+        else:
+            data_obj = None
+            bid_line = None
+            ask_line = None
+
+            store_key = None
+            if hasattr(data_source, "find_asset_in_data_store"):
+                try:
+                    store_key = data_source.find_asset_in_data_store(asset, quote, timestep=timestep)
+                except TypeError:
+                    store_key = data_source.find_asset_in_data_store(asset, quote)
+                except Exception:
+                    store_key = None
+
+            store = getattr(data_source, "_data_store", None)
+            if store_key is not None and isinstance(store, dict):
+                data_obj = store.get(store_key)
+
+            if data_obj is not None:
+                try:
+                    bid_line = getattr(data_obj, "datalines", {}).get("bid")
+                    ask_line = getattr(data_obj, "datalines", {}).get("ask")
+                except Exception:
+                    bid_line = None
+                    ask_line = None
+
+            cache[cache_key] = (data_obj, bid_line, ask_line)
+
+        if data_obj is None or bid_line is None or ask_line is None:
+            return None, None
+
+        try:
+            i = data_obj.get_iter_count(now)
+            bid = bid_line.dataline[i]
+            ask = ask_line.dataline[i]
+        except Exception:
+            return None, None
+
+        # Mirror `Data.get_quote()` rounding (bid/ask are rounded to 2 decimals).
+        try:
+            bid = round(bid, 2) if bid is not None else None
+        except TypeError:
+            pass
+        try:
+            ask = round(ask, 2) if ask is not None else None
+        except TypeError:
+            pass
+
+        return bid, ask
 
     def _is_option_asset(self, asset) -> bool:
         if asset is None:
