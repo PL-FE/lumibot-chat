@@ -5,15 +5,14 @@ from datetime import datetime, timezone
 import pytest
 
 
-def test_ibkr_history_request_formats_starttime_in_lumibot_timezone(monkeypatch):
+def test_ibkr_history_request_formats_starttime_in_utc(monkeypatch):
     """Regression test for IBKR history pagination gaps.
 
-    IBKR Client Portal's `startTime` is interpreted in the account/session timezone (commonly
-    America/New_York). Formatting UTC here can create DST-sized gaps when we page in 1000-point
-    chunks (4h in summer, 5h in winter), which then causes stale-bar execution during backtests.
+    IBKR Client Portal's history endpoint interprets `startTime` as UTC. If we format local time
+    here, the API will treat it as UTC and pagination in 1000-point chunks can create DST-sized
+    gaps (4h in summer, 5h in winter), which then causes stale-bar execution during backtests.
     """
     import lumibot.tools.ibkr_helper as ibkr_helper
-    from lumibot.constants import LUMIBOT_DEFAULT_PYTZ
 
     monkeypatch.setenv("DATADOWNLOADER_BASE_URL", "http://localhost:8080")
 
@@ -27,7 +26,7 @@ def test_ibkr_history_request_formats_starttime_in_lumibot_timezone(monkeypatch)
     monkeypatch.setattr(ibkr_helper, "queue_request", fake_queue_request)
 
     start_time_utc = datetime(2025, 10, 30, 13, 39, 0, tzinfo=timezone.utc)
-    expected = start_time_utc.astimezone(LUMIBOT_DEFAULT_PYTZ).strftime("%Y%m%d-%H:%M:%S")
+    expected = start_time_utc.astimezone(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
 
     ibkr_helper._ibkr_history_request(
         conid=123,
@@ -42,4 +41,3 @@ def test_ibkr_history_request_formats_starttime_in_lumibot_timezone(monkeypatch)
 
     assert captured["query"]["startTime"] == expected
     assert captured["query"]["outsideRth"] == "true"
-

@@ -1028,23 +1028,20 @@ def _ibkr_history_request(
 ) -> Dict[str, Any]:
     base_url = _downloader_base_url()
     url = f"{base_url}/ibkr/iserver/marketdata/history"
-    # IBKR Client Portal expects `startTime` in the account/session timezone (commonly US/Eastern),
-    # not explicitly in UTC. Formatting UTC here can create multi-hour "DST-sized" gaps between
-    # paginated chunks (e.g., ~4h in summer, ~5h in winter), which then cascades into stale-bar
-    # execution in backtests.
+    # IBKR Client Portal history endpoint interprets `startTime` as UTC.
     #
-    # Normalize to LumiBot's default timezone before formatting to keep pagination contiguous.
-    try:
-        start_time_local = start_time.astimezone(LUMIBOT_DEFAULT_PYTZ)
-    except Exception:
-        start_time_local = start_time
+    # If we format `startTime` in a local timezone (e.g. America/New_York) while IBKR treats it
+    # as UTC, paginating in 1000-bar chunks can create DST-sized holes (~4h in summer, ~5h in
+    # winter). We have observed these holes as ~4h02/~5h02 gaps at chunk boundaries in cached
+    # parquet files, which then cascades into stale-bar execution and parity failures.
+    start_time_utc = _to_utc(start_time)
     query = {
         "conid": str(int(conid)),
         "period": period,
         "bar": bar,
         "outsideRth": "true" if include_after_hours else "false",
         "source": source,
-        "startTime": start_time_local.strftime("%Y%m%d-%H:%M:%S"),
+        "startTime": start_time_utc.strftime("%Y%m%d-%H:%M:%S"),
     }
     if continuous:
         query["continuous"] = "true"
