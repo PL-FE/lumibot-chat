@@ -1069,7 +1069,10 @@ class Data:
             if start_row == end_row and end_row > 0:
                 start_row = max(0, end_row - 1)
 
-            df = df_source.iloc[start_row:end_row]
+            # PERF: `.iloc[start:end]` goes through the indexer stack (`_iLocIndexer`) which
+            # performs validation on every call. In backtesting we already operate on integer
+            # row bounds; `_slice()` is the internal fast-path that avoids the indexer overhead.
+            df = df_source._slice(slice(start_row, end_row))
             if df is None or df.empty:
                 return None
 
@@ -1152,7 +1155,10 @@ class Data:
             if start_row == end_row and end_row > 0:
                 start_row = max(0, end_row - 1)
 
-            df = df_source.iloc[start_row:end_row]
+            # PERF: `.iloc[start:end]` goes through the indexer stack (`_iLocIndexer`) which
+            # performs validation on every call. In backtesting we already operate on integer
+            # row bounds; `_slice()` is the internal fast-path that avoids the indexer overhead.
+            df = df_source._slice(slice(start_row, end_row))
             if df is None or df.empty:
                 return None
 
