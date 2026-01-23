@@ -390,17 +390,14 @@ DOWNLOADER_MODE = bool(_downloader_base_env)
 #   start/stop/kill a local ThetaTerminal process because it can steal/kill the single licensed session.
 REMOTE_DOWNLOADER_ENABLED = DOWNLOADER_MODE or _coerce_skip_flag(os.environ.get("DATADOWNLOADER_SKIP_LOCAL_START"), BASE_URL)
 if DOWNLOADER_MODE:
-    logger.info("[THETA][CONFIG] Data Downloader enabled at %s", BASE_URL)
+    # Avoid leaking private infrastructure hostnames in logs. Loopback URLs are safe to print.
+    if _is_loopback_url(BASE_URL):
+        logger.info("[THETA][CONFIG] Data Downloader enabled at %s", BASE_URL)
+    else:
+        logger.info("[THETA][CONFIG] Data Downloader enabled (remote URL redacted)")
     if DOWNLOADER_API_KEY:
-        # Log a safe fingerprint so prod runs can confirm the key is present without leaking it.
-        key_prefix = DOWNLOADER_API_KEY[:4]
-        key_suffix = DOWNLOADER_API_KEY[-4:] if len(DOWNLOADER_API_KEY) > 8 else ""
-        logger.info(
-            "[THETA][CONFIG] Downloader API key detected (len=%d, prefix=%s..., suffix=...%s)",
-            len(DOWNLOADER_API_KEY),
-            key_prefix,
-            key_suffix,
-        )
+        # Confirm presence without leaking any part of the key.
+        logger.info("[THETA][CONFIG] Downloader API key detected (len=%d)", len(DOWNLOADER_API_KEY))
     else:
         # Use DEBUG level - this fires at module import time before ECS secrets injection.
         # The key is typically available at runtime; a WARNING here creates noise in logs.
