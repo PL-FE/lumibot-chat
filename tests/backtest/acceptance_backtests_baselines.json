@@ -146,20 +146,20 @@
     },
     {
       "backtest_time_seconds": 193.22364787501283,
-      "baseline_run_id": "SPXShortStraddle_2026-01-05_09-49_35TJJl",
+      "baseline_run_id": "SPXShortStraddle_2026-01-23_23-19_zOT1cB",
       "data_source": "thetadata",
       "end_date": "2025-12-26",
-      "lumibot_version": "4.4.27",
+      "lumibot_version": "4.4.36",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -1228,
-        "max_drawdown": -2853,
-        "total_return": -1189
+        "cagr": -1468,
+        "max_drawdown": -3080,
+        "total_return": -1423
       },
       "metrics_raw": {
-        "cagr": "-12.28%",
-        "max_drawdown": "-28.53%",
-        "total_return": "-11.89%"
+        "cagr": "-14.68%",
+        "max_drawdown": "-30.80%",
+        "total_return": "-14.23%"
       },
       "script_filename": "SPX Short Straddle Intraday (Copy).py",
       "settings_backtesting_end": "2025-12-25 23:59:00-05:00",
