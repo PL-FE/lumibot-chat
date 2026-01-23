@@ -26,6 +26,10 @@ class StrEnum(str, Enum):
         return str.__str__(self)
 
     def __eq__(self, other):
+        # PERF: Enum members are singletons. Fast-path identity equality before any type checks.
+        # This avoids repeated string compares for hot paths like `asset.asset_type == Asset.AssetType.CRYPTO`.
+        if self is other:
+            return True
         if isinstance(other, str):
             # Avoid Enum.value property lookups; compare as plain strings.
             return str.__eq__(self, other)
