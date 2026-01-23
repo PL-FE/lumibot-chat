@@ -4034,76 +4034,78 @@ class Strategy(_Strategy):
             actual_length = length
             needs_resampling = False
 
-        # Only log once per asset to reduce noise
-        asset_key = f"{asset}_{length}_{original_timestep}"
-        if asset_key not in self._logged_get_historical_prices_assets:
-            if needs_resampling:
-                self.logger.info(f"Getting historical prices for {asset}, {length} bars of {original_timestep} (fetching {actual_length} {actual_timestep} bars)")
-            else:
-                self.logger.info(f"Getting historical prices for {asset}, {length} bars, {original_timestep}")
-            self._logged_get_historical_prices_assets.add(asset_key)
-
         asset = self._sanitize_user_asset(asset)
 
         asset = self.crypto_assets_to_tuple(asset, quote)
         if not actual_timestep:
             actual_timestep = self.broker.data_source.get_timestep()
+
+        # Only log once per asset to reduce noise.
+        # PERF: avoid per-call f-string construction in hot loops; use a tuple key.
+        asset_key = (asset, int(length), original_timestep)
+        if asset_key not in self._logged_get_historical_prices_assets:
+            if needs_resampling:
+                self.logger.info(
+                    f"Getting historical prices for {asset}, {length} bars of {original_timestep} "
+                    f"(fetching {actual_length} {actual_timestep} bars)"
+                )
+            else:
+                self.logger.info(f"Getting historical prices for {asset}, {length} bars, {original_timestep}")
+            self._logged_get_historical_prices_assets.add(asset_key)
+
         effective_return_polars = return_polars
+
         # Call through to the appropriate data source. Only pass `return_polars` if supported
         # to maintain compatibility with live data sources that don't yet accept it.
         #
-        # PERF: `inspect.signature()` is expensive and this method is called in tight loops
-        # during minute-level backtests. Cache support per data source type.
+        # PERF: avoid per-call nested function creation/dict allocations; keep this inline and cache
+        # `return_polars` support per data source type.
         supports_cache = getattr(self, "_get_hist_supports_return_polars_by_ds_type", None)
         if supports_cache is None:
             supports_cache = {}
             setattr(self, "_get_hist_supports_return_polars_by_ds_type", supports_cache)
 
-        def _supports_return_polars(ds) -> bool:
-            ds_type = type(ds)
-            cached = supports_cache.get(ds_type)
-            if cached is not None:
-                return bool(cached)
+        ds = self.broker.data_source
+        if self.broker.option_source and getattr(asset, "asset_type", None) == "option":
+            ds = self.broker.option_source
+
+        ds_type = type(ds)
+        supports_return_polars = supports_cache.get(ds_type)
+        if supports_return_polars is None:
             try:
                 params = inspect.signature(ds_type.get_historical_prices).parameters
-                supports = (
+                supports_return_polars = (
                     "return_polars" in params
                     or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
                 )
             except Exception:
                 # Conservative default: if we can't inspect, assume it does NOT support return_polars
                 # so we don't raise TypeError by passing an unknown kwarg.
-                supports = False
-            supports_cache[ds_type] = bool(supports)
-            return bool(supports)
+                supports_return_polars = False
+            supports_cache[ds_type] = bool(supports_return_polars)
 
-        def _call_get_hist(ds):
-            fn = ds.get_historical_prices
-            common_kwargs = dict(
-                timestep=actual_timestep,  # Use the actual timestep for fetching
+        fn = ds.get_historical_prices
+        if supports_return_polars:
+            bars = fn(
+                asset,
+                actual_length,  # Use the actual length for fetching
+                timestep=actual_timestep,
+                timeshift=timeshift,
+                exchange=exchange,
+                include_after_hours=include_after_hours,
+                quote=quote,
+                return_polars=effective_return_polars,
+            )
+        else:
+            bars = fn(
+                asset,
+                actual_length,  # Use the actual length for fetching
+                timestep=actual_timestep,
                 timeshift=timeshift,
                 exchange=exchange,
                 include_after_hours=include_after_hours,
                 quote=quote,
             )
-            if _supports_return_polars(ds):
-                return fn(
-                    asset,
-                    actual_length,  # Use the actual length for fetching
-                    return_polars=effective_return_polars,
-                    **common_kwargs,
-                )
-            return fn(
-                asset,
-                actual_length,  # Use the actual length for fetching
-                **common_kwargs,
-            )
-
-        # Get the raw data
-        if self.broker.option_source and asset.asset_type == "option":
-            bars = _call_get_hist(self.broker.option_source)
-        else:
-            bars = _call_get_hist(self.broker.data_source)
 
         # If we need to resample the data
         if needs_resampling and bars and len(bars) > 0:
