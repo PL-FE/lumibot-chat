@@ -607,26 +607,42 @@ class Order:
             secondary_trail_percent,
         )
     def is_advanced_order(self):
-        return self.order_class in [self.OrderClass.OCO, self.OrderClass.BRACKET, self.OrderClass.OTO]
+        order_class = self.order_class
+        return (
+            order_class is self.OrderClass.OCO
+            or order_class is self.OrderClass.BRACKET
+            or order_class is self.OrderClass.OTO
+        )
 
     def is_buy_order(self):
-        return self.side is not None and (
-            self.side == self.OrderSide.BUY or
-            self.side == self.OrderSide.BUY_TO_OPEN or
-            self.side == self.OrderSide.BUY_TO_COVER or
-            self.side == self.OrderSide.BUY_TO_CLOSE
+        side = self.side
+        if side is None:
+            return False
+        return (
+            side is self.OrderSide.BUY
+            or side is self.OrderSide.BUY_TO_OPEN
+            or side is self.OrderSide.BUY_TO_COVER
+            or side is self.OrderSide.BUY_TO_CLOSE
         )
 
     def is_sell_order(self):
-        return self.side is not None and (
-            self.side == self.OrderSide.SELL or
-            self.side == self.OrderSide.SELL_SHORT or
-            self.side == self.OrderSide.SELL_TO_OPEN or
-            self.side == self.OrderSide.SELL_TO_CLOSE
+        side = self.side
+        if side is None:
+            return False
+        return (
+            side is self.OrderSide.SELL
+            or side is self.OrderSide.SELL_SHORT
+            or side is self.OrderSide.SELL_TO_OPEN
+            or side is self.OrderSide.SELL_TO_CLOSE
         )
 
     def is_stop_order(self):
-        return self.order_type in [self.OrderType.STOP, self.OrderType.STOP_LIMIT, self.OrderType.TRAIL]
+        order_type = self.order_type
+        return (
+            order_type is self.OrderType.STOP
+            or order_type is self.OrderType.STOP_LIMIT
+            or order_type is self.OrderType.TRAIL
+        )
 
     def is_parent(self) -> bool:
         """
@@ -663,7 +679,7 @@ class Order:
             The last price of the asset. For trailing stop orders, this is the price that will be used to update the trail stop price.
         """
         # If the order is not a trailing stop order, then do nothing.
-        if self.order_type != self.OrderType.TRAIL:
+        if self.order_type is not self.OrderType.TRAIL:
             return
 
         # Trail modifiers are validated as numeric, but may be `Decimal` depending on how the
