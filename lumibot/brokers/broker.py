@@ -112,15 +112,19 @@ class Broker(ABC):
         self._lock = RLock()
         self._stop_event = threading.Event()  # Add stop event for clean shutdown
         self._runtime_telemetry = None
-        self._unprocessed_orders = SafeList(self._lock)
-        self._placeholder_orders = SafeList(self._lock)
-        self._new_orders = SafeList(self._lock)
-        self._canceled_orders = SafeList(self._lock)
-        self._partially_filled_orders = SafeList(self._lock)
-        self._filled_orders = SafeList(self._lock)
-        self._error_orders = SafeList(self._lock)
-        self._filled_positions = SafeList(self._lock)
-        self._subscribers = SafeList(self._lock)
+        # PERF: Backtesting is single-threaded, but SafeList lock acquisition shows up as
+        # a measurable overhead in minute-level backtests. Use lock-free SafeLists in backtests
+        # while keeping thread-safe lists for live brokers.
+        safelist_lock = None if self.IS_BACKTESTING_BROKER else self._lock
+        self._unprocessed_orders = SafeList(safelist_lock)
+        self._placeholder_orders = SafeList(safelist_lock)
+        self._new_orders = SafeList(safelist_lock)
+        self._canceled_orders = SafeList(safelist_lock)
+        self._partially_filled_orders = SafeList(safelist_lock)
+        self._filled_orders = SafeList(safelist_lock)
+        self._error_orders = SafeList(safelist_lock)
+        self._filled_positions = SafeList(safelist_lock)
+        self._subscribers = SafeList(safelist_lock)
         self._is_stream_subscribed = False
         # PERF: appending to a pandas DataFrame with concat on every trade event is extremely slow
         # (option-heavy intraday backtests can generate 100k+ events). Store rows in a Python list
