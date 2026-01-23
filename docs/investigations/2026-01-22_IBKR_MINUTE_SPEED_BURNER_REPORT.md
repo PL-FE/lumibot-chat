@@ -159,6 +159,8 @@ This table uses a longer loop length to catch that early:
 | 2026-01-23 | Avoid StrEnum `asset_type` `__eq__` in hot paths (commit `df1d1524`) | 20000 | 1.954 | 1.730 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.684s (~17.1× vs 62.911s baseline) |
 | 2026-01-23 | Fast-path `_is_invalid_price()` for numeric types (commit `73a51aa4`) | 20000 | 1.919 | 1.709 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.628s (~17.3× vs 62.911s baseline) |
 | 2026-01-23 | Use `_identifier` directly in `Order.__hash__` / `Order.__eq__` (commit `1a62585d`) | 20000 | 1.940 | 1.715 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.655s (~17.2× vs 62.911s baseline); 2000-iter median: futures=0.385s crypto=0.576s |
+| 2026-01-23 | Speed up `SafeList.remove(key="identifier")` (commit `14fb483e`) | 20000 | 1.923 | 1.705 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.628s (~17.3× vs 62.911s baseline); 2000-iter median: futures=0.382s crypto=0.568s |
+| 2026-01-23 | Add identity fast-path to `StrEnum.__eq__` (commit `4ad3d242`) | 20000 | 1.912 | 1.700 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.612s (~17.4× vs 62.911s baseline); 2000-iter median: futures=0.380s crypto=0.561s |
 
 ---
 
