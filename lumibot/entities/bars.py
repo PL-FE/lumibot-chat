@@ -234,11 +234,17 @@ class Bars:
                 self._pandas_cache = None
         else:
             # Already pandas, keep it as is
-            has_dividend = "dividend" in df.columns
-            has_return = "return" in df.columns
-            has_price_change = "price_change" in df.columns
-            has_dividend_yield = "dividend_yield" in df.columns
-            needs_derived = (not has_return) or (has_dividend and (not has_price_change or not has_dividend_yield))
+            # PERF: most futures/crypto datasets never have dividends. Avoid extra `Index.__contains__`
+            # probes by only checking dividend-derived columns when the dividend column exists.
+            columns = df.columns
+            has_dividend = "dividend" in columns
+            has_return = "return" in columns
+            if has_dividend:
+                has_price_change = "price_change" in columns
+                has_dividend_yield = "dividend_yield" in columns
+                needs_derived = (not has_return) or (not has_price_change) or (not has_dividend_yield)
+            else:
+                needs_derived = not has_return
 
             # PERF/SAFETY: many backtesting paths slice from a larger DataFrame and pass the slice
             # through to `Bars`. We only detach from a parent view when we actually need to mutate
