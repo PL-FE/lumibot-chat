@@ -323,3 +323,22 @@ Top hotspots (self time / `tsub_s`):
 Key delta:
 - Micro-cuts reduce constant overhead in the order/event pipeline (fees, no-op subscriber events, discord formatting, enum comparisons).
 - The dominant bottleneck remains the **order + trade-event pipeline**, not the bars/history layer.
+
+### 2026-01-23 — Reduce backtest hot-loop overhead (commit `fdb172f6`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_fdb172f6_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~84%
+- `pandas_numpy`: ~8%
+- `other`: ~4%
+- `stdlib_wait`: ~3%
+- `progress_logging`: ~2%
+
+Key delta:
+- `OrderClass.__eq__` call count drops to ~290k in the 2000-iteration profile (from ~310k), reflecting fewer enum equality checks in `BacktestingBroker` hot paths.
+- Next likely wins are still in the high-call micro-costs:
+  - `Bars.__init__` column checks (`Index.__contains__`)
+  - timestep parsing (`parse_timestep_qty_and_unit`)
+  - `Data.get_iter_count` / `Data.get_bars` call frequency and per-call overhead
