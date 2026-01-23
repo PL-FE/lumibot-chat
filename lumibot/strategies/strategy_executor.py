@@ -541,24 +541,25 @@ class StrategyExecutor(Thread):
             quantity = payload["quantity"]
             multiplier = payload["multiplier"]
 
-            # Parent orders to not affect cash or trades directly, the individual child_orders will when they
-            # are filled. Skip the parent order so as not to double count.
+            # Parent orders do not affect cash/trades directly; individual child_orders do. Avoid
+            # enum conversion overhead for the common case (non-parent orders).
             update_cash = True
-            order_class_value = getattr(order, "order_class", None)
-            try:
-                order_class_enum = (
-                    Order.OrderClass(order_class_value)
-                    if order_class_value is not None
-                    else None
-                )
-            except ValueError:
-                order_class_enum = None
+            if order.is_parent():
+                order_class_value = getattr(order, "order_class", None)
+                try:
+                    order_class_enum = (
+                        Order.OrderClass(order_class_value)
+                        if order_class_value is not None
+                        else None
+                    )
+                except ValueError:
+                    order_class_enum = None
 
-            if order.is_parent() and order_class_enum not in (
-                Order.OrderClass.BRACKET,
-                Order.OrderClass.OTO,
-            ):
-                update_cash = False
+                if order_class_enum not in (
+                    Order.OrderClass.BRACKET,
+                    Order.OrderClass.OTO,
+                ):
+                    update_cash = False
 
             asset_type = getattr(order.asset, "asset_type", None)
 
