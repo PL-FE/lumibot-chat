@@ -363,3 +363,11 @@ Capture:
 
 Key delta:
 - `Data.get_iter_count` self time drops to ~0.086s for ~50k calls in the 2000-iteration profile (down from ~0.10s).
+
+### 2026-01-23 — Cut Bars column checks for non-dividend data (commit `b1c9e232`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_b1c9e232_2000_profile_yappi.csv`
+
+Key delta:
+- `Index.__contains__` call count drops to ~40k in the 2000-iteration profile (from ~80k), since most futures/crypto datasets do not have dividends and we avoid checking dividend-derived columns.

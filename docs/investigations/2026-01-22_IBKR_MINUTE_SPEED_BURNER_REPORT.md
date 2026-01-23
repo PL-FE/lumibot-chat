@@ -106,6 +106,7 @@ Environment (protocol baseline):
 | 2026-01-23 | Reduce backtest hot-loop overhead (commit `fdb172f6`) | 0.482 | 0.731 | median of 3; warm-cache; `--iterations 2000`; no profiler; prefers enum identity checks in backtesting hot paths |
 | 2026-01-23 | Cache timestep parsing (commit `cf4e9ea8`) | 0.472 | 0.713 | median of 3; warm-cache; `--iterations 2000`; no profiler; avoids repeated regex parsing for `"minute"`/`"day"` timesteps |
 | 2026-01-23 | Cache repeated `get_iter_count()` dt lookups (commit `9cdb91eb`) | 0.474 | 0.711 | median of 3; warm-cache; `--iterations 2000`; no profiler; reduces duplicate dt→index work inside a single iteration |
+| 2026-01-23 | Cut Bars column checks for non-dividend data (commit `b1c9e232`) | 0.460 | 0.690 | median of 3; warm-cache; `--iterations 2000`; no profiler; reduces `Index.__contains__` probes in `Bars.__init__` |
 
 ### Long-run sanity (iterations scaling)
 
@@ -140,6 +141,7 @@ This table uses a longer loop length to catch that early:
 | 2026-01-23 | Reduce backtest hot-loop overhead (commit `fdb172f6`) | 20000 | 2.483 | 2.237 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.719s (~13.3× vs 62.911s baseline) |
 | 2026-01-23 | Cache timestep parsing (commit `cf4e9ea8`) | 20000 | 2.341 | 2.065 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.410s (~14.3× vs 62.911s baseline) |
 | 2026-01-23 | Cache repeated `get_iter_count()` dt lookups (commit `9cdb91eb`) | 20000 | 2.345 | 2.088 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.442s (~14.2× vs 62.911s baseline) |
+| 2026-01-23 | Cut Bars column checks for non-dividend data (commit `b1c9e232`) | 20000 | 2.251 | 1.932 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.181s (~15.0× vs 62.911s baseline) |
 
 ---
 
