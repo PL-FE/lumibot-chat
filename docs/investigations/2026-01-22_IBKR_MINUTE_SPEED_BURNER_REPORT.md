@@ -100,6 +100,7 @@ Environment (protocol baseline):
 | 2026-01-23 | Speed up `get_iter_count()` cursor path (commit `41ffb849`) | 0.857 | 1.206 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 | 2026-01-23 | Avoid `.iloc` overhead in `Data.get_bars()` (commit `51f8b575`) | 0.873 | 1.215 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 | 2026-01-23 | Faster backtest trade events (commit `37454be6`) | 0.841 | 1.177 | median of 3; warm-cache; `--iterations 2000`; no profiler |
+| 2026-01-23 | IBKR warm-cache hot paths (commit `386bc700`) | 0.704 | 0.964 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 
 ### Long-run sanity (iterations scaling)
 
@@ -128,6 +129,7 @@ This table uses a longer loop length to catch that early:
 | 2026-01-23 | Speed up `get_iter_count()` cursor path (commit `41ffb849`) | 20000 | 4.810 | 5.329 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 | 2026-01-23 | Avoid `.iloc` overhead in `Data.get_bars()` (commit `51f8b575`) | 20000 | 4.596 | 4.900 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 | 2026-01-23 | Faster backtest trade events (commit `37454be6`) | 20000 | 4.512 | 4.945 | median of 3; warm-cache; `--iterations 20000`; no profiler |
+| 2026-01-23 | IBKR warm-cache hot paths (commit `386bc700`) | 20000 | 3.889 | 4.330 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 
 ---
 

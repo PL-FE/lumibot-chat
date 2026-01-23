@@ -253,3 +253,20 @@ Bucket summary (self time / `tsub_s`):
 Key delta:
 - Backtesting no longer runs `Order.is_equivalent_status()` chains for canonical broker events.
 - Trade-event rows are stored as compact tuples when audits are disabled (default), reducing per-event allocation.
+
+### 2026-01-23 — IBKR warm-cache hot paths (commit `386bc700`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_386bc700_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~69%
+- `pandas_numpy`: ~24%
+- `other`: ~4%
+- `stdlib_wait`: ~2%
+- `progress_logging`: ~2%
+
+Key delta:
+- MARKET fills avoid `Broker.get_quote()` (no `Quote` objects) via `BacktestingBroker._fast_get_bid_ask_for_fill()`.
+- IBKR `_pull_source_symbol_bars()` skips start/end datetime work when the series is already fully loaded for the backtest window.
+- IBKR `_pull_source_symbol_bars()` slices directly from `self._data_store` (avoids `find_asset_in_data_store()` candidate generation).
