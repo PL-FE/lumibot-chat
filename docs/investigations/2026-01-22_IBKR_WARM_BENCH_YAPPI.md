@@ -295,3 +295,31 @@ Key delta:
 - MARKET fills avoid `Broker.get_quote()` (no `Quote` objects) via `BacktestingBroker._fast_get_bid_ask_for_fill()`.
 - IBKR `_pull_source_symbol_bars()` skips start/end datetime work when the series is already fully loaded for the backtest window.
 - IBKR `_pull_source_symbol_bars()` slices directly from `self._data_store` (avoids `find_asset_in_data_store()` candidate generation).
+
+### 2026-01-23 — Reduce backtesting order/event overhead (commit `b30f9cc2`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_b30f9cc2_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~84%
+- `pandas_numpy`: ~8%
+- `other`: ~4%
+- `stdlib_wait`: ~3%
+- `progress_logging`: ~2%
+
+Top hotspots (self time / `tsub_s`):
+1. `lumibot/entities/order.py Order.__init__`
+2. `lumibot/entities/order.py OrderClass.__eq__`
+3. `lumibot/brokers/broker.py BacktestingBroker._process_trade_event`
+4. `lumibot/entities/data.py Data.get_iter_count`
+5. `lumibot/entities/data.py Data.get_bars`
+6. `lumibot/backtesting/backtesting_broker.py BacktestingBroker.process_pending_orders`
+7. `lumibot/entities/bars.py Bars.__init__`
+8. `pandas Index.__contains__`
+9. `lumibot/entities/asset.py AssetType.__eq__`
+10. `lumibot/tools/helpers.py parse_timestep_qty_and_unit`
+
+Key delta:
+- Micro-cuts reduce constant overhead in the order/event pipeline (fees, no-op subscriber events, discord formatting, enum comparisons).
+- The dominant bottleneck remains the **order + trade-event pipeline**, not the bars/history layer.

@@ -102,6 +102,7 @@ Environment (protocol baseline):
 | 2026-01-23 | Faster backtest trade events (commit `37454be6`) | 0.841 | 1.177 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 | 2026-01-23 | IBKR warm-cache hot paths (commit `386bc700`) | 0.704 | 0.964 | median of 3; warm-cache; `--iterations 2000`; no profiler |
 | 2026-01-23 | Cache repeated `Data.get_bars()` slices (commit `08f34b98`) | 0.504 | 0.768 | median of 3; warm-cache; `--iterations 2000`; no profiler; big win for daily + multi-minute repeated history calls |
+| 2026-01-23 | Reduce backtesting order/event overhead (commit `b30f9cc2`) | 0.491 | 0.735 | median of 3; warm-cache; `--iterations 2000`; no profiler; micro-cuts: Order/Enum hot-paths + no-op events + skip backtest-only fee/discord work |
 
 ### Long-run sanity (iterations scaling)
 
@@ -132,6 +133,7 @@ This table uses a longer loop length to catch that early:
 | 2026-01-23 | Faster backtest trade events (commit `37454be6`) | 20000 | 4.512 | 4.945 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 | 2026-01-23 | IBKR warm-cache hot paths (commit `386bc700`) | 20000 | 3.889 | 4.330 | median of 3; warm-cache; `--iterations 20000`; no profiler |
 | 2026-01-23 | Cache repeated `Data.get_bars()` slices (commit `08f34b98`) | 20000 | 2.469 | 2.163 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.632s (~13.6× vs 62.911s baseline) |
+| 2026-01-23 | Reduce backtesting order/event overhead (commit `b30f9cc2`) | 20000 | 2.439 | 2.234 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.675s (~13.5× vs 62.911s baseline) |
 
 ---
 
