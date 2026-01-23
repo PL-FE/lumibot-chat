@@ -379,3 +379,11 @@ Capture:
 
 Key delta:
 - `OrderClass.__eq__` call count drops to ~140k in the 2000-iteration profile (from ~290k), since hot `Order` helper methods now use identity comparisons (`is`) instead of `==`/list-membership checks.
+
+### 2026-01-23 — Avoid `DataFrame.empty` in `Data.get_bars()` (commit `3a264c0e`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_3a264c0e_2000_profile_yappi.csv`
+
+Key delta:
+- `DataFrame.empty` disappears from the profile (0 calls), replaced with cheap `df.shape[0]` checks for empty slices/cache hits.

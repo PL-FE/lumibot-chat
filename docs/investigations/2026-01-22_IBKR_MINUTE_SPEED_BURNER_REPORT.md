@@ -108,6 +108,7 @@ Environment (protocol baseline):
 | 2026-01-23 | Cache repeated `get_iter_count()` dt lookups (commit `9cdb91eb`) | 0.474 | 0.711 | median of 3; warm-cache; `--iterations 2000`; no profiler; reduces duplicate dt→index work inside a single iteration |
 | 2026-01-23 | Cut Bars column checks for non-dividend data (commit `b1c9e232`) | 0.460 | 0.690 | median of 3; warm-cache; `--iterations 2000`; no profiler; reduces `Index.__contains__` probes in `Bars.__init__` |
 | 2026-01-23 | Speed up Order side/type checks (commit `aa341282`) | 0.458 | 0.690 | median of 3; warm-cache; `--iterations 2000`; no profiler; uses identity comparisons in hot `Order` helpers |
+| 2026-01-23 | Avoid `DataFrame.empty` in `Data.get_bars()` (commit `3a264c0e`) | 0.450 | 0.671 | median of 3; warm-cache; `--iterations 2000`; no profiler; removes expensive `DataFrame.empty` checks in tight loops |
 
 ### Long-run sanity (iterations scaling)
 
@@ -144,6 +145,7 @@ This table uses a longer loop length to catch that early:
 | 2026-01-23 | Cache repeated `get_iter_count()` dt lookups (commit `9cdb91eb`) | 20000 | 2.345 | 2.088 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.442s (~14.2× vs 62.911s baseline) |
 | 2026-01-23 | Cut Bars column checks for non-dividend data (commit `b1c9e232`) | 20000 | 2.251 | 1.932 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.181s (~15.0× vs 62.911s baseline) |
 | 2026-01-23 | Speed up Order side/type checks (commit `aa341282`) | 20000 | 2.253 | 1.947 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=4.200s (~15.0× vs 62.911s baseline) |
+| 2026-01-23 | Avoid `DataFrame.empty` in `Data.get_bars()` (commit `3a264c0e`) | 20000 | 2.152 | 1.842 | median of 3; warm-cache; `--iterations 20000`; no profiler; total=3.991s (~15.8× vs 62.911s baseline) |
 
 ---
 
