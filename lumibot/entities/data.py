@@ -1077,6 +1077,24 @@ class Data:
             if start_row == end_row and end_row > 0:
                 start_row = max(0, end_row - 1)
 
+            # PERF: Many strategies request multi-minute history every minute (e.g., 15m SMA while
+            # running on a 1m cadence). When the "current" native bar has not advanced, the
+            # resulting slice is identical. Cache the last slice to avoid repeated DataFrame
+            # construction and allow downstream `Bars` to reuse precomputed derived columns.
+            cache_key = (
+                "native_multi_minute",
+                int(quantity),
+                int(num_periods),
+                int(timeshift or 0),
+                int(start_row),
+                int(end_row),
+            )
+            cached_key = getattr(self, "_get_bars_slice_cache_key", None)
+            if cached_key == cache_key:
+                cached_df = getattr(self, "_get_bars_slice_cache_df", None)
+                if cached_df is not None and not cached_df.empty:
+                    return cached_df
+
             # PERF: `.iloc[start:end]` goes through the indexer stack (`_iLocIndexer`) which
             # performs validation on every call. In backtesting we already operate on integer
             # row bounds; `_slice()` is the internal fast-path that avoids the indexer overhead.
@@ -1111,6 +1129,8 @@ class Data:
             if required and getattr(self, "_ohlc_has_nan", True):
                 df = df.dropna(subset=required)
 
+            self._get_bars_slice_cache_key = cache_key
+            self._get_bars_slice_cache_df = df
             return df
 
         agg_column_map = {
@@ -1173,6 +1193,23 @@ class Data:
             if start_row == end_row and end_row > 0:
                 start_row = max(0, end_row - 1)
 
+            # PERF: Cache the last native slice. This is particularly effective for `timestep="day"`
+            # requests when strategies run on an intraday cadence: the daily window only changes
+            # at most once per day, so most calls can reuse the same slice.
+            cache_key = (
+                "native_1",
+                str(timestep),
+                int(length),
+                int(timeshift or 0),
+                int(start_row),
+                int(end_row),
+            )
+            cached_key = getattr(self, "_get_bars_slice_cache_key", None)
+            if cached_key == cache_key:
+                cached_df = getattr(self, "_get_bars_slice_cache_df", None)
+                if cached_df is not None and not cached_df.empty:
+                    return cached_df
+
             # PERF: `.iloc[start:end]` goes through the indexer stack (`_iLocIndexer`) which
             # performs validation on every call. In backtesting we already operate on integer
             # row bounds; `_slice()` is the internal fast-path that avoids the indexer overhead.
@@ -1207,6 +1244,8 @@ class Data:
             if required and getattr(self, "_ohlc_has_nan", True):
                 df = df.dropna(subset=required)
 
+            self._get_bars_slice_cache_key = cache_key
+            self._get_bars_slice_cache_df = df
             return df
 
         if timestep == "day" and self.timestep == "minute":
