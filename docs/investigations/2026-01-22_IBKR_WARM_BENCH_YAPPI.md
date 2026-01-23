@@ -259,6 +259,31 @@ Key delta:
 Capture:
 - `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_386bc700_2000_profile_yappi.csv`
 
+### 2026-01-23 — Cache repeated `Data.get_bars()` slices (commit `08f34b98`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_slice_cache_2000_profile_yappi.csv`
+
+Bucket summary (self time / `tsub_s`):
+- `lumibot_other`: ~82%
+- `pandas_numpy`: ~7%
+- `other`: ~7%
+- `stdlib_wait`: ~2%
+- `progress_logging`: ~2%
+
+Key delta:
+- pandas slicing/index work drops sharply because identical native slices are reused (most impactful for:
+  - `timestep="day"` requests in intraday strategies (daily window changes rarely)
+  - native multi-minute bars requested every minute (e.g., `15minute` history in 1-minute strategies)
+- Remaining bottleneck shifts toward the LumiBot order/event pipeline:
+  - `Order.__init__`
+  - `BacktestingBroker._process_trade_event`
+  - `BacktestingBroker.process_pending_orders` / `_execute_filled_order`
+
+Safety note:
+- This optimization reuses the same DataFrame object for identical slices. Strategies should treat
+  `bars.df` as **read-only** (or call `.copy()` before mutating) to avoid unexpected cross-call effects.
+
 Bucket summary (self time / `tsub_s`):
 - `lumibot_other`: ~69%
 - `pandas_numpy`: ~24%
