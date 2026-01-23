@@ -387,3 +387,11 @@ Capture:
 
 Key delta:
 - `DataFrame.empty` disappears from the profile (0 calls), replaced with cheap `df.shape[0]` checks for empty slices/cache hits.
+
+### 2026-01-23 — Cache `Bars` `df.columns` flags (commit `00c96d43`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_00c96d43_2000_profile_yappi.csv`
+
+Key delta:
+- `Index.__contains__` disappears from the profile (0 calls), since `Bars.__init__` now caches column presence flags per `df.columns` object.
