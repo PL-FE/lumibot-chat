@@ -54,6 +54,33 @@ DEFAULT_CLEANUP_CONFIG = {
     }
 }
 
+# PERF: Trade event logs are append-only and can be very large in backtests. Building a full
+# per-event dict (dozens of keys) is expensive and dominates hot-path CPU when a strategy submits
+# many orders. For the common case where audits are disabled, store a compact tuple instead and
+# materialize a DataFrame lazily with a fixed schema.
+TRADE_EVENT_LOG_COLUMNS = (
+    "time",
+    "strategy",
+    "exchange",
+    "identifier",
+    "symbol",
+    "side",
+    "type",
+    "status",
+    "price",
+    "filled_quantity",
+    "multiplier",
+    "trade_cost",
+    "trade_slippage",
+    "time_in_force",
+    "asset.right",
+    "asset.strike",
+    "asset.multiplier",
+    "asset.expiration",
+    "asset.asset_type",
+    "price_source",
+)
+
 # Consolidate errors from different brokers into a single class that can be easily caught even
 # if the user decides to switch brokers.
 class LumibotBrokerAPIError(Exception):
@@ -106,6 +133,7 @@ class Broker(ABC):
             deque(maxlen=self._trade_event_log_max_rows) if self._trade_event_log_max_rows else []
         )
         self._trade_event_log_df_cache = pd.DataFrame()
+        self._trade_event_log_columns = TRADE_EVENT_LOG_COLUMNS
         self._hold_trade_events = False
         self._held_trades = []
         self._config = config
@@ -1966,7 +1994,15 @@ class Broker(ABC):
         if cache is None:
             rows = getattr(self, "_trade_event_log_rows", [])
             # `rows` may be a deque in live mode.
-            cache = pd.DataFrame(list(rows)) if rows else pd.DataFrame()
+            if not rows:
+                cache = pd.DataFrame()
+            else:
+                first = next(iter(rows), None)
+                if isinstance(first, dict):
+                    cache = pd.DataFrame(list(rows))
+                else:
+                    cols = getattr(self, "_trade_event_log_columns", None) or None
+                    cache = pd.DataFrame(list(rows), columns=list(cols) if cols else None)
             self._trade_event_log_df_cache = cache
         return cache
 
@@ -2068,76 +2104,145 @@ class Broker(ABC):
             except ValueError:
                 raise ValueError(f"price must be a positive float, received {price} instead") from None
 
-        if Order.is_equivalent_status(type_event, self.NEW_ORDER):
-            order = self._process_new_order(stored_order)
-            if order:
-                self._on_new_order(order)
-        elif Order.is_equivalent_status(type_event, self.PLACEHOLDER_ORDER):
-            order = self._process_placeholder_order(stored_order)
-            # No notification needed for placeholder
-        elif Order.is_equivalent_status(type_event, self.CANCELED_ORDER):
-            order = self._process_canceled_order(stored_order)
-            if order:
-                self._on_canceled_order(order)
-        elif Order.is_equivalent_status(type_event, self.ERROR_ORDER):
-            order = self._process_error_order(stored_order, error or LumibotBrokerAPIError("Unknown order error"))
-            if order:
-                # Notify subscriber about the error event
-                subscriber = self._get_subscriber(order.strategy)
-                if subscriber:
-                    payload = dict(order=order, error=error)
-                    subscriber.add_event(subscriber.ERROR_ORDER, payload)
-        elif Order.is_equivalent_status(type_event, self.MODIFIED_ORDER):
-            # TODO: Implement modification logic and notification if needed
-            if self.logger.isEnabledFor(logging.INFO):
-                self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
-            # Update raw data if modification response is available (might need adjustment)
-            # stored_order.update_raw(modification_response_data)
-            # self._on_modified_order(stored_order) # Need to implement _on_modified_order
-            pass
-        elif Order.is_equivalent_status(type_event, self.PARTIALLY_FILLED_ORDER):
-            stored_order, position = self._process_partially_filled_order(stored_order, price, filled_quantity)
-            if position:
-                self._on_partially_filled_order(position, stored_order, price, filled_quantity, multiplier)
-        elif Order.is_equivalent_status(type_event, self.FILLED_ORDER):
-            position = self._process_filled_order(stored_order, price, filled_quantity)
-            if position:
-                self._on_filled_order(position, stored_order, price, filled_quantity, multiplier)
-        elif Order.is_equivalent_status(type_event, self.CASH_SETTLED):
-            self._process_cash_settlement(stored_order, price, filled_quantity)
-            stored_order.order_type = self.CASH_SETTLED
+        # PERF: Backtesting emits the canonical event types from Broker constants, so we can avoid
+        # the expensive "equivalent status" normalization logic intended for live brokers.
+        if getattr(self, "IS_BACKTESTING_BROKER", False):
+            if type_event == self.NEW_ORDER:
+                order = self._process_new_order(stored_order)
+                if order:
+                    self._on_new_order(order)
+            elif type_event == self.PLACEHOLDER_ORDER:
+                self._process_placeholder_order(stored_order)
+                # No notification needed for placeholder
+            elif type_event == self.CANCELED_ORDER:
+                order = self._process_canceled_order(stored_order)
+                if order:
+                    self._on_canceled_order(order)
+            elif type_event == self.ERROR_ORDER:
+                order = self._process_error_order(stored_order, error or LumibotBrokerAPIError("Unknown order error"))
+                if order:
+                    subscriber = self._get_subscriber(order.strategy)
+                    if subscriber:
+                        payload = dict(order=order, error=error)
+                        subscriber.add_event(subscriber.ERROR_ORDER, payload)
+            elif type_event == self.MODIFIED_ORDER:
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
+            elif type_event == self.PARTIALLY_FILLED_ORDER:
+                stored_order, position = self._process_partially_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_partially_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif type_event == self.FILLED_ORDER:
+                position = self._process_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif type_event == self.CASH_SETTLED:
+                self._process_cash_settlement(stored_order, price, filled_quantity)
+                stored_order.order_type = self.CASH_SETTLED
+            else:
+                self.logger.warning(f"Unknown trade event type: {type_event}")
         else:
-            self.logger.warning(f"Unknown trade event type: {type_event}")
+            if Order.is_equivalent_status(type_event, self.NEW_ORDER):
+                order = self._process_new_order(stored_order)
+                if order:
+                    self._on_new_order(order)
+            elif Order.is_equivalent_status(type_event, self.PLACEHOLDER_ORDER):
+                self._process_placeholder_order(stored_order)
+                # No notification needed for placeholder
+            elif Order.is_equivalent_status(type_event, self.CANCELED_ORDER):
+                order = self._process_canceled_order(stored_order)
+                if order:
+                    self._on_canceled_order(order)
+            elif Order.is_equivalent_status(type_event, self.ERROR_ORDER):
+                order = self._process_error_order(stored_order, error or LumibotBrokerAPIError("Unknown order error"))
+                if order:
+                    # Notify subscriber about the error event
+                    subscriber = self._get_subscriber(order.strategy)
+                    if subscriber:
+                        payload = dict(order=order, error=error)
+                        subscriber.add_event(subscriber.ERROR_ORDER, payload)
+            elif Order.is_equivalent_status(type_event, self.MODIFIED_ORDER):
+                # TODO: Implement modification logic and notification if needed
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
+                pass
+            elif Order.is_equivalent_status(type_event, self.PARTIALLY_FILLED_ORDER):
+                stored_order, position = self._process_partially_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_partially_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif Order.is_equivalent_status(type_event, self.FILLED_ORDER):
+                position = self._process_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif Order.is_equivalent_status(type_event, self.CASH_SETTLED):
+                self._process_cash_settlement(stored_order, price, filled_quantity)
+                stored_order.order_type = self.CASH_SETTLED
+            else:
+                self.logger.warning(f"Unknown trade event type: {type_event}")
 
         current_dt = self.data_source.get_datetime()
-        new_row = {
-            "time": current_dt,
-            "strategy": stored_order.strategy,
-            "exchange": stored_order.exchange,
-            "identifier": stored_order.identifier,
-            "symbol": stored_order.symbol,
-            "side": stored_order.side,
-            "type": stored_order.order_type,
-            "status": stored_order.status,
-            "price": price,
-            "filled_quantity": filled_quantity,
-            "multiplier": multiplier,
-            "trade_cost": stored_order.trade_cost,
-            "trade_slippage": getattr(stored_order, "trade_slippage", None),
-            "time_in_force": stored_order.time_in_force,
-            "asset.right": stored_order.asset.right if stored_order.asset is not None else None,
-            "asset.strike": stored_order.asset.strike if stored_order.asset is not None else None,
-            "asset.multiplier": stored_order.asset.multiplier if stored_order.asset is not None else None,
-            "asset.expiration": stored_order.asset.expiration if stored_order.asset is not None else None,
-            "asset.asset_type": stored_order.asset.asset_type if stored_order.asset is not None else None,
-        }
+        # Cache the audit-enabled flag when available (BacktestingBroker sets this in __init__).
+        audit_enabled = getattr(self, "_backtest_audit_enabled", None)
+        if audit_enabled is None:
+            audit_enabled = self._truthy_env(os.environ.get("LUMIBOT_BACKTEST_AUDIT"))
+
+        asset = getattr(stored_order, "asset", None)
+        price_source = getattr(stored_order, "_price_source", None)
+
+        if audit_enabled:
+            new_row = {
+                "time": current_dt,
+                "strategy": stored_order.strategy,
+                "exchange": stored_order.exchange,
+                "identifier": stored_order.identifier,
+                "symbol": stored_order.symbol,
+                "side": stored_order.side,
+                "type": stored_order.order_type,
+                "status": stored_order.status,
+                "price": price,
+                "filled_quantity": filled_quantity,
+                "multiplier": multiplier,
+                "trade_cost": stored_order.trade_cost,
+                "trade_slippage": getattr(stored_order, "trade_slippage", None),
+                "time_in_force": stored_order.time_in_force,
+                "asset.right": asset.right if asset is not None else None,
+                "asset.strike": asset.strike if asset is not None else None,
+                "asset.multiplier": asset.multiplier if asset is not None else None,
+                "asset.expiration": asset.expiration if asset is not None else None,
+                "asset.asset_type": asset.asset_type if asset is not None else None,
+            }
+            if price_source:
+                new_row["price_source"] = price_source
+        else:
+            new_row = (
+                current_dt,
+                stored_order.strategy,
+                stored_order.exchange,
+                stored_order.identifier,
+                stored_order.symbol,
+                stored_order.side,
+                stored_order.order_type,
+                stored_order.status,
+                price,
+                filled_quantity,
+                multiplier,
+                stored_order.trade_cost,
+                getattr(stored_order, "trade_slippage", None),
+                stored_order.time_in_force,
+                asset.right if asset is not None else None,
+                asset.strike if asset is not None else None,
+                asset.multiplier if asset is not None else None,
+                asset.expiration if asset is not None else None,
+                asset.asset_type if asset is not None else None,
+                price_source,
+            )
 
         # Backtest-only trade audit telemetry.
         #
         # WHY: NVDA/SPX investigations require a bulletproof, per-fill record of the *inputs used
         # to decide* a fill (bar OHLC, quote bid/ask, underlying quote, slippage model, etc.).
         # We keep this behind an env flag because it increases CSV width and can add overhead.
-        if self._truthy_env(os.environ.get("LUMIBOT_BACKTEST_AUDIT")):
+        if audit_enabled:
             audit = getattr(stored_order, "_audit", None)
             if isinstance(audit, dict) and audit:
                 for key, value in audit.items():
@@ -2148,9 +2253,7 @@ class Broker(ABC):
             except Exception:
                 pass
 
-        price_source = getattr(stored_order, "_price_source", None)
         if price_source:
-            new_row["price_source"] = price_source
             try:
                 delattr(stored_order, "_price_source")
             except AttributeError:
