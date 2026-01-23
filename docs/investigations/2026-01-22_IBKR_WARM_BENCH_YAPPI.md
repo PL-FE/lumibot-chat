@@ -371,3 +371,11 @@ Capture:
 
 Key delta:
 - `Index.__contains__` call count drops to ~40k in the 2000-iteration profile (from ~80k), since most futures/crypto datasets do not have dividends and we avoid checking dividend-derived columns.
+
+### 2026-01-23 — Speed up Order side/type checks (commit `aa341282`)
+
+Capture:
+- `tests/backtest/_ibkr_speed_burner_cache/_profiles/ibkr_warmcache_aa341282_2000_profile_yappi.csv`
+
+Key delta:
+- `OrderClass.__eq__` call count drops to ~140k in the 2000-iteration profile (from ~290k), since hot `Order` helper methods now use identity comparisons (`is`) instead of `==`/list-membership checks.
