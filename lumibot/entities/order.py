@@ -3,7 +3,7 @@ import uuid
 from collections import namedtuple
 from decimal import Decimal
 from enum import Enum
-from threading import Event
+from threading import Event, Lock
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -18,6 +18,53 @@ from lumibot.tools.types import check_positive, check_price
 
 logger = get_logger(__name__)
 
+_LAZY_EVENT_LOCK = Lock()
+
+
+class _LazyEvent:
+    """Event-like helper that only allocates a real threading.Event when `.wait()` is used.
+
+    WHY: Creating multiple `threading.Event()` objects per Order is a measurable hot path in
+    minute-level backtests that submit many orders (each Event allocates a Condition/Lock). Most
+    backtests never call `.wait()`, so we can save significant overhead by deferring allocation.
+    """
+
+    __slots__ = ("_flag", "_event")
+
+    def __init__(self) -> None:
+        self._flag = False
+        self._event: Event | None = None
+
+    def is_set(self) -> bool:
+        return bool(self._flag)
+
+    def set(self) -> None:
+        self._flag = True
+        event = self._event
+        if event is not None:
+            event.set()
+
+    def clear(self) -> None:
+        self._flag = False
+        event = self._event
+        if event is not None:
+            event.clear()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if self._flag:
+            return True
+
+        event = self._event
+        if event is None:
+            with _LAZY_EVENT_LOCK:
+                event = self._event
+                if event is None:
+                    event = Event()
+                    if self._flag:
+                        event.set()
+                    self._event = event
+        return bool(event.wait(timeout=timeout))
+
 
 # Custom string enum implementation for Python 3.9 compatibility
 class StrEnum(str, Enum):
@@ -30,11 +77,13 @@ class StrEnum(str, Enum):
     3. Can be used in string comparisons without explicit conversion
     """
     def __str__(self):
-        return self.value
+        # Avoid Enum.value property lookups in hot paths; StrEnum members are already `str`.
+        return str.__str__(self)
 
     def __eq__(self, other):
         if isinstance(other, str):
-            return self.value == other
+            # Avoid Enum.value property lookups; compare as plain strings.
+            return str.__eq__(self, other)
         return super().__eq__(other)
 
     def __hash__(self):
@@ -415,11 +464,13 @@ class Order:
             self.pair = pair
 
         # setting events
-        self._new_event = Event()
-        self._canceled_event = Event()
-        self._partial_filled_event = Event()
-        self._filled_event = Event()
-        self._closed_event = Event()
+        # PERF: use lazy events to avoid allocating multiple Condition/Lock objects per Order when
+        # no code is awaiting order lifecycle transitions (common in backtests).
+        self._new_event = _LazyEvent()
+        self._canceled_event = _LazyEvent()
+        self._partial_filled_event = _LazyEvent()
+        self._filled_event = _LazyEvent()
+        self._closed_event = _LazyEvent()
 
         # setting internal variables
         self._raw = None
