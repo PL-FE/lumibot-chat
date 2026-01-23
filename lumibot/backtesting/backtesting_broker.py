@@ -822,7 +822,6 @@ class BacktestingBroker(Broker):
             if position.quantity == 0:
                 logger.info(f"Position {position} liquidated")
                 self._filled_positions.remove(position)
-                self._cancel_open_orders_for_asset(order.strategy, order.asset, {order.identifier})
         else:
             self._filled_positions.append(position)  # New position, add it to the tracker
 
