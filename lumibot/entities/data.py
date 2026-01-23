@@ -515,6 +515,20 @@ class Data:
         # Store a second mapping keyed by python datetimes so `dt in iter_index_dict` is fast.
         self.iter_index_dict = {ts.to_pydatetime(): int(pos) for ts, pos in self.iter_index.items()}
 
+        # PERF: Precompute an integer nanoseconds view of the datetime index so `get_iter_count()`
+        # can use NumPy search/forward cursors without triggering pandas datetime scalar validation.
+        #
+        # NOTE: For tz-aware indexes, `.asi8` is UTC nanoseconds since epoch, which matches
+        # `datetime.timestamp()` semantics for tz-aware python datetimes.
+        try:
+            self._index_values_ns = self.df.index.asi8
+        except Exception:
+            self._index_values_ns = None
+
+        # Reset the per-series cursor used by `get_iter_count()` (safe; backtests are single-threaded).
+        self._iter_count_cursor_ns = None
+        self._iter_count_cursor_i = 0
+
         # Populate the datalines dictionary (assuming to_datalines is defined elsewhere).
         self.datalines = dict()
         self.to_datalines()
@@ -590,20 +604,49 @@ class Data:
         # datetime keys leads to misses and forces an expensive `asof()` fallback.
         dt_key = dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt
 
-        # Search for dt in self.iter_index_dict
+        # Fast-path: exact bar timestamp lookup.
         if dt_key in self.iter_index_dict:
             i = self.iter_index_dict[dt_key]
-        else:
-            # If not found, get the last known data.
-            #
-            # NOTE: `Series.asof()` is convenient but slow in tight loops. Use the underlying
-            # DatetimeIndex binary search instead.
-            #
-            # Call sites that slice with an exclusive end bound must apply the +1 themselves
-            # where appropriate (daily bars), otherwise `get_last_price()` and other direct
-            # indexers can go out-of-bounds when dt is after the last bar.
-            i = int(self.df.index.searchsorted(dt_key, side="right")) - 1
+            index_ns = getattr(self, "_index_values_ns", None)
+            if index_ns is not None:
+                try:
+                    # Cursor uses the index's own value to avoid timestamp() float math.
+                    self._iter_count_cursor_ns = int(index_ns[int(i)])
+                except Exception:
+                    self._iter_count_cursor_ns = None
+            self._iter_count_cursor_i = int(i)
+            return i
 
+        # Fast-path: monotonic cursor (common in backtests where dt advances by 1 bar).
+        index_ns = getattr(self, "_index_values_ns", None)
+        if index_ns is not None:
+            try:
+                dt_ns = int(dt_key.timestamp() * 1_000_000_000)
+            except Exception:
+                dt_ns = None
+
+            if dt_ns is not None:
+                cursor_ns = getattr(self, "_iter_count_cursor_ns", None)
+                cursor_i = getattr(self, "_iter_count_cursor_i", None)
+                if cursor_ns is not None and cursor_i is not None and dt_ns >= int(cursor_ns):
+                    i = int(cursor_i)
+                    n = len(index_ns)
+                    while (i + 1) < n and int(index_ns[i + 1]) <= dt_ns:
+                        i += 1
+                    self._iter_count_cursor_ns = dt_ns
+                    self._iter_count_cursor_i = i
+                    return i
+
+                # Fallback: binary search on the integer index.
+                i = int(np.searchsorted(index_ns, dt_ns, side="right")) - 1
+                self._iter_count_cursor_ns = dt_ns
+                self._iter_count_cursor_i = i
+                return i
+
+        # Fallback: pandas searchsorted (kept for safety when the fast-path index is unavailable).
+        i = int(self.df.index.searchsorted(dt_key, side="right")) - 1
+        self._iter_count_cursor_ns = None
+        self._iter_count_cursor_i = int(i)
         return i
 
     def check_data(func):
@@ -670,11 +713,8 @@ class Data:
             if getattr(self, "iter_index_dict", None) is None:
                 self.repair_times_and_fill(self.df.index)
 
-            if dt_key in self.iter_index_dict:
-                i = self.iter_index_dict[dt_key]
-            else:
-                # If not found, get the last known data
-                i = int(self.df.index.searchsorted(dt_key, side="right")) - 1
+            # Use the optimized iter-count implementation (dict hit, cursor, or searchsorted fallback).
+            i = self.get_iter_count(dt_key)
 
             data_index = i + 1 - length - timeshift
             is_data = data_index >= 0
