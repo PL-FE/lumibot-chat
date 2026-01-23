@@ -830,7 +830,7 @@ class Order:
             elif limit_price is not None and stop_price is None:
                 self.order_type = self.OrderType.LIMIT
 
-            elif self.order_class == self.OrderClass.OCO:
+            elif self.order_class is self.OrderClass.OCO:
                 # This is a "One-Cancel-Other" advanced order. All info needed to calculate the child orders exists
                 # so they will be created automatically here unless specified directly by the user. It is expected that
                 # the broker will only submit the child orders as active orders, the parent order is just to tie them
@@ -847,7 +847,7 @@ class Order:
     def _set_order_class_children(self, secondary_limit_price, secondary_stop_price, secondary_stop_limit_price,
                                   secondary_trail_price, secondary_trail_percent):
 
-        if self.order_class == self.OrderClass.OCO:
+        if self.order_class is self.OrderClass.OCO:
             # This is a "One-Cancel-Other" advanced order. All info needed to calculate the child orders exists
             # so they will be created automatically here unless specified directly by the user. It is expected that
             # the broker will only submit the child orders as active orders, the parent order is just to tie them
@@ -889,7 +889,7 @@ class Order:
                 raise ValueError("Order class is OCO but child orders are not set and no limit/stop prices have "
                                  "been provided.")
 
-        elif self.order_class == self.OrderClass.BRACKET:
+        elif self.order_class is self.OrderClass.BRACKET:
             # This is a "Bracket" advanced order which typically consists of a primary (entry) order and
             # two child orders. The user can provide their own list of child orders to the parent order object to
             # override the defaults. It is expected that the broker object will submit the parent (entry) order as
@@ -936,7 +936,7 @@ class Order:
                 self.child_orders[0].dependent_order = self.child_orders[1]
                 self.child_orders[1].dependent_order = self.child_orders[0]
 
-        elif self.order_class == self.OrderClass.OTO:
+        elif self.order_class is self.OrderClass.OTO:
             # This is a "One-Triggers-One" advanced order. This order is typically used as a "half-bracket" where the
             # parent order is an entry order and the child order is either the stop or limit order that will be
             # placed if the parent order is filled. It is expected that the broker object will submit the
@@ -1035,7 +1035,7 @@ class Order:
 
         # Update the quantity for all OCO child orders. Multileg orders will have child orders that
         # can have different quantities, so do not update them here.
-        if self.order_class != self.OrderClass.MULTILEG and self.child_orders:
+        if self.order_class is not self.OrderClass.MULTILEG and self.child_orders:
             for child_order in self.child_orders:
                 child_order.quantity = quantity
 
