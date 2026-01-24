@@ -390,17 +390,14 @@ DOWNLOADER_MODE = bool(_downloader_base_env)
 #   start/stop/kill a local ThetaTerminal process because it can steal/kill the single licensed session.
 REMOTE_DOWNLOADER_ENABLED = DOWNLOADER_MODE or _coerce_skip_flag(os.environ.get("DATADOWNLOADER_SKIP_LOCAL_START"), BASE_URL)
 if DOWNLOADER_MODE:
-    logger.info("[THETA][CONFIG] Data Downloader enabled at %s", BASE_URL)
+    # Avoid leaking private infrastructure hostnames in logs. Loopback URLs are safe to print.
+    if _is_loopback_url(BASE_URL):
+        logger.info("[THETA][CONFIG] Data Downloader enabled at %s", BASE_URL)
+    else:
+        logger.info("[THETA][CONFIG] Data Downloader enabled (remote URL redacted)")
     if DOWNLOADER_API_KEY:
-        # Log a safe fingerprint so prod runs can confirm the key is present without leaking it.
-        key_prefix = DOWNLOADER_API_KEY[:4]
-        key_suffix = DOWNLOADER_API_KEY[-4:] if len(DOWNLOADER_API_KEY) > 8 else ""
-        logger.info(
-            "[THETA][CONFIG] Downloader API key detected (len=%d, prefix=%s..., suffix=...%s)",
-            len(DOWNLOADER_API_KEY),
-            key_prefix,
-            key_suffix,
-        )
+        # Confirm presence without leaking any part of the key.
+        logger.info("[THETA][CONFIG] Downloader API key detected (len=%d)", len(DOWNLOADER_API_KEY))
     else:
         # Use DEBUG level - this fires at module import time before ECS secrets injection.
         # The key is typically available at runtime; a WARNING here creates noise in logs.
@@ -3901,7 +3898,27 @@ def get_missing_dates(df_all, asset, start, end):
         0 if df_all is None else len(df_all)
     )
 
-    trading_dates = get_trading_dates(asset, start, end)
+    # Backtesting end-date semantics: many callers (including acceptance backtests) represent an
+    # end-exclusive date as a midnight timestamp on the following day (e.g., BACKTESTING_END=YYYY-MM-DD).
+    #
+    # If we treat that midnight as end-inclusive when computing trading-day coverage, we can
+    # incorrectly require the next trading day and enqueue a downloader request even when the S3
+    # cache is fully warm for the intended window.
+    #
+    # Normalize midnight end bounds to be end-exclusive for trading-date coverage.
+    end_for_trading_dates = end
+    try:
+        if isinstance(end_for_trading_dates, datetime) and (
+            end_for_trading_dates.hour,
+            end_for_trading_dates.minute,
+            end_for_trading_dates.second,
+            end_for_trading_dates.microsecond,
+        ) == (0, 0, 0, 0):
+            end_for_trading_dates = end_for_trading_dates - timedelta(seconds=1)
+    except Exception:
+        end_for_trading_dates = end
+
+    trading_dates = get_trading_dates(asset, start, end_for_trading_dates)
 
     logger.debug(
         "[THETA][DEBUG][CACHE][TRADING_DATES] asset=%s | "
@@ -4015,6 +4032,36 @@ def get_missing_dates(df_all, asset, start, end):
                 missing_dates = [d for d in missing_dates if d not in suppress_tail]
 
     if placeholder_dates and missing_dates:
+        # Backtesting correctness + performance invariant:
+        # - Acceptance backtests (and warm-cache backtests in general) must be deterministic and
+        #   queue-free once S3/local caches are populated.
+        #
+        # ThetaData caches record "missing=True" placeholder rows to mark trading days where the
+        # provider returned no data. For options we already treat these placeholders as stable
+        # negative caches to avoid endless refetch loops.
+        #
+        # For indices/stocks, repeatedly trying to "heal" placeholder days during backtests breaks
+        # the warm-cache invariant by causing downloader submissions even when S3 is warm. In
+        # backtests we instead treat placeholder-only days as "known unavailable" and do not
+        # refetch them automatically. (If users want to heal placeholder coverage, they can wipe
+        # caches or run an explicit re-warm/cold run.)
+        is_backtesting = str(os.environ.get("IS_BACKTESTING", "false")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if is_backtesting and str(getattr(asset, "asset_type", "") or "").lower() in {"stock", "index"}:
+            suppress_placeholder_days = placeholder_dates & set(missing_dates)
+            if suppress_placeholder_days:
+                logger.info(
+                    "[THETA][CACHE][PLACEHOLDER_SUPPRESS] asset=%s | suppressing %d placeholder trading day(s) to preserve warm-cache determinism",
+                    asset.symbol if hasattr(asset, "symbol") else str(asset),
+                    len(suppress_placeholder_days),
+                )
+                missing_dates = [d for d in missing_dates if d not in suppress_placeholder_days]
+
         today_utc = datetime.now(pytz.UTC).date()
         suppress_dates = {d for d in placeholder_dates if d > today_utc}
         # If the cache begins with placeholder coverage before the first real date, treat those dates
@@ -5718,6 +5765,33 @@ def get_historical_eod_data(
     # Cache consumers expect a unique datetime index; keep the last row for each date.
     if df.index.has_duplicates:
         df = df[~df.index.duplicated(keep="last")]
+
+    # ThetaData EOD sometimes returns placeholder rows with all-zero OHLC values for a valid trading day.
+    # If we treat those as real prices, portfolio valuation can collapse to ~0 for a single bar and then recover
+    # on the next bar ("portfolio cliff"). Treat the all-zero OHLC bar as missing so downstream repair/ffill
+    # can carry forward the last known close instead of valuing at 0.
+    #
+    # NOTE: We apply this only to stock/index EOD. For option EOD, OHLC may legitimately be 0 when only NBBO
+    # fields are populated, and we don't want to mask that.
+    if asset_type in {"stock", "index"} and {"open", "high", "low", "close"}.issubset(df.columns):
+        df = ensure_missing_column(df)
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        zero_ohlc_mask = df[["open", "high", "low", "close"]].eq(0).all(axis=1)
+        if zero_ohlc_mask.any():
+            zero_dates = sorted({ts.date().isoformat() for ts in df.index[zero_ohlc_mask]})
+            preview = ", ".join(zero_dates[:10]) + (" ..." if len(zero_dates) > 10 else "")
+            logger.warning(
+                "[THETA][WARN][EOD][ZERO_OHLC] asset=%s rows=%d dates=%s",
+                asset,
+                int(zero_ohlc_mask.sum()),
+                preview,
+            )
+            df.loc[zero_ohlc_mask, ["open", "high", "low", "close"]] = float("nan")
+            if "volume" in df.columns:
+                df.loc[zero_ohlc_mask, "volume"] = 0
+            df.loc[zero_ohlc_mask, "missing"] = True
 
     # Drop the ms_of_day, ms_of_day2, and date columns (not needed for daily bars)
     df = df.drop(columns=["ms_of_day", "ms_of_day2", "date"], errors='ignore')

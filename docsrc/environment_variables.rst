@@ -40,7 +40,7 @@ BACKTESTING_DATA_SOURCE
 - Purpose: Select the backtesting datasource **even if your code passes a `datasource_class`**.
 - Values (case-insensitive):
   - ``thetadata``, ``yahoo``, ``polygon``, ``alpaca``, ``ccxt``, ``databento``
-  - ``ibkr`` / ``interactivebrokersrest`` / ``interactive_brokers_rest`` (IBKR Client Portal REST via Data Downloader)
+  - ``ibkr`` / ``interactivebrokersrest`` / ``interactive_brokers_rest`` (IBKR Client Portal REST)
   - ``router`` (multi-provider routing; defaults to Theta for stock/option/index and IBKR for futures/crypto)
   - JSON mapping (multi-provider routing by asset type), e.g. ``{"default":"thetadata","stock":"thetadata","option":"thetadata","index":"thetadata","future":"ibkr","crypto":"ibkr"}``
     - Provider values are case/whitespace/_/- insensitive.
@@ -54,7 +54,7 @@ Testing / CI guardrails
 LUMIBOT_ACCEPTANCE_TRIPWIRE
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- Purpose: **Acceptance backtests only** — when truthy, a Python startup hook aborts the subprocess the moment it attempts to call the remote Data Downloader.
+- Purpose: **Acceptance backtests only** — when truthy, a Python startup hook aborts the subprocess the moment it attempts to call a remote data service.
 - Values: truthy enables (``1``, ``true``, ``yes``); unset/``0`` disables.
 - Notes:
   - This is an engineering/CI guardrail to enforce “warm-cache” acceptance backtests. It should not be used for normal production backtests.

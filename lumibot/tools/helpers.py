@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+from functools import lru_cache
 from decimal import Decimal, ROUND_HALF_EVEN
 
 import pytz
@@ -567,6 +568,36 @@ def create_options_symbol(stock_symbol, expiration_date, option_type, strike_pri
     return f"{stock_symbol}{expiration_str}{option_char}{strike_price_str}"
 
 
+@lru_cache(maxsize=256)
+def _parse_timestep_qty_and_unit_cached(timestep_str: str) -> tuple[int, str]:
+    """Cached implementation of `parse_timestep_qty_and_unit()`.
+
+    This is a hot path in backtesting: strategies frequently request history using the same
+    few timesteps (`minute`, `day`, and common multi-minute multiples). Caching avoids repeated
+    regex parsing and normalization work.
+    """
+    quantity = 1
+    unit = timestep_str
+    m = re.search(r"(\d+)\s*(\w+)", timestep_str)
+    if m:
+        quantity = int(m.group(1))
+        unit = m.group(2).rstrip("s")  # remove trailing 's' if any
+
+    raw_unit = str(unit or "").strip().lower()
+    canonical_unit = {
+        "m": "minute",
+        "min": "minute",
+        "minute": "minute",
+        "h": "hour",
+        "hr": "hour",
+        "hour": "hour",
+        "d": "day",
+        "day": "day",
+    }.get(raw_unit, raw_unit)
+
+    return quantity, canonical_unit
+
+
 def parse_timestep_qty_and_unit(timestep):
     """
     Parse the timestep string and return the quantity and unit.
@@ -581,15 +612,7 @@ def parse_timestep_qty_and_unit(timestep):
     tuple
         The quantity and unit.
     """
-
-    quantity = 1
-    unit = timestep
-    m = re.search(r"(\d+)\s*(\w+)", timestep)
-    if m:
-        quantity = int(m.group(1))
-        unit = m.group(2).rstrip("s")  # remove trailing 's' if any
-
-    return quantity, unit
+    return _parse_timestep_qty_and_unit_cached(str(timestep or ""))
 
 
 def get_decimals(number):

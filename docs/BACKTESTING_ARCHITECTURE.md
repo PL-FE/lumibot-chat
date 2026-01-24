@@ -6,6 +6,16 @@ LumiBot is a trading and backtesting framework. This document focuses on the **b
 
 **CORE PRINCIPLE: Backtesting must mimic live broker behavior.**
 
+**Accuracy (gold standard):** if we can replay a period that was traded live and reproduce the broker’s realized behavior (fills + PnL) within defined tolerances (tick size, fees model).
+
+### Accuracy validation ladder (Tier 3 is the real gold standard)
+
+- **Tier 1 (regression):** vendor parity / stored artifact baselines (e.g., DataBento-era runs) to detect drift.
+- **Tier 2 (audit):** manual reviews around known hard edges (session gaps, holidays/early closes, rolls, rounding).
+- **Tier 3 (gold):** **live replay baseline** — replay an interval that was traded live and reproduce broker fills + realized PnL within tolerances.
+
+**Speed:** warm-cache runs are queue-free and complete in bounded wall time, with evidence (request counts, cache hit rate, iterations/sec, and wall-time split: data wait vs compute vs artifacts).
+
 If the backtest execution model (data semantics, fill model, order handling, fees, pricing) diverges meaningfully from how real brokers behave, the backtest is not trustworthy.
 
 We optimize for:

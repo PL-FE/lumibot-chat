@@ -196,7 +196,7 @@ class StrategyExecutor(Thread):
     def safe_sleep(self, sleeptime):
         # This method should only be run in back testing. If it's running during live, something has gone wrong.
 
-        if self.strategy.is_backtesting:
+        if self.broker.IS_BACKTESTING_BROKER:
             self.process_queue()
 
             # PERF: Serializing positions/orders every bar is expensive and becomes a major cost in
@@ -541,24 +541,25 @@ class StrategyExecutor(Thread):
             quantity = payload["quantity"]
             multiplier = payload["multiplier"]
 
-            # Parent orders to not affect cash or trades directly, the individual child_orders will when they
-            # are filled. Skip the parent order so as not to double count.
+            # Parent orders do not affect cash/trades directly; individual child_orders do. Avoid
+            # enum conversion overhead for the common case (non-parent orders).
             update_cash = True
-            order_class_value = getattr(order, "order_class", None)
-            try:
-                order_class_enum = (
-                    Order.OrderClass(order_class_value)
-                    if order_class_value is not None
-                    else None
-                )
-            except ValueError:
-                order_class_enum = None
+            if order.is_parent():
+                order_class_value = getattr(order, "order_class", None)
+                try:
+                    order_class_enum = (
+                        Order.OrderClass(order_class_value)
+                        if order_class_value is not None
+                        else None
+                    )
+                except ValueError:
+                    order_class_enum = None
 
-            if order.is_parent() and order_class_enum not in (
-                Order.OrderClass.BRACKET,
-                Order.OrderClass.OTO,
-            ):
-                update_cash = False
+                if order_class_enum not in (
+                    Order.OrderClass.BRACKET,
+                    Order.OrderClass.OTO,
+                ):
+                    update_cash = False
 
             asset_type = getattr(order.asset, "asset_type", None)
 
@@ -1135,8 +1136,23 @@ class StrategyExecutor(Thread):
     def _on_filled_order(self, position, order, price, quantity, multiplier):
         self.strategy.on_filled_order(position, order, price, quantity, multiplier)
 
+        # PERF: In backtesting we never send Discord notifications (`Strategy.send_discord_message`
+        # hard-returns), but building the formatted message is still non-trivial work and can
+        # dominate high-churn backtests (100k+ fills). Skip the message construction entirely.
+        if self.broker.IS_BACKTESTING_BROKER:
+            # Let our listener know that an order has been filled (set in the callback)
+            if hasattr(self.strategy, "_filled_order_callback") and callable(self.strategy._filled_order_callback):
+                self.strategy._filled_order_callback(self, position, order, price, quantity, multiplier)
+            return
+
         # Get the portfolio value
-        portfolio_value = self.strategy.portfolio_value
+        # NOTE: In backtesting/unit-test harnesses we can process fills before portfolio value has
+        # been computed (or with a zero/empty portfolio). This event should not crash the run just
+        # because the Discord message can't compute a percentage.
+        try:
+            portfolio_value = float(self.strategy.portfolio_value or 0.0)
+        except Exception:
+            portfolio_value = 0.0
 
         # Calculate the value of the position
         order_value = price * float(quantity)
@@ -1146,7 +1162,7 @@ class StrategyExecutor(Thread):
             order_value = order_value * multiplier
 
         # Calculate the percent of the portfolio that this position represents
-        percent_of_portfolio = order_value / portfolio_value
+        percent_of_portfolio = (order_value / portfolio_value) if portfolio_value else 0.0
 
         # Capitalize the side
         side = order.side.capitalize()
@@ -1705,7 +1721,18 @@ class StrategyExecutor(Thread):
         """Execute the main backtesting iteration loop"""
         iteration_count = 0
 
-        while is_continuous_market or (time_to_close is not None and (time_to_close > self.strategy.minutes_before_closing * 60)):
+        buffer_seconds = int(max(0, (self.strategy.minutes_before_closing or 0) * 60))
+        # Include the exact buffer boundary for intraday strategies.
+        #
+        # Example (minutes_before_closing=1, close at 18:00):
+        # - time_to_close==60s corresponds to 17:59:00, which should still execute one final
+        #   on_trading_iteration() before we enter the close-handling lifecycle.
+        #
+        # Use a 1-second cushion so minutes_before_closing=0 preserves the legacy "stop at close"
+        # behavior (time_to_close must remain strictly positive).
+        threshold = max(0, buffer_seconds - 1)
+
+        while is_continuous_market or (time_to_close is not None and (time_to_close > threshold)):
             iteration_count += 1
 
             # Stop after we pass the backtesting end date

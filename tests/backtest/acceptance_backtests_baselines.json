@@ -8,12 +8,12 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 300,
       "metrics_centipercent": {
-        "cagr": 4630,
+        "cagr": 4627,
         "max_drawdown": -3430,
         "total_return": 84589
       },
       "metrics_raw": {
-        "cagr": "46.30%",
+        "cagr": "46.27%",
         "max_drawdown": "-34.30%",
         "total_return": "845.89%"
       },
@@ -32,12 +32,12 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 120,
       "metrics_centipercent": {
-        "cagr": -990,
+        "cagr": -923,
         "max_drawdown": -129,
         "total_return": -37
       },
       "metrics_raw": {
-        "cagr": "-9.90%",
+        "cagr": "-9.23%",
         "max_drawdown": "-1.29%",
         "total_return": "-0.37%"
       },
@@ -56,14 +56,14 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 180,
       "metrics_centipercent": {
-        "cagr": 4090,
+        "cagr": 4133,
         "max_drawdown": -4840,
-        "total_return": 824304
+        "total_return": 858502
       },
       "metrics_raw": {
-        "cagr": "40.90%",
+        "cagr": "41.33%",
         "max_drawdown": "-48.40%",
-        "total_return": "8,243.04%"
+        "total_return": "8,585.02%"
       },
       "script_filename": "TQQQ 200-Day MA.py",
       "settings_backtesting_end": "2025-11-30 23:59:00-05:00",
@@ -80,13 +80,13 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -2226,
-        "max_drawdown": -3116,
+        "cagr": -2220,
+        "max_drawdown": -2630,
         "total_return": -2034
       },
       "metrics_raw": {
-        "cagr": "-22.26%",
-        "max_drawdown": "-31.16%",
+        "cagr": "-22.20%",
+        "max_drawdown": "-26.30%",
         "total_return": "-20.34%"
       },
       "script_filename": "Backdoor Butterfly 0 DTE (Copy).py",
@@ -128,13 +128,13 @@
       "lumibot_version": "4.4.27",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -530,
-        "max_drawdown": -2690,
+        "cagr": -528,
+        "max_drawdown": -1338,
         "total_return": -480
       },
       "metrics_raw": {
-        "cagr": "-5.30%",
-        "max_drawdown": "-26.90%",
+        "cagr": "-5.28%",
+        "max_drawdown": "-13.38%",
         "total_return": "-4.80%"
       },
       "script_filename": "Backdoor Butterfly 0 DTE (Copy) - with SMART LIMITS.py",
@@ -146,20 +146,20 @@
     },
     {
       "backtest_time_seconds": 193.22364787501283,
-      "baseline_run_id": "SPXShortStraddle_2026-01-05_09-49_35TJJl",
+      "baseline_run_id": "SPXShortStraddle_2026-01-23_23-19_zOT1cB",
       "data_source": "thetadata",
       "end_date": "2025-12-26",
-      "lumibot_version": "4.4.27",
+      "lumibot_version": "4.4.36",
       "max_backtest_time_seconds": 900,
       "metrics_centipercent": {
-        "cagr": -1253,
-        "max_drawdown": -3128,
-        "total_return": -1210
+        "cagr": -1018,
+        "max_drawdown": -2771,
+        "total_return": -985
       },
       "metrics_raw": {
-        "cagr": "-12.53%",
-        "max_drawdown": "-31.28%",
-        "total_return": "-12.10%"
+        "cagr": "-10.18%",
+        "max_drawdown": "-27.71%",
+        "total_return": "-9.85%"
       },
       "script_filename": "SPX Short Straddle Intraday (Copy).py",
       "settings_backtesting_end": "2025-12-25 23:59:00-05:00",
@@ -177,13 +177,13 @@
       "max_backtest_time_seconds": 300,
       "metrics_centipercent": {
         "cagr": -446,
-        "max_drawdown": -29,
-        "total_return": -3
+        "max_drawdown": -4,
+        "total_return": -4
       },
       "metrics_raw": {
         "cagr": "-4.46%",
-        "max_drawdown": "-0.29%",
-        "total_return": "-0.03%"
+        "max_drawdown": "-0.04%",
+        "total_return": "-0.04%"
       },
       "script_filename": "IBKR MES Futures Acceptance.py",
       "settings_backtesting_end": "2025-12-10 23:59:00-05:00",
@@ -200,13 +200,13 @@
       "lumibot_version": "4.4.33",
       "max_backtest_time_seconds": 180,
       "metrics_centipercent": {
-        "cagr": 223,
-        "max_drawdown": -9,
+        "cagr": 167,
+        "max_drawdown": 0,
         "total_return": 2
       },
       "metrics_raw": {
-        "cagr": "2.23%",
-        "max_drawdown": "-0.09%",
+        "cagr": "1.67%",
+        "max_drawdown": "-0.00%",
         "total_return": "0.02%"
       },
       "script_filename": "IBKR Crypto Acceptance.py",

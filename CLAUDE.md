@@ -6,6 +6,10 @@
 1. `docs/BACKTESTING_ARCHITECTURE.md` - Understand the backtesting data flow
 2. `AGENTS.md` - Critical rules for ThetaData (DO NOT SKIP)
 
+## Backtesting Accuracy (Definition)
+
+Backtesting “accuracy” is measured against live broker behavior when possible (replay a live-traded interval and reproduce fills + PnL within tolerances). Vendor parity (e.g., stored DataBento artifacts) is a regression signal, not absolute truth.
+
 ## Multi-Agent Collaboration (CRITICAL)
 This repo is often worked on by **multiple AI sessions** at the same time.
 

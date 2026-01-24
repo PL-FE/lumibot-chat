@@ -51,7 +51,49 @@ _TELEMETRY: Dict[str, Any] = {
     "first_request_kind": None,
     "first_request_path": None,
     "first_request_param_keys": None,
+    # Best-effort, non-secret param values for the FIRST queued request only.
+    # This is intentionally limited and redacted so it is safe to include in backtest settings
+    # (and therefore in CI logs when debugging the warm-cache tripwire).
+    "first_request_params": None,
 }
+
+_SENSITIVE_PARAM_SUBSTRINGS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "auth",
+)
+_MAX_PARAM_VALUE_LEN = 200
+
+
+def _sanitize_query_params(query_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a JSON-safe, non-secret snapshot of query param values.
+
+    Notes:
+    - This must never include secrets (API keys). We aggressively redact anything that *looks*
+      secret based on the param name.
+    - Values are truncated to keep settings.json small and avoid CI log spam.
+    """
+    safe: Dict[str, Any] = {}
+    for key, value in (query_params or {}).items():
+        key_str = str(key)
+        lowered = key_str.lower()
+        if any(fragment in lowered for fragment in _SENSITIVE_PARAM_SUBSTRINGS):
+            safe[key_str] = "<redacted>"
+            continue
+        if value is None or isinstance(value, (bool, int, float)):
+            safe[key_str] = value
+            continue
+        try:
+            rendered = str(value)
+        except Exception:
+            safe[key_str] = "<unprintable>"
+            continue
+        if len(rendered) > _MAX_PARAM_VALUE_LEN:
+            rendered = f"{rendered[:_MAX_PARAM_VALUE_LEN]}...(truncated)"
+        safe[key_str] = rendered
+    return safe
 
 
 def _record_telemetry(kind: str, path: str, query_params: Optional[Dict[str, Any]] = None) -> None:
@@ -66,6 +108,7 @@ def _record_telemetry(kind: str, path: str, query_params: Optional[Dict[str, Any
             _TELEMETRY["first_request_path"] = str(path)
             if query_params:
                 _TELEMETRY["first_request_param_keys"] = sorted(str(k) for k in query_params.keys())
+                _TELEMETRY["first_request_params"] = _sanitize_query_params(query_params)
 
 
 def queue_telemetry_snapshot() -> Dict[str, Any]:
@@ -113,6 +156,28 @@ def _normalize_downloader_base_url(base_url: str) -> str:
 
     # Numeric IPs are valid; keep them as-is.
     return normalized_with_scheme
+
+
+def _redact_downloader_base_url_for_logs(base_url: str) -> str:
+    """Redact non-local downloader base URLs for logs.
+
+    We intentionally treat the Data Downloader host as infrastructure-private: it should never be
+    written into docs or logs (especially in CI/prod where logs may be exported).
+
+    Local development URLs remain readable (localhost/127.0.0.1/0.0.0.0).
+    """
+    normalized = _normalize_downloader_base_url(base_url)
+    if not normalized:
+        return normalized
+
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower()
+    if host in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        return normalized
+
+    port = f":{parsed.port}" if parsed.port else ""
+    scheme = parsed.scheme or "http"
+    return f"{scheme}://<redacted>{port}"
 
 
 @dataclass
@@ -1027,9 +1092,10 @@ def get_queue_client(client_id: Optional[str] = None) -> QueueClient:
                 api_key_header=api_key_header,
                 client_id=effective_client_id,
             )
+            base_url_log = _redact_downloader_base_url_for_logs(base_url)
             logger.info(
                 "Queue client initialized: base_url=%s poll_interval=%.3fs timeout=%.1fs client_id=%s",
-                base_url,
+                base_url_log,
                 _queue_client.poll_interval,
                 _queue_client.timeout,
                 _queue_client.client_id,

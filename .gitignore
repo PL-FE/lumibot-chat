@@ -12,6 +12,7 @@ lumibot/cache
 !lumibot/tools/parquet_series_cache.py
 !tests/test_backtest_cache_manager.py
 !docs/remote_cache.md
+!scripts/bench_ibkr_speed_burner_warm_cache.py
 generated-docs/
 docsrc/_build/
 **/*.pkl
@@ -72,9 +73,14 @@ tests/backtest/_acceptance_warm_runs/
 tests/backtest/_parity_runs/
 tests/backtest/_manual_visual_runs/
 
+# Local benchmarks (cache + profiler outputs)
+tests/backtest/_ibkr_speed_burner_cache/
+tests/backtest/_speed_burner_profiles/
+
 # Prod-like local runner output
 backtest_runs/
 
 # Local tool configs (untracked, user-specific)
 context*.json
 !context7.json
+/tests/backtest/_manual_runs

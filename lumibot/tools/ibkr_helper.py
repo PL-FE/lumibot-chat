@@ -927,7 +927,11 @@ def _fetch_history_between_dates(
     bar, bar_seconds, _cache_timestep = _timestep_to_ibkr_bar(timestep)
     period = _max_period_for_bar(bar)
     asset_type = str(getattr(asset, "asset_type", "") or "").lower()
-    continuous = bool(asset_type == "cont_future")
+    # IBKR's `continuous=true` is IBKR-specific roll behavior. For LumiBot `cont_future` assets
+    # we prefer our own synthetic roll (explicit contract series per expiration) so parity is
+    # stable across data providers. Only request IBKR "continuous" when we truly do not have an
+    # explicit expiration to anchor the contract.
+    continuous = bool(asset_type == "cont_future" and getattr(asset, "expiration", None) is None)
 
     cursor_end = _to_utc(end_dt)
     start_dt = _to_utc(start_dt)
@@ -1024,13 +1028,20 @@ def _ibkr_history_request(
 ) -> Dict[str, Any]:
     base_url = _downloader_base_url()
     url = f"{base_url}/ibkr/iserver/marketdata/history"
+    # IBKR Client Portal history endpoint interprets `startTime` as UTC.
+    #
+    # If we format `startTime` in a local timezone (e.g. America/New_York) while IBKR treats it
+    # as UTC, paginating in 1000-bar chunks can create DST-sized holes (~4h in summer, ~5h in
+    # winter). We have observed these holes as ~4h02/~5h02 gaps at chunk boundaries in cached
+    # parquet files, which then cascades into stale-bar execution and parity failures.
+    start_time_utc = _to_utc(start_time)
     query = {
         "conid": str(int(conid)),
         "period": period,
         "bar": bar,
         "outsideRth": "true" if include_after_hours else "false",
         "source": source,
-        "startTime": start_time.strftime("%Y%m%d-%H:%M:%S"),
+        "startTime": start_time_utc.strftime("%Y%m%d-%H:%M:%S"),
     }
     if continuous:
         query["continuous"] = "true"
@@ -1953,8 +1964,19 @@ def _downloader_base_url() -> str:
 
 
 def _to_utc(dt_value: datetime) -> datetime:
+    """Convert a datetime to UTC, treating naive datetimes as LumiBot local time.
+
+    IMPORTANT: LumiBot uses `pytz` timezones. For pytz, you must NOT attach tzinfo via
+    `datetime.replace(tzinfo=...)` because it can yield historical "LMT" offsets (e.g. -04:56
+    for America/New_York) and create multi-hour gaps/misalignment in paginated history fetches.
+    Use `tz.localize()` so DST rules apply correctly.
+    """
     if isinstance(dt_value, pd.Timestamp):
         dt_value = dt_value.to_pydatetime()
     if dt_value.tzinfo is None:
-        dt_value = dt_value.replace(tzinfo=LUMIBOT_DEFAULT_PYTZ)
+        try:
+            dt_value = LUMIBOT_DEFAULT_PYTZ.localize(dt_value)  # type: ignore[attr-defined]
+        except Exception:
+            # Fallback for non-pytz tzinfo implementations.
+            dt_value = dt_value.replace(tzinfo=LUMIBOT_DEFAULT_PYTZ)
     return dt_value.astimezone(timezone.utc)

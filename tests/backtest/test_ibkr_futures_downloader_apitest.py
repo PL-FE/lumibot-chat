@@ -169,3 +169,32 @@ def test_ibkr_futures_warm_backtest_does_not_touch_downloader(monkeypatch, tmp_p
     )
 
     assert list(log_dir.glob("*.log")), f"No logs produced in {log_dir}"
+
+
+def test_ibkr_futures_contract_info_includes_trading_hours(monkeypatch, tmp_path):
+    """Truth probe (read-only): fetch IBKR contract info and assert trading hours metadata exists.
+
+    This does not place any orders. It is a safe probe that helps keep our session-gap modeling
+    grounded in what the broker reports for the instrument.
+    """
+    _require_ibkr_downloader()
+
+    import lumibot.tools.ibkr_helper as ibkr_helper
+
+    monkeypatch.setattr(ibkr_helper, "LUMIBOT_CACHE_FOLDER", tmp_path.as_posix())
+    monkeypatch.setenv("IBKR_FUTURES_EXCHANGE", "CME")
+
+    fut = Asset("MES", asset_type=Asset.AssetType.FUTURE, auto_expiry=Asset.AutoExpiry.FRONT_MONTH)
+    try:
+        conid = ibkr_helper._resolve_conid(asset=fut, quote=None, exchange="CME")
+    except Exception as exc:
+        pytest.skip(f"Unable to resolve IBKR conid for MES front month: {exc}")
+
+    info = ibkr_helper._fetch_contract_info(int(conid))
+    assert isinstance(info, dict) and info, "Empty IBKR contract info payload"
+    # IBKR contract info payloads typically include a 'tradingHours' field, but field naming can
+    # vary across instruments/gateways. Accept either direct or nested representations.
+    has_hours = "tradingHours" in info or "trading_hours" in info or any(
+        isinstance(v, dict) and ("tradingHours" in v or "trading_hours" in v) for v in info.values()
+    )
+    assert has_hours, f"IBKR contract info missing trading hours fields (keys={sorted(info.keys())[:20]})"

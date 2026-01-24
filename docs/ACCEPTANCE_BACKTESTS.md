@@ -2,6 +2,18 @@
 
 This document is the **canonical manual acceptance suite** for LumiBot backtesting (ThetaData) and release validation.
 
+## Backtesting Definitions (Accuracy + Speed)
+
+**Accuracy (gold standard):** if we can replay a period that was traded live and reproduce the broker’s realized behavior (fills + PnL) within defined tolerances (tick size, fees model). Acceptance runs are a deterministic regression firewall, not a proof of “real world accuracy” by themselves.
+
+### Accuracy validation ladder (Tier 3 is the real gold standard)
+
+- **Tier 1 (regression):** deterministic acceptance backtests + vendor/artifact parity to detect drift.
+- **Tier 2 (audit):** manual reviews around known hard edges (session gaps, holidays/early closes, rolls, rounding).
+- **Tier 3 (gold):** **live replay baseline** — replay an interval that was traded live and reproduce broker fills + realized PnL within tolerances.
+
+**Speed:** acceptance warm-cache runs complete in bounded wall time and are **queue-free** (no downloader submits), proving the cache and data semantics are stable.
+
 ## IBKR acceptance backtests (Crypto + Futures)
 
 This repo’s acceptance harness (`tests/backtest/test_acceptance_backtests_ci.py`) includes deterministic, cache-backed:

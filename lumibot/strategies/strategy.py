@@ -1,4 +1,5 @@
 import datetime
+import inspect
 import logging
 import math
 import os
@@ -743,6 +744,14 @@ class Strategy(_Strategy):
         if smart_limit is not None and order_type is None and type is None:
             order_type = Order.OrderType.SMART_LIMIT
 
+        # PERF: uuid4() generation is a measurable hot path in high-churn backtests (1 order per bar per asset).
+        # Backtests only need identifiers to be unique within the run, so use a cheap monotonic counter.
+        identifier = None
+        if getattr(self.broker, "IS_BACKTESTING_BROKER", False):
+            seq = getattr(self.broker, "_backtest_order_seq", 0) + 1
+            setattr(self.broker, "_backtest_order_seq", seq)
+            identifier = f"bt_{seq}"
+
         order = Order(
             self.name,
             asset,
@@ -773,6 +782,7 @@ class Strategy(_Strategy):
             order_class=order_class,
             smart_limit=smart_limit,
             custom_params=custom_params,
+            identifier=identifier,
         )
 
         # Add debug logging for custom_params
@@ -4030,11 +4040,22 @@ class Strategy(_Strategy):
 
         # Determine the actual timestep to use for data fetching
         if parsed and parsed[0] > 1:
-            # Multi-timeframe request detected
+            # Multi-timeframe request detected.
+            #
+            # Backtesting data sources already implement aggregation via Data.get_bars()
+            # (see `lumibot/entities/data.py`). In backtests, avoid doing an extra layer of
+            # resampling here; instead pass the original timestep (e.g., "15min") through to
+            # the backtesting data source so it can slice/aggregate efficiently and cache
+            # results internally.
             multiplier, base_unit = parsed
-            actual_timestep = base_unit
-            actual_length = length * multiplier
-            needs_resampling = True
+            if getattr(self, "is_backtesting", False) or getattr(getattr(self, "broker", None), "IS_BACKTESTING_BROKER", False):
+                actual_timestep = original_timestep
+                actual_length = length
+                needs_resampling = False
+            else:
+                actual_timestep = base_unit
+                actual_length = length * multiplier
+                needs_resampling = True
         elif parsed:
             # Standard format (1 minute or 1 day)
             multiplier, base_unit = parsed
@@ -4047,59 +4068,78 @@ class Strategy(_Strategy):
             actual_length = length
             needs_resampling = False
 
-        # Only log once per asset to reduce noise
-        asset_key = f"{asset}_{length}_{original_timestep}"
-        if asset_key not in self._logged_get_historical_prices_assets:
-            if needs_resampling:
-                self.logger.info(f"Getting historical prices for {asset}, {length} bars of {original_timestep} (fetching {actual_length} {actual_timestep} bars)")
-            else:
-                self.logger.info(f"Getting historical prices for {asset}, {length} bars, {original_timestep}")
-            self._logged_get_historical_prices_assets.add(asset_key)
-
         asset = self._sanitize_user_asset(asset)
 
         asset = self.crypto_assets_to_tuple(asset, quote)
         if not actual_timestep:
             actual_timestep = self.broker.data_source.get_timestep()
+
+        # Only log once per asset to reduce noise.
+        # PERF: avoid per-call f-string construction in hot loops; use a tuple key.
+        asset_key = (asset, int(length), original_timestep)
+        if asset_key not in self._logged_get_historical_prices_assets:
+            if needs_resampling:
+                self.logger.info(
+                    f"Getting historical prices for {asset}, {length} bars of {original_timestep} "
+                    f"(fetching {actual_length} {actual_timestep} bars)"
+                )
+            else:
+                self.logger.info(f"Getting historical prices for {asset}, {length} bars, {original_timestep}")
+            self._logged_get_historical_prices_assets.add(asset_key)
+
         effective_return_polars = return_polars
+
         # Call through to the appropriate data source. Only pass `return_polars` if supported
         # to maintain compatibility with live data sources that don't yet accept it.
-        import inspect
+        #
+        # PERF: avoid per-call nested function creation/dict allocations; keep this inline and cache
+        # `return_polars` support per data source type.
+        supports_cache = getattr(self, "_get_hist_supports_return_polars_by_ds_type", None)
+        if supports_cache is None:
+            supports_cache = {}
+            setattr(self, "_get_hist_supports_return_polars_by_ds_type", supports_cache)
 
-        def _call_get_hist(ds):
-            fn = ds.get_historical_prices
-            params = inspect.signature(fn).parameters
-            supports_return_polars = (
-                "return_polars" in params
-                or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        ds = self.broker.data_source
+        if self.broker.option_source and getattr(asset, "asset_type", None) == "option":
+            ds = self.broker.option_source
+
+        ds_type = type(ds)
+        supports_return_polars = supports_cache.get(ds_type)
+        if supports_return_polars is None:
+            try:
+                params = inspect.signature(ds_type.get_historical_prices).parameters
+                supports_return_polars = (
+                    "return_polars" in params
+                    or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+                )
+            except Exception:
+                # Conservative default: if we can't inspect, assume it does NOT support return_polars
+                # so we don't raise TypeError by passing an unknown kwarg.
+                supports_return_polars = False
+            supports_cache[ds_type] = bool(supports_return_polars)
+
+        fn = ds.get_historical_prices
+        if supports_return_polars:
+            bars = fn(
+                asset,
+                actual_length,  # Use the actual length for fetching
+                timestep=actual_timestep,
+                timeshift=timeshift,
+                exchange=exchange,
+                include_after_hours=include_after_hours,
+                quote=quote,
+                return_polars=effective_return_polars,
             )
-
-            common_kwargs = dict(
-                timestep=actual_timestep,  # Use the actual timestep for fetching
+        else:
+            bars = fn(
+                asset,
+                actual_length,  # Use the actual length for fetching
+                timestep=actual_timestep,
                 timeshift=timeshift,
                 exchange=exchange,
                 include_after_hours=include_after_hours,
                 quote=quote,
             )
-            if supports_return_polars:
-                return fn(
-                    asset,
-                    actual_length,  # Use the actual length for fetching
-                    return_polars=effective_return_polars,
-                    **common_kwargs,
-                )
-            else:
-                return fn(
-                    asset,
-                    actual_length,  # Use the actual length for fetching
-                    **common_kwargs,
-                )
-
-        # Get the raw data
-        if self.broker.option_source and asset.asset_type == "option":
-            bars = _call_get_hist(self.broker.option_source)
-        else:
-            bars = _call_get_hist(self.broker.data_source)
 
         # If we need to resample the data
         if needs_resampling and bars and len(bars) > 0:

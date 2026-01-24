@@ -26,6 +26,8 @@ Why is my historical data delayed or not up-to-date?
 
 ``get_historical_prices()`` returns completed bars and may be delayed by up to a minute. For real-time price data, use ``get_last_price()`` or ``get_quote()`` instead.
 
+**Performance note (backtesting):** Backtests are fastest on warm cache. LumiBot caches historical data per asset and timestep so repeated calls to ``get_historical_prices()`` should not re-download data.
+
 .. code-block:: python
 
     # For historical analysis (may be 1 minute delayed)

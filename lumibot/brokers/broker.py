@@ -25,7 +25,7 @@ from lumibot.tools.lumibot_logger import get_logger, get_strategy_logger
 from ..data_sources import DataSource
 from ..entities import Asset, Order, Position, Quote
 from ..entities.chains import normalize_option_chains
-from ..trading_builtins import SafeList
+from ..trading_builtins import SafeList, SafeOrderDict
 
 DEFAULT_CLEANUP_CONFIG = {
     "enabled": True,
@@ -53,6 +53,33 @@ DEFAULT_CLEANUP_CONFIG = {
         }
     }
 }
+
+# PERF: Trade event logs are append-only and can be very large in backtests. Building a full
+# per-event dict (dozens of keys) is expensive and dominates hot-path CPU when a strategy submits
+# many orders. For the common case where audits are disabled, store a compact tuple instead and
+# materialize a DataFrame lazily with a fixed schema.
+TRADE_EVENT_LOG_COLUMNS = (
+    "time",
+    "strategy",
+    "exchange",
+    "identifier",
+    "symbol",
+    "side",
+    "type",
+    "status",
+    "price",
+    "filled_quantity",
+    "multiplier",
+    "trade_cost",
+    "trade_slippage",
+    "time_in_force",
+    "asset.right",
+    "asset.strike",
+    "asset.multiplier",
+    "asset.expiration",
+    "asset.asset_type",
+    "price_source",
+)
 
 # Consolidate errors from different brokers into a single class that can be easily caught even
 # if the user decides to switch brokers.
@@ -85,15 +112,27 @@ class Broker(ABC):
         self._lock = RLock()
         self._stop_event = threading.Event()  # Add stop event for clean shutdown
         self._runtime_telemetry = None
-        self._unprocessed_orders = SafeList(self._lock)
-        self._placeholder_orders = SafeList(self._lock)
-        self._new_orders = SafeList(self._lock)
-        self._canceled_orders = SafeList(self._lock)
-        self._partially_filled_orders = SafeList(self._lock)
-        self._filled_orders = SafeList(self._lock)
-        self._error_orders = SafeList(self._lock)
-        self._filled_positions = SafeList(self._lock)
-        self._subscribers = SafeList(self._lock)
+        # PERF: Backtesting is single-threaded, but SafeList lock acquisition shows up as
+        # a measurable overhead in minute-level backtests. Use lock-free SafeLists in backtests
+        # while keeping thread-safe lists for live brokers.
+        safelist_lock = None if self.IS_BACKTESTING_BROKER else self._lock
+        # PERF: Backtests remove orders by `identifier` extremely frequently as they move through
+        # the order-state buckets (unprocessed -> new -> partial -> filled/canceled/error). A
+        # list-backed container makes those removals O(n) scans and shows up as a dominant CPU
+        # cost in high-churn minute backtests.
+        #
+        # Use a dict-backed container for the "active" buckets in backtesting only (live brokers
+        # remain list-backed for compatibility and because their order counts are usually small).
+        order_bucket = SafeOrderDict if self.IS_BACKTESTING_BROKER else SafeList
+        self._unprocessed_orders = order_bucket(safelist_lock)
+        self._placeholder_orders = order_bucket(safelist_lock)
+        self._new_orders = order_bucket(safelist_lock)
+        self._canceled_orders = SafeList(safelist_lock)
+        self._partially_filled_orders = order_bucket(safelist_lock)
+        self._filled_orders = SafeList(safelist_lock)
+        self._error_orders = SafeList(safelist_lock)
+        self._filled_positions = SafeList(safelist_lock)
+        self._subscribers = SafeList(safelist_lock)
         self._is_stream_subscribed = False
         # PERF: appending to a pandas DataFrame with concat on every trade event is extremely slow
         # (option-heavy intraday backtests can generate 100k+ events). Store rows in a Python list
@@ -106,6 +145,7 @@ class Broker(ABC):
             deque(maxlen=self._trade_event_log_max_rows) if self._trade_event_log_max_rows else []
         )
         self._trade_event_log_df_cache = pd.DataFrame()
+        self._trade_event_log_columns = TRADE_EVENT_LOG_COLUMNS
         self._hold_trade_events = False
         self._held_trades = []
         self._config = config
@@ -315,32 +355,77 @@ class Broker(ABC):
         if len(items) <= policy.get("min_keep", 0):
             return 0  # Don't clean up if below minimum threshold
         
-        items_to_remove = []
         max_age_days = policy.get("max_age_days")
         max_count = policy.get("max_count")
         min_keep = policy.get("min_keep", 0)
-        
-        # Sort items by age (newest first) to preserve recent items
+
+        # PERF (backtesting): these tracking lists are append-only in deterministic chronological
+        # order. Sorting (O(n log n)) and repeated `remove()` scans are major hot spots in long
+        # backtests, especially for strategies that trade frequently.
+        #
+        # In backtesting, prefer a cheap short-circuit when nothing could be removed, and use
+        # `trim_to_last()` for count-based retention.
+        if getattr(self, "IS_BACKTESTING_BROKER", False):
+            item_count = len(items)
+
+            # Short-circuit: under max_count AND oldest item within age window => nothing to do.
+            if max_count and item_count <= int(max_count or 0) and max_age_days:
+                try:
+                    oldest_ts = self._get_item_timestamp(items[0]) if items else None
+                    if oldest_ts is not None and (current_time - oldest_ts).days < int(max_age_days):
+                        return 0
+                except Exception:
+                    pass
+            if max_count and item_count <= int(max_count or 0) and not max_age_days:
+                return 0
+
+            removed_total = 0
+
+            # Age retention (when configured): drop oldest until cutoff, keeping `min_keep`.
+            if max_age_days:
+                cutoff = current_time - timedelta(days=int(max_age_days))
+                drop = 0
+                for item in items:
+                    try:
+                        ts = self._get_item_timestamp(item)
+                    except Exception:
+                        ts = None
+                    if ts is None or ts >= cutoff:
+                        break
+                    drop += 1
+                keep_last_age = max(int(min_keep or 0), item_count - drop)
+                removed_total += safe_list.trim_to_last(keep_last_age)
+
+            # Count retention (when configured): keep the most recent `max_count` items (but never
+            # fewer than `min_keep`).
+            if max_count:
+                keep_last_count = max(int(min_keep or 0), int(max_count or 0))
+                removed_total += safe_list.trim_to_last(keep_last_count)
+
+            return removed_total
+
+        # Default (live + unknown ordering): sort by age (newest first) to preserve recent items.
+        items_to_remove = []
         sorted_items = sorted(items, key=self._get_item_timestamp, reverse=True)
-        
+
         for i, item in enumerate(sorted_items):
             should_remove = False
-            
+
             # Always keep minimum number of recent items
             if i < min_keep:
                 continue
-                
+
             # Remove by age
             if max_age_days and self._is_item_too_old(item, current_time, max_age_days):
                 should_remove = True
-                
+
             # Remove by count (keep most recent)
             if max_count and i >= max_count:
                 should_remove = True
-                
+
             if should_remove:
                 items_to_remove.append(item)
-        
+
         # Remove items (thread-safe)
         for item in items_to_remove:
             try:
@@ -348,7 +433,7 @@ class Broker(ABC):
             except ValueError:
                 # Item might have been removed by another thread
                 pass
-        
+
         return len(items_to_remove)
 
     def _get_item_timestamp(self, item):
@@ -662,7 +747,7 @@ class Broker(ABC):
         float or Decimal or None
             The last known price of the asset.
         """
-        if self.option_source and asset.asset_type == "option":
+        if self.option_source and "option" == asset.asset_type:
             return self.option_source.get_last_price(asset, quote=quote, exchange=exchange)
         else:
             return self.data_source.get_last_price(asset, quote=quote, exchange=exchange)
@@ -691,9 +776,15 @@ class Broker(ABC):
     # ================================ Common functions ================================
     @property
     def _tracked_orders(self):
-        return (self._unprocessed_orders.get_list() + self._new_orders.get_list() +
-                self._partially_filled_orders.get_list() + self._filled_orders.get_list() +
-                self._error_orders.get_list() + self._canceled_orders.get_list() + self._placeholder_orders.get_list())
+        orders: list[Order] = []
+        orders.extend(self._unprocessed_orders.get_list())
+        orders.extend(self._new_orders.get_list())
+        orders.extend(self._partially_filled_orders.get_list())
+        orders.extend(self._filled_orders.get_list())
+        orders.extend(self._error_orders.get_list())
+        orders.extend(self._canceled_orders.get_list())
+        orders.extend(self._placeholder_orders.get_list())
+        return orders
 
     def is_backtesting_broker(self):
         return self.IS_BACKTESTING_BROKER
@@ -1023,7 +1114,7 @@ class Broker(ABC):
         """Returns the strikes for an option asset with right and expiry."""
         # If provided chains, use them. It is faster than querying the data source.
         if chains and "Chains" in chains:
-            if asset.asset_type == "option":
+            if "option" == asset.asset_type:
                 return chains["Chains"][asset.right][asset.expiration]
             else:
                 strikes = set()
@@ -1138,7 +1229,7 @@ class Broker(ABC):
             # Add the order to the already existing position
             position.add_order(order)
 
-        if order.asset.asset_type == "crypto":
+        if "crypto" == order.asset.asset_type:
             self._process_crypto_quote(order, quantity, price)
 
         return order, position
@@ -1164,7 +1255,7 @@ class Broker(ABC):
             # Add the order to the already existing position
             position.add_order(order)  # Don't update quantity here, it's handled by querying broker
 
-        if order.asset and order.asset.asset_type == "crypto":
+        if order.asset and "crypto" == order.asset.asset_type:
             self._process_crypto_quote(order, quantity, price)
 
         return position
@@ -1495,7 +1586,9 @@ class Broker(ABC):
 
     def get_tracked_order(self, identifier, use_placeholders=False):
         """get a tracked order given an identifier"""
-        tracked_orders = list(self._tracked_orders) + (self._placeholder_orders.get_list() if use_placeholders else [])
+        tracked_orders = list(self._tracked_orders)
+        if use_placeholders:
+            tracked_orders.extend(self._placeholder_orders.get_list())
         for order in tracked_orders:
             if order.identifier == identifier:
                 return order
@@ -1527,22 +1620,21 @@ class Broker(ABC):
         else:
             strategy_name = strategy
 
-        active_candidates = (
-            self._unprocessed_orders.get_list()
-            + self._new_orders.get_list()
-            + self._partially_filled_orders.get_list()
-            + self._placeholder_orders.get_list()
-        )
-
         result: list[Order] = []
-        for order in active_candidates:
-            if not order.is_active():
-                continue
-            if strategy_name is not None and order.strategy != strategy_name:
-                continue
-            if asset is not None and order.asset != asset:
-                continue
-            result.append(order)
+        for bucket in (
+            self._unprocessed_orders,
+            self._new_orders,
+            self._partially_filled_orders,
+            self._placeholder_orders,
+        ):
+            for order in bucket.get_list():
+                if not order.is_active():
+                    continue
+                if strategy_name is not None and order.strategy != strategy_name:
+                    continue
+                if asset is not None and order.asset != asset:
+                    continue
+                result.append(order)
         return result
 
     def get_all_orders(self) -> list[Order]:
@@ -1738,11 +1830,8 @@ class Broker(ABC):
         while max_loop > 0:
             outstanding_orders = [
                 order
-                for order in (
-                    self._unprocessed_orders.get_list()
-                    + self._new_orders.get_list()
-                    + self._partially_filled_orders.get_list()
-                )
+                for bucket in (self._unprocessed_orders, self._new_orders, self._partially_filled_orders)
+                for order in bucket.get_list()
                 if order.strategy == strategy
             ]
 
@@ -1853,6 +1942,16 @@ class Broker(ABC):
         payload = dict(order=order)
         subscriber = self._get_subscriber(order.strategy)
         if subscriber:
+            # PERF: Many strategies do not override `Strategy.on_new_order()` (base impl is `pass`).
+            # Avoid enqueueing/processing a no-op event in high-churn backtests.
+            try:
+                strategy_obj = getattr(subscriber, "strategy", None)
+                handler = getattr(strategy_obj, "on_new_order", None)
+                func = getattr(handler, "__func__", handler)
+                if getattr(func, "__qualname__", "") == "Strategy.on_new_order":
+                    return
+            except Exception:
+                pass
             subscriber.add_event(subscriber.NEW_ORDER, payload)
 
     def _on_canceled_order(self, order):
@@ -1865,6 +1964,16 @@ class Broker(ABC):
         payload = dict(order=order)
         subscriber = self._get_subscriber(order.strategy)
         if subscriber:
+            # PERF: Many strategies do not override `Strategy.on_canceled_order()` (base impl is `pass`).
+            # Avoid enqueueing/processing a no-op event in high-churn backtests.
+            try:
+                strategy_obj = getattr(subscriber, "strategy", None)
+                handler = getattr(strategy_obj, "on_canceled_order", None)
+                func = getattr(handler, "__func__", handler)
+                if getattr(func, "__qualname__", "") == "Strategy.on_canceled_order":
+                    return
+            except Exception:
+                pass
             subscriber.add_event(subscriber.CANCELED_ORDER, payload)
 
     def _on_partially_filled_order(self, position, order, price, quantity, multiplier):
@@ -1921,7 +2030,15 @@ class Broker(ABC):
         if cache is None:
             rows = getattr(self, "_trade_event_log_rows", [])
             # `rows` may be a deque in live mode.
-            cache = pd.DataFrame(list(rows)) if rows else pd.DataFrame()
+            if not rows:
+                cache = pd.DataFrame()
+            else:
+                first = next(iter(rows), None)
+                if isinstance(first, dict):
+                    cache = pd.DataFrame(list(rows))
+                else:
+                    cols = getattr(self, "_trade_event_log_columns", None) or None
+                    cache = pd.DataFrame(list(rows), columns=list(cols) if cols else None)
             self._trade_event_log_df_cache = cache
         return cache
 
@@ -1972,13 +2089,17 @@ class Broker(ABC):
     def _process_trade_event(self, stored_order, type_event, price=None, filled_quantity=None, multiplier=1, error=None): # Add error parameter
         """process an occurred trading event and update the
         corresponding order"""
+        # PERF: This method is called once per broker event. In backtests, high-churn strategies
+        # can emit hundreds of thousands of events, so minimize per-call overhead in the common
+        # backtesting path.
+        is_backtesting = getattr(self, "IS_BACKTESTING_BROKER", False)
         if self.logger.isEnabledFor(logging.INFO):
             self.logger.info(
                 f"Processing trade event. Trade event received for {stored_order.strategy} strategy: {type_event} "
                 f"{stored_order.symbol} ID={stored_order.identifier}, processed by broker {self.name}"
             )
 
-        if self._hold_trade_events and not self.IS_BACKTESTING_BROKER:
+        if self._hold_trade_events and not is_backtesting:
             if self.logger.isEnabledFor(logging.INFO):
                 self.logger.info(
                     f"Trade event held for {stored_order.strategy} strategy: {type_event} {stored_order.symbol} "
@@ -1999,7 +2120,7 @@ class Broker(ABC):
             return
 
         # for fill and partial_fill events, price and filled_quantity must be specified
-        if (type_event in [self.FILLED_ORDER, self.PARTIALLY_FILLED_ORDER] and
+        if (type_event in (self.FILLED_ORDER, self.PARTIALLY_FILLED_ORDER) and
                 stored_order.order_class != Order.OrderClass.OCO and
                 (price is None or filled_quantity is None)):
             raise ValueError(
@@ -2008,14 +2129,13 @@ class Broker(ABC):
                 Received respectively {price} and {filled_quantity}"""
             )
 
-        if filled_quantity is not None:
-            error = ValueError(
-                f"filled_quantity must be an integer or float, received {filled_quantity} instead")
+        if filled_quantity is not None and not isinstance(filled_quantity, float):
             try:
-                if not isinstance(filled_quantity, float):
-                    filled_quantity = float(filled_quantity)
-            except ValueError:
-                raise error
+                filled_quantity = float(filled_quantity)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"filled_quantity must be an integer or float, received {filled_quantity} instead"
+                ) from None
 
         if price is not None and not isinstance(price, float):
             try:
@@ -2023,76 +2143,153 @@ class Broker(ABC):
             except ValueError:
                 raise ValueError(f"price must be a positive float, received {price} instead") from None
 
-        if Order.is_equivalent_status(type_event, self.NEW_ORDER):
-            order = self._process_new_order(stored_order)
-            if order:
-                self._on_new_order(order)
-        elif Order.is_equivalent_status(type_event, self.PLACEHOLDER_ORDER):
-            order = self._process_placeholder_order(stored_order)
-            # No notification needed for placeholder
-        elif Order.is_equivalent_status(type_event, self.CANCELED_ORDER):
-            order = self._process_canceled_order(stored_order)
-            if order:
-                self._on_canceled_order(order)
-        elif Order.is_equivalent_status(type_event, self.ERROR_ORDER):
-            order = self._process_error_order(stored_order, error or LumibotBrokerAPIError("Unknown order error"))
-            if order:
-                # Notify subscriber about the error event
-                subscriber = self._get_subscriber(order.strategy)
-                if subscriber:
-                    payload = dict(order=order, error=error)
-                    subscriber.add_event(subscriber.ERROR_ORDER, payload)
-        elif Order.is_equivalent_status(type_event, self.MODIFIED_ORDER):
-            # TODO: Implement modification logic and notification if needed
-            if self.logger.isEnabledFor(logging.INFO):
-                self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
-            # Update raw data if modification response is available (might need adjustment)
-            # stored_order.update_raw(modification_response_data)
-            # self._on_modified_order(stored_order) # Need to implement _on_modified_order
-            pass
-        elif Order.is_equivalent_status(type_event, self.PARTIALLY_FILLED_ORDER):
-            stored_order, position = self._process_partially_filled_order(stored_order, price, filled_quantity)
-            if position:
-                self._on_partially_filled_order(position, stored_order, price, filled_quantity, multiplier)
-        elif Order.is_equivalent_status(type_event, self.FILLED_ORDER):
-            position = self._process_filled_order(stored_order, price, filled_quantity)
-            if position:
-                self._on_filled_order(position, stored_order, price, filled_quantity, multiplier)
-        elif Order.is_equivalent_status(type_event, self.CASH_SETTLED):
-            self._process_cash_settlement(stored_order, price, filled_quantity)
-            stored_order.order_type = self.CASH_SETTLED
+        # PERF: Backtesting emits the canonical event types from Broker constants, so we can avoid
+        # the expensive "equivalent status" normalization logic intended for live brokers.
+        if is_backtesting:
+            if type_event == self.NEW_ORDER:
+                order = self._process_new_order(stored_order)
+                if order:
+                    self._on_new_order(order)
+            elif type_event == self.PLACEHOLDER_ORDER:
+                self._process_placeholder_order(stored_order)
+                # No notification needed for placeholder
+            elif type_event == self.CANCELED_ORDER:
+                order = self._process_canceled_order(stored_order)
+                if order:
+                    self._on_canceled_order(order)
+            elif type_event == self.ERROR_ORDER:
+                order = self._process_error_order(stored_order, error or LumibotBrokerAPIError("Unknown order error"))
+                if order:
+                    subscriber = self._get_subscriber(order.strategy)
+                    if subscriber:
+                        payload = dict(order=order, error=error)
+                        subscriber.add_event(subscriber.ERROR_ORDER, payload)
+            elif type_event == self.MODIFIED_ORDER:
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
+            elif type_event == self.PARTIALLY_FILLED_ORDER:
+                stored_order, position = self._process_partially_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_partially_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif type_event == self.FILLED_ORDER:
+                position = self._process_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif type_event == self.CASH_SETTLED:
+                self._process_cash_settlement(stored_order, price, filled_quantity)
+                stored_order.order_type = self.CASH_SETTLED
+            else:
+                self.logger.warning(f"Unknown trade event type: {type_event}")
         else:
-            self.logger.warning(f"Unknown trade event type: {type_event}")
+            if Order.is_equivalent_status(type_event, self.NEW_ORDER):
+                order = self._process_new_order(stored_order)
+                if order:
+                    self._on_new_order(order)
+            elif Order.is_equivalent_status(type_event, self.PLACEHOLDER_ORDER):
+                self._process_placeholder_order(stored_order)
+                # No notification needed for placeholder
+            elif Order.is_equivalent_status(type_event, self.CANCELED_ORDER):
+                order = self._process_canceled_order(stored_order)
+                if order:
+                    self._on_canceled_order(order)
+            elif Order.is_equivalent_status(type_event, self.ERROR_ORDER):
+                order = self._process_error_order(stored_order, error or LumibotBrokerAPIError("Unknown order error"))
+                if order:
+                    # Notify subscriber about the error event
+                    subscriber = self._get_subscriber(order.strategy)
+                    if subscriber:
+                        payload = dict(order=order, error=error)
+                        subscriber.add_event(subscriber.ERROR_ORDER, payload)
+            elif Order.is_equivalent_status(type_event, self.MODIFIED_ORDER):
+                # TODO: Implement modification logic and notification if needed
+                if self.logger.isEnabledFor(logging.INFO):
+                    self.logger.info(colored(f"Order was modified: {stored_order}", color="yellow"))
+                pass
+            elif Order.is_equivalent_status(type_event, self.PARTIALLY_FILLED_ORDER):
+                stored_order, position = self._process_partially_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_partially_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif Order.is_equivalent_status(type_event, self.FILLED_ORDER):
+                position = self._process_filled_order(stored_order, price, filled_quantity)
+                if position:
+                    self._on_filled_order(position, stored_order, price, filled_quantity, multiplier)
+            elif Order.is_equivalent_status(type_event, self.CASH_SETTLED):
+                self._process_cash_settlement(stored_order, price, filled_quantity)
+                stored_order.order_type = self.CASH_SETTLED
+            else:
+                self.logger.warning(f"Unknown trade event type: {type_event}")
 
-        current_dt = self.data_source.get_datetime()
-        new_row = {
-            "time": current_dt,
-            "strategy": stored_order.strategy,
-            "exchange": stored_order.exchange,
-            "identifier": stored_order.identifier,
-            "symbol": stored_order.symbol,
-            "side": stored_order.side,
-            "type": stored_order.order_type,
-            "status": stored_order.status,
-            "price": price,
-            "filled_quantity": filled_quantity,
-            "multiplier": multiplier,
-            "trade_cost": stored_order.trade_cost,
-            "trade_slippage": getattr(stored_order, "trade_slippage", None),
-            "time_in_force": stored_order.time_in_force,
-            "asset.right": stored_order.asset.right if stored_order.asset is not None else None,
-            "asset.strike": stored_order.asset.strike if stored_order.asset is not None else None,
-            "asset.multiplier": stored_order.asset.multiplier if stored_order.asset is not None else None,
-            "asset.expiration": stored_order.asset.expiration if stored_order.asset is not None else None,
-            "asset.asset_type": stored_order.asset.asset_type if stored_order.asset is not None else None,
-        }
+        # PERF: backtesting data sources often store the current dt on `_datetime`. Avoid the extra
+        # method call overhead in the hot-path trade-event logger, but fall back to `get_datetime()`
+        # for stubbed sources used in unit tests.
+        if is_backtesting:
+            current_dt = getattr(self.data_source, "_datetime", None) or self.data_source.get_datetime()
+        else:
+            current_dt = self.data_source.get_datetime()
+        # Cache the audit-enabled flag when available (BacktestingBroker sets this in __init__).
+        audit_enabled = getattr(self, "_backtest_audit_enabled", None)
+        if audit_enabled is None:
+            audit_enabled = self._truthy_env(os.environ.get("LUMIBOT_BACKTEST_AUDIT"))
+
+        asset = stored_order.asset
+        price_source = getattr(stored_order, "_price_source", None)
+
+        if audit_enabled:
+            new_row = {
+                "time": current_dt,
+                "strategy": stored_order.strategy,
+                "exchange": stored_order.exchange,
+                "identifier": stored_order.identifier,
+                "symbol": stored_order.symbol,
+                "side": stored_order.side,
+                "type": stored_order.order_type,
+                "status": stored_order.status,
+                "price": price,
+                "filled_quantity": filled_quantity,
+                "multiplier": multiplier,
+                "trade_cost": stored_order.trade_cost,
+                "trade_slippage": getattr(stored_order, "trade_slippage", None),
+                "time_in_force": stored_order.time_in_force,
+                "asset.right": asset.right if asset is not None else None,
+                "asset.strike": asset.strike if asset is not None else None,
+                "asset.multiplier": asset.multiplier if asset is not None else None,
+                "asset.expiration": asset.expiration if asset is not None else None,
+                "asset.asset_type": asset.asset_type if asset is not None else None,
+            }
+            if price_source:
+                new_row["price_source"] = price_source
+        else:
+            # PERF: In backtests, trade events are appended in large volumes. Avoid property
+            # lookups where we can safely access the backing fields.
+            new_row = (
+                current_dt,
+                stored_order.strategy,
+                stored_order.exchange,
+                stored_order._identifier,
+                stored_order.symbol,
+                stored_order.side,
+                stored_order.order_type,
+                stored_order._status,
+                price,
+                filled_quantity,
+                multiplier,
+                stored_order.trade_cost,
+                getattr(stored_order, "trade_slippage", None),
+                stored_order.time_in_force,
+                asset.right if asset is not None else None,
+                asset.strike if asset is not None else None,
+                asset.multiplier if asset is not None else None,
+                asset.expiration if asset is not None else None,
+                asset.asset_type if asset is not None else None,
+                price_source,
+            )
 
         # Backtest-only trade audit telemetry.
         #
         # WHY: NVDA/SPX investigations require a bulletproof, per-fill record of the *inputs used
         # to decide* a fill (bar OHLC, quote bid/ask, underlying quote, slippage model, etc.).
         # We keep this behind an env flag because it increases CSV width and can add overhead.
-        if self._truthy_env(os.environ.get("LUMIBOT_BACKTEST_AUDIT")):
+        if audit_enabled:
             audit = getattr(stored_order, "_audit", None)
             if isinstance(audit, dict) and audit:
                 for key, value in audit.items():
@@ -2103,9 +2300,7 @@ class Broker(ABC):
             except Exception:
                 pass
 
-        price_source = getattr(stored_order, "_price_source", None)
         if price_source:
-            new_row["price_source"] = price_source
             try:
                 delattr(stored_order, "_price_source")
             except AttributeError:

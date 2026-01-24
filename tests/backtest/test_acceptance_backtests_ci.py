@@ -123,7 +123,10 @@ def _base_env(repo_root: Path) -> dict[str, str]:
             # Match Strategy Library/Demos/.env (prod-like acceptance flags).
             "LUMIBOT_CACHE_BACKEND": "s3",
             "LUMIBOT_CACHE_MODE": "readwrite",
-            "LUMIBOT_CACHE_S3_VERSION": "v44",
+            # Default to the CI-provided cache namespace when available (keeps CI + local aligned
+            # with the current shared warm-cache version). Fall back to the historical ThetaData
+            # acceptance namespace for local/dev runs that don't set the secret.
+            "LUMIBOT_CACHE_S3_VERSION": env.get("LUMIBOT_CACHE_S3_VERSION", "v44"),
             "THETADATA_USE_QUEUE": "true",
             "DATADOWNLOADER_API_KEY_HEADER": env.get("DATADOWNLOADER_API_KEY_HEADER", "X-Downloader-Key"),
             "DATADOWNLOADER_SKIP_LOCAL_START": env.get("DATADOWNLOADER_SKIP_LOCAL_START", "true"),
@@ -383,9 +386,13 @@ def _run_script(case: _BaselineCase) -> tuple[Path, dict[str, int]]:
             submit_requests = 0
         if submit_requests:
             first_path = queue.get("first_request_path")
+            first_param_keys = queue.get("first_request_param_keys")
+            first_params = queue.get("first_request_params")
             raise AssertionError(
                 f"{case.slug} attempted {submit_requests} downloader queue submission(s) "
-                f"(first_request_path={first_path!r}). Expected fully warm S3 cache.\n"
+                f"(first_request_path={first_path!r}, "
+                f"first_request_param_keys={first_param_keys!r}, "
+                f"first_request_params={first_params!r}). Expected fully warm S3 cache.\n"
                 f"settings={settings}\nrun_dir={run_dir}"
             )
 

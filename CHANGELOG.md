@@ -1,6 +1,14 @@
 # Changelog
 
-## 4.4.35 - Unreleased
+## 4.4.36 - Unreleased
+
+### Changed
+- IBKR futures backtesting: accelerate intraday resampling paths to avoid repeated per-iteration recomputation for timesteps like 5minute/15minute/30minute.
+
+### Fixed
+- ThetaData EOD: treat all-zero OHLC rows as missing placeholders to prevent one-day portfolio valuation cliffs.
+
+## 4.4.35 - 2026-01-19
 
 ### Changed
 - IBKR futures backtesting: cut downloader roundtrips by caching history windows across iterations and preferring native bar sizes (e.g., 15-min) when available.
