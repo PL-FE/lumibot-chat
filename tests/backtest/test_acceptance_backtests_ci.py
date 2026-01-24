@@ -123,7 +123,10 @@ def _base_env(repo_root: Path) -> dict[str, str]:
             # Match Strategy Library/Demos/.env (prod-like acceptance flags).
             "LUMIBOT_CACHE_BACKEND": "s3",
             "LUMIBOT_CACHE_MODE": "readwrite",
-            "LUMIBOT_CACHE_S3_VERSION": "v44",
+            # Default to the CI-provided cache namespace when available (keeps CI + local aligned
+            # with the current shared warm-cache version). Fall back to the historical ThetaData
+            # acceptance namespace for local/dev runs that don't set the secret.
+            "LUMIBOT_CACHE_S3_VERSION": env.get("LUMIBOT_CACHE_S3_VERSION", "v44"),
             "THETADATA_USE_QUEUE": "true",
             "DATADOWNLOADER_API_KEY_HEADER": env.get("DATADOWNLOADER_API_KEY_HEADER", "X-Downloader-Key"),
             "DATADOWNLOADER_SKIP_LOCAL_START": env.get("DATADOWNLOADER_SKIP_LOCAL_START", "true"),
