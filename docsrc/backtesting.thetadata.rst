@@ -9,6 +9,11 @@ ThetaData Backtesting
 
 ThetaData backtester allows for flexible and robust backtesting. It uses the thetadata API to fetch pricing data for stocks, options, forex, and cryptocurrencies. This backtester simplifies the process of getting pricing data; simply use the thetadata DataSource and it will automatically fetch pricing data when you call `get_last_price()` or `get_historical_prices()`.
 
+Supported timesteps:
+
+- ``"minute"`` and ``"day"`` are supported directly.
+- ``"hour"`` (and multi-hour like ``"4h"``) is supported when minute bars are available; LumiBot aggregates minute bars into hourly bars for you.
+
 As of this writing, ThetaData provides historical data for free. If you pay for an API you can get many years of data and the backtesting will download data much faster because it won't be rate limited.
 
 This backtesting method caches the data on your computer making it faster for subsequent backtests. So even if it takes a bit of time the first time, the following backtests will be much faster.

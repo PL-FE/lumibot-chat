@@ -147,6 +147,7 @@ class Data:
     MIN_TIMESTEP = "minute"
     TIMESTEP_MAPPING = [
         {"timestep": "day", "representations": ["1D", "day"]},
+        {"timestep": "hour", "representations": ["1H", "hour"]},
         {"timestep": "minute", "representations": ["1M", "minute"]},
     ]
 
@@ -181,9 +182,9 @@ class Data:
                 f"The quote asset for Data must be an Asset object. You provided a {type(self.quote)} object."
             )
 
-        if timestep not in ["minute", "day"]:
+        if timestep not in ["minute", "hour", "day"]:
             raise ValueError(
-                f"Timestep must be either 'minute' or 'day', the value you enetered ({timestep}) is not currently supported."
+                f"Timestep must be one of 'minute', 'hour', or 'day'. You entered: {timestep}"
             )
 
         self.timestep = timestep
@@ -351,7 +352,7 @@ class Data:
         # Trim the dataframe to match the desired backtesting dates.
 
         df = df.loc[(df.index >= date_start) & (df.index <= date_end), :]
-        if self.timestep == "minute":
+        if self.timestep in {"minute", "hour"}:
             df = df.between_time(trading_hours_start, trading_hours_end)
         if df.empty:
             raise ValueError(
@@ -397,7 +398,7 @@ class Data:
         # where there's a large time gap (> 2 hours).
         quote_cols = ["bid", "ask", "bid_size", "ask_size"]
         quote_cols_present = [col for col in quote_cols if col in df.columns]
-        apply_quote_session_boundaries = self.timestep == "minute"
+        apply_quote_session_boundaries = self.timestep in {"minute", "hour"}
 
         # NOTE: Only apply session-boundary quote clearing for minute data.
         # Daily datasets (e.g., option EOD NBBO) are intentionally sparse and must be forward-filled
@@ -695,6 +696,8 @@ class Data:
             if isinstance(timeshift, datetime.timedelta):
                 if self.timestep == "day":
                     timeshift = int(timeshift.total_seconds() / (24 * 3600))
+                elif self.timestep == "hour":
+                    timeshift = int(timeshift.total_seconds() / 3600)
                 else:
                     timeshift = int(timeshift.total_seconds() / 60)
                 kwargs["timeshift"] = timeshift
@@ -948,6 +951,8 @@ class Data:
         if isinstance(timeshift, datetime.timedelta):
             if self.timestep == "day":
                 timeshift = int(timeshift.total_seconds() / (24 * 3600))
+            elif self.timestep == "hour":
+                timeshift = int(timeshift.total_seconds() / 3600)
             else:
                 timeshift = int(timeshift.total_seconds() / 60)
 
@@ -1049,11 +1054,16 @@ class Data:
         quantity, timestep = parse_timestep_qty_and_unit(timestep)
         num_periods = length
 
-        if timestep == "minute" and self.timestep == "day":
-            raise ValueError("You are requesting minute data from a daily data source. This is not supported.")
+        if timestep == "minute" and self.timestep in {"day", "hour"}:
+            raise ValueError(
+                "You are requesting minute data from a higher-timeframe data source. This is not supported."
+            )
 
-        if timestep != "minute" and timestep != "day":
-            raise ValueError(f"Only minute and day are supported for timestep. You provided: {timestep}")
+        if timestep == "hour" and self.timestep == "day":
+            raise ValueError("You are requesting hour data from a daily data source. This is not supported.")
+
+        if timestep not in {"minute", "hour", "day"}:
+            raise ValueError(f"Only minute, hour, and day are supported for timestep. You provided: {timestep}")
 
         # Fast-path: when the underlying dataset is already in the requested multi-minute cadence
         # (e.g., IBKR-native "15min" bars loaded into a minute-based Data object), avoid building
@@ -1206,6 +1216,8 @@ class Data:
             if isinstance(timeshift, datetime.timedelta):
                 if self.timestep == "day":
                     timeshift = int(timeshift.total_seconds() / (24 * 3600))
+                elif self.timestep == "hour":
+                    timeshift = int(timeshift.total_seconds() / 3600)
                 else:
                     timeshift = int(timeshift.total_seconds() / 60)
 
@@ -1289,9 +1301,26 @@ class Data:
             unit = "D"
             data = self._get_bars_dict(dt, length=length, timestep="minute", timeshift=timeshift)
 
+        elif timestep == "day" and self.timestep == "hour":
+            # If the data is hourly data and we are requesting daily data then multiply the length by 24
+            length = length * 24
+            unit = "D"
+            data = self._get_bars_dict(dt, length=length, timestep="hour", timeshift=timeshift)
+
         elif timestep == 'day' and self.timestep == 'day':
             unit = "D"
             data = self._get_bars_dict(dt, length=length, timestep=timestep, timeshift=timeshift)
+
+        elif timestep == "hour" and self.timestep == "minute":
+            # Convert requested hours to minutes to pull enough base data for resample.
+            length = length * 60 * quantity
+            unit = "h"
+            data = self._get_bars_dict(dt, length=length, timestep="minute", timeshift=timeshift)
+
+        elif timestep == "hour" and self.timestep == "hour":
+            unit = "h"
+            length = length * quantity
+            data = self._get_bars_dict(dt, length=length, timestep="hour", timeshift=timeshift)
 
         else:
             unit = "min"  # Guaranteed to be minute timestep at this point
@@ -1310,7 +1339,7 @@ class Data:
         df_result = df_result.dropna()
 
         # Remove partial day data from the current day, which can happen if the data is in minute timestep.
-        if timestep == "day" and self.timestep == "minute":
+        if timestep == "day" and self.timestep in {"minute", "hour"}:
             df_result = df_result[df_result.index < dt.replace(hour=0, minute=0, second=0, microsecond=0)]
 
         # The original df_result may include more rows when timestep is day and self.timestep is minute.
@@ -1338,37 +1367,40 @@ class Data:
         pandas.DataFrame
         """
 
-        if timestep == "minute" and self.timestep == "day":
-            raise ValueError("You are requesting minute data from a daily data source. This is not supported.")
+        quantity, timestep = parse_timestep_qty_and_unit(timestep)
 
-        if timestep != "minute" and timestep != "day":
-            raise ValueError(f"Only minute and day are supported for timestep. You provided: {timestep}")
-
-        if timestep == "day" and self.timestep == "minute":
-            dict = self._get_bars_between_dates_dict(timestep=timestep, start_date=start_date, end_date=end_date)
-
-            if dict is None:
-                return None
-
-            df = pd.DataFrame(dict).set_index("datetime")
-
-            df_result = df.resample("D").agg(
-                {
-                    "open": "first",
-                    "high": "max",
-                    "low": "min",
-                    "close": "last",
-                    "volume": "sum",
-                }
+        if timestep == "minute" and self.timestep in {"day", "hour"}:
+            raise ValueError(
+                "You are requesting minute data from a higher-timeframe data source. This is not supported."
             )
 
-            return df_result
+        if timestep == "hour" and self.timestep == "day":
+            raise ValueError("You are requesting hour data from a daily data source. This is not supported.")
 
-        else:
-            dict = self._get_bars_between_dates_dict(timestep=timestep, start_date=start_date, end_date=end_date)
+        if timestep not in {"minute", "hour", "day"}:
+            raise ValueError(f"Only minute, hour, and day are supported for timestep. You provided: {timestep}")
 
-            if dict is None:
-                return None
+        data = self._get_bars_between_dates_dict(timestep=timestep, start_date=start_date, end_date=end_date)
+        if data is None:
+            return None
 
-            df = pd.DataFrame(dict).set_index("datetime")
+        df = pd.DataFrame(data).set_index("datetime")
+        if df is None or df.empty:
             return df
+
+        if timestep == "minute" and int(quantity) == 1:
+            return df
+
+        agg = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        if "dividend" in df.columns:
+            agg["dividend"] = "sum"
+
+        unit_code = "min" if timestep == "minute" else "h" if timestep == "hour" else "D"
+        df_result = df.resample(f"{int(quantity)}{unit_code}").agg(agg).dropna()
+        return df_result

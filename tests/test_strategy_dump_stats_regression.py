@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+
+from lumibot.backtesting import BacktestingBroker, PandasDataBacktesting
+from lumibot.strategies.strategy import Strategy
+
+
+class _StatsOnlyStrategy(Strategy):
+    __test__ = False
+
+    def initialize(self):
+        self.set_market("24/7")
+        self.sleeptime = "1D"
+
+    def on_trading_iteration(self):
+        raise AssertionError("This regression test should not run the trading loop.")
+
+
+def test_dump_stats_end_to_end_regression_for_datetime_indexes():
+    """
+    Broad regression: end-of-backtest stats generation must not crash.
+
+    This protects the full pipeline:
+    - Strategy._append_row() -> _format_stats() -> day_deduplicate() -> stats_summary()
+    """
+    broker = PandasDataBacktesting(
+        datetime_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime_end=datetime(2026, 1, 5, tzinfo=timezone.utc),
+    )
+    backtesting_broker = BacktestingBroker(data_source=broker)
+    strat = _StatsOnlyStrategy(broker=backtesting_broker)
+
+    # Ensure benchmark code paths are skipped (no network / no Yahoo).
+    strat._benchmark_asset = None
+    strat._stats_file = None
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    portfolio_values = [100_000.0, 150_000.0, 75_000.0, 90_000.0]
+    for i, value in enumerate(portfolio_values):
+        strat._append_row(
+            {
+                "datetime": start + timedelta(days=i),
+                "portfolio_value": value,
+            }
+        )
+
+    strat._dump_stats()
+
+    assert strat._analysis is not None
+    assert set(strat._analysis) == {"cagr", "volatility", "sharpe", "max_drawdown", "romad", "total_return"}
+
+    def _is_number(value: object) -> bool:
+        return isinstance(value, (int, float))
+
+    assert _is_number(strat._analysis["cagr"])
+    assert _is_number(strat._analysis["volatility"])
+    assert _is_number(strat._analysis["sharpe"])
+    assert _is_number(strat._analysis["romad"])
+    assert _is_number(strat._analysis["total_return"])
+    assert isinstance(strat._analysis["max_drawdown"], dict)
+    assert set(strat._analysis["max_drawdown"]) == {"drawdown", "date"}
+    assert 0 <= float(strat._analysis["max_drawdown"]["drawdown"]) <= 1
+
+    # Calling twice should remain safe (production crash paths often call stats in cleanup).
+    strat._dump_stats()
+
+    # Strategy returns index should remain datetime-like (required by tearsheet/stat functions).
+    assert strat._strategy_returns_df is not None
+    assert not strat._strategy_returns_df.empty
+    assert isinstance(pd.Timestamp(strat._strategy_returns_df.index[0]), pd.Timestamp)

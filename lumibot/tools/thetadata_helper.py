@@ -3456,9 +3456,19 @@ _CALENDAR_CACHE: Dict[object, object] = {}
 
 def _get_cached_calendar(name: str):
     """Get or create a cached market calendar object."""
-    if name not in _CALENDAR_CACHE:
-        _CALENDAR_CACHE[name] = mcal.get_calendar(name)
-    return _CALENDAR_CACHE[name]
+    # IMPORTANT (test isolation / monkeypatch safety):
+    # Some unit tests monkeypatch `pandas_market_calendars.get_calendar` with a dummy implementation.
+    # If we cache calendar objects under a stable key, that dummy calendar can leak into subsequent
+    # tests and produce incorrect trading dates (e.g., treating US holidays as business days).
+    #
+    # Key by the identity of the calendar factory so restoring the original implementation yields a
+    # different cache key without requiring explicit cache clears.
+    cache_key = ("calendar", name, id(mcal.get_calendar))
+    cached = _CALENDAR_CACHE.get(cache_key)
+    if cached is None:
+        cached = mcal.get_calendar(name)
+        _CALENDAR_CACHE[cache_key] = cached
+    return cached
 
 
 # PERFORMANCE (2026-01-03): Cache full-year schedules and slice for sub-ranges.
@@ -3475,7 +3485,9 @@ def _get_cached_calendar(name: str):
 # NOTE: We store these schedules in `_CALENDAR_CACHE` so clearing that dict also clears
 # schedule caching (important for legacy tests that monkeypatch the calendar impl).
 def _cached_year_schedule(calendar_name: str, year: int) -> pd.DataFrame:
-    key = (calendar_name, year)
+    # Include the calendar factory identity to avoid reusing schedules generated under a monkeypatched
+    # calendar in later tests.
+    key = (calendar_name, year, id(mcal.get_calendar))
     schedule = _CALENDAR_CACHE.get(key)
     if schedule is not None:
         return schedule  # type: ignore[return-value]
@@ -3489,11 +3501,13 @@ def _cached_year_schedule(calendar_name: str, year: int) -> pd.DataFrame:
 
 
 @functools.lru_cache(maxsize=2048)  # Increased from 512 for longer backtests
-def _cached_trading_dates(asset_type: str, start_date: date, end_date: date) -> List[date]:
+def _cached_trading_dates(asset_type: str, start_date: date, end_date: date, calendar_version: int) -> List[date]:
     """Memoized trading-day resolver to avoid rebuilding calendars every call.
 
     PERFORMANCE FIX (2025-12-07): Increased cache size and use cached calendars.
     """
+    # calendar_version is intentionally unused in the logic below; it exists solely to ensure the
+    # LRU cache is invalidated when the calendar factory is monkeypatched (tests).
     if asset_type == "crypto":
         return [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
     if asset_type == "stock" or asset_type == "option" or asset_type == "index":
@@ -3550,7 +3564,7 @@ def get_trading_dates(asset: Asset, start: datetime, end: datetime):
     except Exception:
         # If dates are not comparable, fall through and let the calendar path raise.
         pass
-    return list(_cached_trading_dates(asset.asset_type, start_date, end_date))
+    return list(_cached_trading_dates(asset.asset_type, start_date, end_date, id(mcal.get_calendar)))
 
 
 def build_cache_filename(asset: Asset, timespan: str, datastyle: str = "ohlc"):
@@ -5097,11 +5111,13 @@ def get_request(
                 break
 
             if isinstance(result, dict):
-                # Standard queue response already in v2-style format.
-                if "header" in result and "response" in result:
-                    processed_result = result
-                else:
-                    processed_result = _convert_columnar_to_row_format(result)
+                # Normalize queue payloads into a consistent v2-style envelope:
+                # {"header":{"format":[...]}, "response":[[...], ...]}
+                #
+                # This must handle both:
+                # - v2/v3 columnar payloads (dict-of-lists)
+                # - v3 row payloads ({"response": [ {timestamp:..., ...}, ... ]})
+                processed_result = _coerce_json_payload(result)
             else:
                 processed_result = result
 
@@ -5840,6 +5856,60 @@ def get_historical_data(
         (HH:MM:SS strings). Useful for requesting specific minute windows such as the 09:30 open.
     """
 
+    def _build_history_frame(json_resp: Any) -> Optional[pd.DataFrame]:
+        """Normalize ThetaData history payloads into a DataFrame.
+
+        Theta's v3 REST surface is not fully stable across terminal versions:
+        - some responses are v2-style: {"header": {"format": [...]}, "response": [[...], ...]}
+        - others are row-style: {"response": [{"timestamp": "...", ...}, ...]} (no "header")
+        - some option history endpoints return a nested payload:
+            {"response": [{"contract": {...}, "data": [{...}, {...}, ...]}]}
+
+        LumiBot's downstream merge path expects a DataFrame that can be indexed by a "datetime"
+        series during `_finalize_history_dataframe()`, so we must accept both shapes here.
+        """
+        if not json_resp:
+            return None
+
+        if isinstance(json_resp, dict):
+            raw = json_resp.get("response")
+            header = json_resp.get("header") if isinstance(json_resp.get("header"), dict) else None
+            fmt = header.get("format") if header else None
+        else:
+            raw = json_resp
+            fmt = None
+
+        if raw is None:
+            return None
+
+        df: pd.DataFrame
+
+        # v3 row-style: list[dict]
+        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            df = pd.DataFrame(raw)
+        # v2 columnar: list[list] with header.format
+        elif isinstance(raw, list) and raw and isinstance(raw[0], (list, tuple)) and isinstance(fmt, list):
+            df = pd.DataFrame(raw, columns=fmt)
+        else:
+            # Fallback: let pandas infer.
+            df = pd.DataFrame(raw)
+
+        if df is None or df.empty:
+            return df
+
+        # Some option endpoints return a nested response:
+        #   response: [{"contract": {...}, "data": [{timestamp:..., bid:..., ask:...}, ...]}]
+        # Our downstream expects one row per timestamp.
+        if "timestamp" not in df.columns and "data" in df.columns:
+            try:
+                nested = df["data"].tolist()
+                if len(nested) == 1 and isinstance(nested[0], list) and nested[0] and isinstance(nested[0][0], dict):
+                    return pd.DataFrame(nested[0])
+            except Exception:
+                pass
+
+        return df
+
     asset_type = str(getattr(asset, "asset_type", "stock")).lower()
     endpoint = HISTORY_ENDPOINTS.get((asset_type, datastyle))
     if endpoint is None:
@@ -5934,7 +6004,9 @@ def get_historical_data(
         _advance_download_progress()
         if not json_resp:
             return None
-        df = pd.DataFrame(json_resp["response"], columns=json_resp["header"]["format"])
+        df = _build_history_frame(json_resp)
+        if df is None or df.empty:
+            return None
         return _finalize_history_dataframe(df, datastyle, asset)
 
     frames: List[pd.DataFrame] = []
@@ -5984,7 +6056,9 @@ def get_historical_data(
         if not json_resp:
             continue
 
-        df = pd.DataFrame(json_resp["response"], columns=json_resp["header"]["format"])
+        df = _build_history_frame(json_resp)
+        if df is None or df.empty:
+            continue
         df = _finalize_history_dataframe(df, datastyle, asset)
         if df is not None and not df.empty:
             frames.append(df)
@@ -6159,8 +6233,11 @@ def _normalize_strike_value(raw_value: object) -> Optional[float]:
     if strike <= 0:
         return None
 
-    # ThetaData encodes strikes in thousandths of a dollar for integer payloads
-    if strike > 10000:
+    # ThetaData has historically returned strikes in thousandths-of-a-dollar for some payloads
+    # (e.g. 4500000 representing 4500.0). However, legitimate index strikes (e.g. NDX ~ 18000)
+    # can exceed 10,000 in *dollars*. Only apply the thousandths normalization when the value is
+    # clearly too large to be a real strike in dollars.
+    if strike >= 100000:
         strike /= 1000.0
 
     return round(strike, 4)
@@ -6398,9 +6475,13 @@ def build_historical_chain(
         if result is None:
             return None
         if isinstance(result, dict):
-            if "header" in result and "response" in result:
-                return result
-            return _convert_columnar_to_row_format(result)
+            # Normalize queue payloads into a consistent v2-style envelope:
+            # {"header":{"format":[...]}, "response":[[...], ...]}
+            #
+            # Queue responses can be:
+            # - v2/v3 columnar payloads (dict-of-lists)
+            # - v3 row payloads ({"response": [ {timestamp:..., ...}, ... ]})
+            return _coerce_json_payload(result)
         return {"header": {"format": []}, "response": result}
 
     expiration_candidates: List[Tuple[str, str]] = []

@@ -380,6 +380,41 @@ For example, SPX index minute OHLC typically yields ~391 bars/day and ends at th
 See:
 - `docs/investigations/2026-01-13_SPX_INTRADAY_STALE_LOOP_FIX.md`
 
+## ThetaData Coverage Gap: NDX Underlying (CRITICAL)
+
+ThetaData provides **NDX options** history, but does **not** provide the **NDX index underlying** (price/OHLC) history.
+In practice, `v3/index/history/*` requests for `NDX` can return placeholder all-zero OHLC rows or `NO_DATA`.
+
+**Failure mode:**
+- Strategies that trade NDX options still require an underlying price series for:
+  - signals / indicators,
+  - moneyness checks,
+  - strike selection heuristics,
+  - portfolio valuation / cash settlement.
+- When NDX underlying history is empty/placeholder-only, the backtest can repeatedly refetch and never progress.
+
+**Platform fix (ThetaDataBacktesting only):**
+- LumiBot proxies `Asset("NDX", asset_type=INDEX)` underlying bars/quotes via `QQQ` and scales into NDX “points” units.
+- This keeps **NDX options** as the traded root while supplying a fast, usable underlying proxy.
+- The proxy is **explicit**: logs include a `[THETA][INDEX_PROXY]` warning (once per run).
+- **Invariant:** `Asset("NDX")` defaults to `stock` by design and is **not** treated as an index. Only explicit `asset_type=INDEX` triggers the proxy.
+
+**Limitations / drift:**
+- The scaling factor is a stable heuristic (ETF fees/dividend timing can cause slow drift over long horizons).
+- If you need higher-fidelity calibration, add a daily factor calibration path derived from NDX options EOD (still Theta-only).
+
+## ThetaData v3 Payload Variants (Downloader Mode)
+
+When routed through the BotSpot Data Downloader, Theta v3 responses are not fully stable across terminal versions:
+- **v2-style envelope:** `{"header":{"format":[...]}, "response":[[...], ...]}`
+- **row-style:** `{"response":[{"timestamp": "...", ...}, ...]}` (no `header`)
+- **nested option history:** `{"response":[{"contract": {...}, "data":[{...}, ...]}]}`
+
+LumiBot normalizes these shapes in `lumibot/tools/thetadata_helper.py` so downstream history parsing:
+- builds `DataFrame`s with explicit columns,
+- produces a `datetime` index consistently, and
+- avoids “NO_DATA”/472 loops caused by mis-parsed quote payloads (especially for NDX options backtests).
+
 **Split Handling (FIXED - Nov 28, 2025)**
 
 ✅ **ThetaData split handling is now working correctly.**
