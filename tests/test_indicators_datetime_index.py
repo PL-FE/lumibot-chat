@@ -1,11 +1,32 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from lumibot.tools.indicators import cagr, stats_summary, volatility
 
 
-def _make_returns_df(index: pd.Index) -> pd.DataFrame:
-    return pd.DataFrame({"return": [0.0, 1.0]}, index=index)
+def _make_returns_df(index: pd.Index, returns: list[float] | None = None) -> pd.DataFrame:
+    if returns is None:
+        returns = [0.0, 1.0]
+    return pd.DataFrame({"return": returns}, index=index)
+
+
+def _assert_stats_summary_shape(result: dict) -> None:
+    def _is_number(value: object) -> bool:
+        return isinstance(value, (int, float))
+
+    assert set(result) == {"cagr", "volatility", "sharpe", "max_drawdown", "romad", "total_return"}
+    assert _is_number(result["cagr"])
+    assert _is_number(result["volatility"])
+    assert _is_number(result["sharpe"])
+    assert _is_number(result["romad"])
+    assert _is_number(result["total_return"])
+    assert isinstance(result["max_drawdown"], dict)
+    assert set(result["max_drawdown"]) == {"drawdown", "date"}
 
 
 def _expected_cagr(start: pd.Timestamp, end: pd.Timestamp, total_return: float) -> float:
@@ -62,5 +83,55 @@ def test_stats_summary_supports_datetime64_us_index():
     df = _make_returns_df(pd.Index(arr_us))
 
     result = stats_summary(df, risk_free_rate=0.0)
-    assert set(result) == {"cagr", "volatility", "sharpe", "max_drawdown", "romad", "total_return"}
+    _assert_stats_summary_shape(result)
     assert result["cagr"] != 0
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        pd.date_range("2026-01-01", periods=4, freq="1D"),
+        pd.date_range("2026-01-01", periods=4, freq="1D", tz="UTC"),
+        pd.Index(
+            [
+                datetime(2026, 1, 1),
+                datetime(2026, 1, 2),
+                datetime(2026, 1, 3),
+                datetime(2026, 1, 4),
+            ],
+            dtype="object",
+        ),
+        pd.Index(
+            [
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 1, 2, tzinfo=timezone.utc),
+                datetime(2026, 1, 3, tzinfo=timezone.utc),
+                datetime(2026, 1, 4, tzinfo=timezone.utc),
+            ],
+            dtype="object",
+        ),
+        pd.Index(np.array(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"], dtype="datetime64[ns]")),
+    ],
+    ids=[
+        "DatetimeIndex_naive",
+        "DatetimeIndex_utc",
+        "ObjectIndex_py_datetime_naive",
+        "ObjectIndex_py_datetime_utc",
+        "Index_datetime64_ns",
+    ],
+)
+def test_stats_summary_and_max_drawdown_handle_common_datetime_indexes(index: pd.Index):
+    """Broad regression: end-of-backtest stats should not depend on a single datetime index dtype."""
+    returns = [0.0, 0.5, -0.5, 0.25]
+    df = _make_returns_df(index, returns=returns)
+
+    result = stats_summary(df, risk_free_rate=0.0)
+    _assert_stats_summary_shape(result)
+
+    assert result["cagr"] != 0
+    assert result["volatility"] != 0
+
+    drawdown = result["max_drawdown"]["drawdown"]
+    assert isinstance(drawdown, float)
+    assert 0 <= drawdown <= 1
+    assert pd.Timestamp(result["max_drawdown"]["date"]) == pd.Timestamp(index[2])
