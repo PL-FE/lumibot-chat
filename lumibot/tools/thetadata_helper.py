@@ -3456,9 +3456,19 @@ _CALENDAR_CACHE: Dict[object, object] = {}
 
 def _get_cached_calendar(name: str):
     """Get or create a cached market calendar object."""
-    if name not in _CALENDAR_CACHE:
-        _CALENDAR_CACHE[name] = mcal.get_calendar(name)
-    return _CALENDAR_CACHE[name]
+    # IMPORTANT (test isolation / monkeypatch safety):
+    # Some unit tests monkeypatch `pandas_market_calendars.get_calendar` with a dummy implementation.
+    # If we cache calendar objects under a stable key, that dummy calendar can leak into subsequent
+    # tests and produce incorrect trading dates (e.g., treating US holidays as business days).
+    #
+    # Key by the identity of the calendar factory so restoring the original implementation yields a
+    # different cache key without requiring explicit cache clears.
+    cache_key = ("calendar", name, id(mcal.get_calendar))
+    cached = _CALENDAR_CACHE.get(cache_key)
+    if cached is None:
+        cached = mcal.get_calendar(name)
+        _CALENDAR_CACHE[cache_key] = cached
+    return cached
 
 
 # PERFORMANCE (2026-01-03): Cache full-year schedules and slice for sub-ranges.
@@ -3475,7 +3485,9 @@ def _get_cached_calendar(name: str):
 # NOTE: We store these schedules in `_CALENDAR_CACHE` so clearing that dict also clears
 # schedule caching (important for legacy tests that monkeypatch the calendar impl).
 def _cached_year_schedule(calendar_name: str, year: int) -> pd.DataFrame:
-    key = (calendar_name, year)
+    # Include the calendar factory identity to avoid reusing schedules generated under a monkeypatched
+    # calendar in later tests.
+    key = (calendar_name, year, id(mcal.get_calendar))
     schedule = _CALENDAR_CACHE.get(key)
     if schedule is not None:
         return schedule  # type: ignore[return-value]
@@ -3489,11 +3501,13 @@ def _cached_year_schedule(calendar_name: str, year: int) -> pd.DataFrame:
 
 
 @functools.lru_cache(maxsize=2048)  # Increased from 512 for longer backtests
-def _cached_trading_dates(asset_type: str, start_date: date, end_date: date) -> List[date]:
+def _cached_trading_dates(asset_type: str, start_date: date, end_date: date, calendar_version: int) -> List[date]:
     """Memoized trading-day resolver to avoid rebuilding calendars every call.
 
     PERFORMANCE FIX (2025-12-07): Increased cache size and use cached calendars.
     """
+    # calendar_version is intentionally unused in the logic below; it exists solely to ensure the
+    # LRU cache is invalidated when the calendar factory is monkeypatched (tests).
     if asset_type == "crypto":
         return [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
     if asset_type == "stock" or asset_type == "option" or asset_type == "index":
@@ -3550,7 +3564,7 @@ def get_trading_dates(asset: Asset, start: datetime, end: datetime):
     except Exception:
         # If dates are not comparable, fall through and let the calendar path raise.
         pass
-    return list(_cached_trading_dates(asset.asset_type, start_date, end_date))
+    return list(_cached_trading_dates(asset.asset_type, start_date, end_date, id(mcal.get_calendar)))
 
 
 def build_cache_filename(asset: Asset, timespan: str, datastyle: str = "ohlc"):
