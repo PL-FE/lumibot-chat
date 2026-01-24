@@ -5759,6 +5759,33 @@ def get_historical_eod_data(
     if df.index.has_duplicates:
         df = df[~df.index.duplicated(keep="last")]
 
+    # ThetaData EOD sometimes returns placeholder rows with all-zero OHLC values for a valid trading day.
+    # If we treat those as real prices, portfolio valuation can collapse to ~0 for a single bar and then recover
+    # on the next bar ("portfolio cliff"). Treat the all-zero OHLC bar as missing so downstream repair/ffill
+    # can carry forward the last known close instead of valuing at 0.
+    #
+    # NOTE: We apply this only to stock/index EOD. For option EOD, OHLC may legitimately be 0 when only NBBO
+    # fields are populated, and we don't want to mask that.
+    if asset_type in {"stock", "index"} and {"open", "high", "low", "close"}.issubset(df.columns):
+        df = ensure_missing_column(df)
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        zero_ohlc_mask = df[["open", "high", "low", "close"]].eq(0).all(axis=1)
+        if zero_ohlc_mask.any():
+            zero_dates = sorted({ts.date().isoformat() for ts in df.index[zero_ohlc_mask]})
+            preview = ", ".join(zero_dates[:10]) + (" ..." if len(zero_dates) > 10 else "")
+            logger.warning(
+                "[THETA][WARN][EOD][ZERO_OHLC] asset=%s rows=%d dates=%s",
+                asset,
+                int(zero_ohlc_mask.sum()),
+                preview,
+            )
+            df.loc[zero_ohlc_mask, ["open", "high", "low", "close"]] = float("nan")
+            if "volume" in df.columns:
+                df.loc[zero_ohlc_mask, "volume"] = 0
+            df.loc[zero_ohlc_mask, "missing"] = True
+
     # Drop the ms_of_day, ms_of_day2, and date columns (not needed for daily bars)
     df = df.drop(columns=["ms_of_day", "ms_of_day2", "date"], errors='ignore')
 
