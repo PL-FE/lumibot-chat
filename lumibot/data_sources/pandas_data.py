@@ -406,6 +406,9 @@ class PandasData(DataSourceBacktesting):
             data_ts = str(getattr(data_obj, "timestep", "") or "").strip().lower()
             if requested_unit == "minute":
                 return data_ts == "minute"
+            if requested_unit == "hour":
+                # Hour requests can be satisfied by either hour data or minute data (resample).
+                return data_ts in {"hour", "minute"}
             if requested_unit == "day":
                 # Day requests can be satisfied by either day data or minute data (resample).
                 return data_ts in {"day", "minute"}
