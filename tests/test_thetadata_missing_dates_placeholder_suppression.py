@@ -152,3 +152,29 @@ def test_get_missing_dates_suppresses_placeholder_trading_days_for_stock_index_i
     )
 
     assert missing == []
+
+
+def test_get_missing_dates_treats_midnight_end_as_exclusive(monkeypatch) -> None:
+    """
+    Regression test: midnight end bounds represent end-exclusive windows in backtests.
+
+    Acceptance backtests pass BACKTESTING_END as an exclusive date (YYYY-MM-DD). Many internal
+    paths represent that as a midnight datetime on the following day. If we treat that midnight
+    as end-inclusive for trading-day coverage, we can incorrectly require the next trading day
+    and enqueue a downloader request even with warm S3 caches.
+    """
+    asset = SimpleNamespace(symbol="SPX", asset_type="index")
+
+    # Minimal cache coverage: one real row on 2025-12-24 (a trading day).
+    idx = pd.to_datetime(["2025-12-24 21:00:00+00:00"], utc=True)
+    df_all = pd.DataFrame({"missing": [0]}, index=idx)
+
+    missing = thetadata_helper.get_missing_dates(
+        df_all,
+        asset,
+        start=datetime(2025, 12, 24, tzinfo=pytz.UTC),
+        # End-exclusive: this should NOT require 2025-12-26 coverage.
+        end=datetime(2025, 12, 26, tzinfo=pytz.UTC),
+    )
+
+    assert missing == []

@@ -3898,7 +3898,27 @@ def get_missing_dates(df_all, asset, start, end):
         0 if df_all is None else len(df_all)
     )
 
-    trading_dates = get_trading_dates(asset, start, end)
+    # Backtesting end-date semantics: many callers (including acceptance backtests) represent an
+    # end-exclusive date as a midnight timestamp on the following day (e.g., BACKTESTING_END=YYYY-MM-DD).
+    #
+    # If we treat that midnight as end-inclusive when computing trading-day coverage, we can
+    # incorrectly require the next trading day and enqueue a downloader request even when the S3
+    # cache is fully warm for the intended window.
+    #
+    # Normalize midnight end bounds to be end-exclusive for trading-date coverage.
+    end_for_trading_dates = end
+    try:
+        if isinstance(end_for_trading_dates, datetime) and (
+            end_for_trading_dates.hour,
+            end_for_trading_dates.minute,
+            end_for_trading_dates.second,
+            end_for_trading_dates.microsecond,
+        ) == (0, 0, 0, 0):
+            end_for_trading_dates = end_for_trading_dates - timedelta(seconds=1)
+    except Exception:
+        end_for_trading_dates = end
+
+    trading_dates = get_trading_dates(asset, start, end_for_trading_dates)
 
     logger.debug(
         "[THETA][DEBUG][CACHE][TRADING_DATES] asset=%s | "
