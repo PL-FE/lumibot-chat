@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+import weakref
 from functools import lru_cache
 from decimal import Decimal, ROUND_HALF_EVEN
 
@@ -26,7 +27,8 @@ _TRADING_CALENDAR_CACHE = {}
 # Progress bar throttling: when BACKTESTING_QUIET_LOGS=false we print progress as newline-separated
 # lines. For fast simulations this can spam thousands of lines in a single second and drown out
 # strategy logs. Throttle to at most ~1 line/second per (output, prefix) when not in quiet mode.
-_PROGRESS_LAST_PRINT: dict[tuple[int, str], tuple[float, str]] = {}
+_PROGRESS_LAST_PRINT: "weakref.WeakKeyDictionary[object, dict[str, tuple[float, str]]]" = weakref.WeakKeyDictionary()
+_PROGRESS_LAST_PRINT_FALLBACK: dict[tuple[int, str], tuple[float, str]] = {}
 
 
 def get_chunks(l, chunk_size):
@@ -430,14 +432,28 @@ def print_progress_bar(
     # Progress output can be extremely chatty (especially minute-bar backtests) and, in
     # non-interactive log sinks (CloudWatch, CI), carriage returns don't overwrite prior output.
     # Cap progress printing to ~1 line/sec in all modes. Always allow the final 100% line through.
-    key = (id(file), str(prefix))
     now_mono = time.monotonic()
-    last = _PROGRESS_LAST_PRINT.get(key)
-    if last is not None:
-        last_time, _ = last
-        if (now_mono - last_time) < 1.0 and percent < 100:
-            return
-    _PROGRESS_LAST_PRINT[key] = (now_mono, percent_str)
+    prefix_key = str(prefix)
+    try:
+        per_file = _PROGRESS_LAST_PRINT.get(file)
+        if per_file is None:
+            per_file = {}
+            _PROGRESS_LAST_PRINT[file] = per_file
+        last = per_file.get(prefix_key)
+        if last is not None:
+            last_time, _ = last
+            if (now_mono - last_time) < 1.0 and percent < 100:
+                return
+        per_file[prefix_key] = (now_mono, percent_str)
+    except TypeError:
+        # Fallback for file-like objects that aren't weakrefable/hashable.
+        key = (id(file), prefix_key)
+        last = _PROGRESS_LAST_PRINT_FALLBACK.get(key)
+        if last is not None:
+            last_time, _ = last
+            if (now_mono - last_time) < 1.0 and percent < 100:
+                return
+        _PROGRESS_LAST_PRINT_FALLBACK[key] = (now_mono, percent_str)
 
     now = dt.datetime.now()
     elapsed = now - backtesting_started
