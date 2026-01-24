@@ -1,6 +1,16 @@
 # Changelog
 
-## 4.4.37 - Unreleased
+## 4.4.38 - Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+## 4.4.37 - 2026-01-24
+
+Deploy marker: `174875a8` ("chore: start 4.4.37")
 
 ### Added
 
