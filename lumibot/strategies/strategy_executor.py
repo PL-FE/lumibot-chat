@@ -244,6 +244,9 @@ class StrategyExecutor(Thread):
                 initial_budget=initial_budget,
                 orders=orders_minimal
             )
+        else:
+            # live: actually sleep
+            time.sleep(sleeptime)
 
     def sync_broker(self):
         # Log that we are syncing the broker.
