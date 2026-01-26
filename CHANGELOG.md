@@ -1,6 +1,14 @@
 # Changelog
 
-## 4.4.38 - Unreleased
+## 4.4.39 - Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+## 4.4.38 - 2026-01-26
 
 ### Added
 - IBKR futures: automatic exchange resolution for futures and continuous futures (via downloader secdef search) with persisted root→exchange cache.
