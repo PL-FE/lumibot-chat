@@ -1,6 +1,11 @@
 # Changelog
 
-## 4.4.40 - Unreleased
+## 4.4.41 - Unreleased
+
+### Fixed
+- ThetaData backtesting: normalize legacy/externally-warmed `prefetch_complete` metadata before cache validation to prevent per-bar STALE/REFRESH thrash.
+
+## 4.4.40 - 2026-01-27
 
 ### Added
 - ThetaData backtesting: coverage-based `prefetch_complete` computation + tests to prevent per-bar STALE/REFRESH thrash when cached datasets are incomplete.
