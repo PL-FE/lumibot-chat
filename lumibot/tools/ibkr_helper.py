@@ -1685,6 +1685,56 @@ def _resolve_conid(*, asset: Asset, quote: Optional[Asset], exchange: Optional[s
         except Exception:
             mapping = {}
 
+    # Seed conids.json across cache namespaces.
+    #
+    # Production backtests often run with a fresh S3 cache version/prefix to simulate cold-cache
+    # behavior. IBKR Client Portal cannot resolve conids for *expired* futures contracts, so
+    # historical futures backtests depend on the shared conid registry (`ibkr/conids.json`).
+    #
+    # If the current cache namespace does not contain `conids.json`, fall back to the default
+    # `v1` namespace and materialize it locally (and, when possible, upload it into the current
+    # namespace) so we do not thrash the downloader in a hot loop.
+    if (not mapping) and (not cache_file.exists()) and getattr(cache_manager, "enabled", False):
+        settings = getattr(cache_manager, "_settings", None)
+        try:
+            backend = getattr(settings, "backend", None)
+            bucket = str(getattr(settings, "bucket", "") or "")
+            prefix = str(getattr(settings, "prefix", "") or "").strip("/")
+            version = str(getattr(settings, "version", "") or "").strip("/")
+        except Exception:
+            backend = None
+            bucket = ""
+            prefix = ""
+            version = ""
+
+        if backend == "s3" and bucket and version and version != "v1":
+            try:
+                relative_path = cache_file.resolve().relative_to(Path(LUMIBOT_CACHE_FOLDER).resolve()).as_posix()
+            except Exception:
+                relative_path = f"{CACHE_SUBFOLDER}/conids.json"
+
+            seed_components = [prefix, "v1", relative_path]
+            seed_key = "/".join([c for c in seed_components if c])
+            seed_mapping: Dict[str, int] = {}
+            try:
+                seed_mapping = _download_remote_conids_json(cache_manager, bucket=bucket, key=seed_key)
+            except Exception as exc:
+                if _is_not_found_error(cache_manager, exc):
+                    seed_mapping = {}
+                else:
+                    seed_mapping = {}
+
+            if seed_mapping:
+                mapping = dict(seed_mapping)
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8")
+                try:
+                    # Best-effort: upload into the current cache namespace so subsequent runs can
+                    # reuse without re-downloading from the seed namespace.
+                    _merge_upload_conids_json(cache_manager, cache_file, mapping=mapping, required_keys=set())
+                except Exception:
+                    pass
+
     asset_type = str(getattr(asset, "asset_type", "") or "").lower()
     effective_exchange = exchange
     if asset_type in {"future", "cont_future"} and not effective_exchange:
