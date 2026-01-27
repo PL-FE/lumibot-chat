@@ -5538,7 +5538,15 @@ def get_historical_eod_data(
     # Convert to date objects for chunking
     start_day = datetime.strptime(start_date, "%Y%m%d").date()
     end_day = datetime.strptime(end_date, "%Y%m%d").date()
-    max_span = timedelta(days=364)
+    # PERF (2026-01-27): Prefer a single large EOD request.
+    #
+    # In downloader/queue mode, splitting multi-year daily history into 1-year windows creates
+    # many queue submissions and can dominate runtime for cold-cache backtests. The EOD payload
+    # is small even for multi-year ranges, and the downloader supports pagination.
+    #
+    # If the provider rejects large windows, we fall back to recursive splitting on
+    # `ThetaRequestError` inside `_collect_chunk_payloads`.
+    max_span = max(timedelta(days=364), end_day - start_day)
 
     def _chunk_windows():
         cursor = start_day
@@ -5559,60 +5567,68 @@ def get_historical_eod_data(
             querystring["end_date"],
         )
 
-        return get_request(
-            url=url,
-            headers=headers,
-            querystring=querystring,
-        )
+        try:
+            return get_request(
+                url=url,
+                headers=headers,
+                querystring=querystring,
+            )
+        except ThetaRequestError:
+            raise
+        except Exception as exc:
+            # The downloader queue client historically raises a generic Exception on permanent
+            # failures (instead of a typed HTTP error). Translate "window too large" errors into
+            # ThetaRequestError so our recursive splitter can reduce the range and retry.
+            msg = str(exc)
+            if "Too many days between start and end date" in msg or "max 365 days" in msg:
+                raise ThetaRequestError(msg, status_code=500, body=msg) from exc
+            raise
 
-    def _collect_chunk_payloads(chunk_start: date, chunk_end: date, *, allow_split: bool = True) -> List[Optional[Dict[str, Any]]]:
+    def _collect_chunk_payloads(
+        chunk_start: date,
+        chunk_end: date,
+        *,
+        depth: int = 0,
+        max_depth: int = 16,
+    ) -> List[Optional[Dict[str, Any]]]:
         try:
             response = _execute_chunk_request(chunk_start, chunk_end)
             return [response]
         except ThetaRequestError as exc:
             span_days = (chunk_end - chunk_start).days + 1
-            if not allow_split or span_days <= 1:
+            if span_days <= 1 or depth >= max_depth:
                 raise
-            midpoint = chunk_start + timedelta(days=(span_days // 2) - 1)
-            right_start = midpoint + timedelta(days=1)
             logger.warning(
-                "[THETA][WARN][EOD][CHUNK] asset=%s start=%s end=%s status=%s retrying with split windows",
+                "[THETA][WARN][EOD][CHUNK] asset=%s start=%s end=%s status=%s retrying with split windows (depth=%d)",
                 asset,
                 chunk_start,
                 chunk_end,
                 exc.status_code,
+                depth,
             )
+            midpoint = chunk_start + timedelta(days=(span_days // 2) - 1)
+            left_end = min(midpoint, chunk_end)
+            right_start = min(midpoint + timedelta(days=1), chunk_end)
+
             split_payloads: List[Optional[Dict[str, Any]]] = []
-            splits = (
-                (chunk_start, min(midpoint, chunk_end)),
-                (min(right_start, chunk_end), chunk_end),
-            )
-            for split_idx, (split_start, split_end) in enumerate(splits, start=1):
-                if split_start > split_end:
-                    continue
-                logger.debug(
-                    "[THETA][DEBUG][EOD][REQUEST][CHUNK][SPLIT] asset=%s parent=%s-%s split=%d start=%s end=%s",
-                    asset,
-                    chunk_start,
-                    chunk_end,
-                    split_idx,
-                    split_start,
-                    split_end,
-                )
-                try:
-                    split_payloads.extend(
-                        _collect_chunk_payloads(split_start, split_end, allow_split=False)
-                    )
-                except ThetaRequestError as sub_exc:
-                    logger.error(
-                        "[THETA][ERROR][EOD][CHUNK][SPLIT] asset=%s parent=%s-%s split=%d failed status=%s",
-                        asset,
+            if chunk_start <= left_end:
+                split_payloads.extend(
+                    _collect_chunk_payloads(
                         chunk_start,
-                        chunk_end,
-                        split_idx,
-                        sub_exc.status_code,
+                        left_end,
+                        depth=depth + 1,
+                        max_depth=max_depth,
                     )
-                    raise
+                )
+            if right_start <= chunk_end:
+                split_payloads.extend(
+                    _collect_chunk_payloads(
+                        right_start,
+                        chunk_end,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                    )
+                )
             return split_payloads
 
     aggregated_rows: List[List[Any]] = []

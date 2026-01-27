@@ -53,7 +53,7 @@ def test_get_historical_eod_data_tracks_progress_per_outer_window(monkeypatch):
 
     asset = Asset(symbol="AAPL", asset_type="stock")
 
-    # Choose a range that deterministically creates 2 windows with max_span=364 days.
+    # Choose a multi-year range; EOD downloads now prefer a single request and only split on error.
     start_dt = datetime(2024, 1, 1)
     end_dt = datetime(2025, 1, 10)
 
@@ -80,7 +80,6 @@ def test_get_historical_eod_data_tracks_progress_per_outer_window(monkeypatch):
     status = thetadata_helper.get_download_status()
     assert status["active"] is False
     assert status["timespan"] == "day"
-    assert status["total"] == 2
-    assert status["current"] == 2
+    assert status["total"] == 1
+    assert status["current"] == 1
     assert status["progress"] == 100
-
