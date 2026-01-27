@@ -5538,15 +5538,9 @@ def get_historical_eod_data(
     # Convert to date objects for chunking
     start_day = datetime.strptime(start_date, "%Y%m%d").date()
     end_day = datetime.strptime(end_date, "%Y%m%d").date()
-    # PERF (2026-01-27): Prefer a single large EOD request.
-    #
-    # In downloader/queue mode, splitting multi-year daily history into 1-year windows creates
-    # many queue submissions and can dominate runtime for cold-cache backtests. The EOD payload
-    # is small even for multi-year ranges, and the downloader supports pagination.
-    #
-    # If the provider rejects large windows, we fall back to recursive splitting on
-    # `ThetaRequestError` inside `_collect_chunk_payloads`.
-    max_span = max(timedelta(days=364), end_day - start_day)
+    # Provider constraint: Theta's EOD history endpoints enforce a hard 365-day limit per request.
+    # Keep windows <= 365 days (inclusive) and use recursive splitting only for transient failures.
+    max_span = timedelta(days=364)
 
     def _chunk_windows():
         cursor = start_day

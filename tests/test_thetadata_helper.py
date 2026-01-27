@@ -393,15 +393,19 @@ def test_get_historical_eod_data_falls_back_to_date_when_created_missing(monkeyp
     assert df.loc["2024-11-01", "open"] == 10.0
 
 
-def test_get_historical_eod_data_prefers_single_request_for_multi_year_range(monkeypatch):
+def test_get_historical_eod_data_chunks_requests_longer_than_a_year(monkeypatch):
     fixture = load_thetadata_fixture("stock_history_eod.json")
     first_row = copy.deepcopy(fixture["response"][0])
     second_row = copy.deepcopy(fixture["response"][1])
+    responses = [
+        {"header": copy.deepcopy(fixture["header"]), "response": [first_row]},
+        {"header": copy.deepcopy(fixture["header"]), "response": [second_row]},
+    ]
     captured_ranges = []
 
     def fake_get_request(url, headers, querystring):
         captured_ranges.append((querystring["start_date"], querystring["end_date"]))
-        return {"header": copy.deepcopy(fixture["header"]), "response": [first_row, second_row]}
+        return responses.pop(0)
 
     monkeypatch.setattr(thetadata_helper, "get_request", fake_get_request)
     monkeypatch.setattr(thetadata_helper, "get_historical_data", lambda **_: None)
@@ -417,7 +421,10 @@ def test_get_historical_eod_data_prefers_single_request_for_multi_year_range(mon
         apply_corporate_actions=False,
     )
 
-    assert captured_ranges == [("2023-01-01", "2024-12-30")]
+    assert captured_ranges == [
+        ("2023-01-01", "2023-12-31"),
+        ("2024-01-01", "2024-12-30"),
+    ]
     assert df is not None
     assert len(df) == 2
     assert df.index.is_monotonic_increasing
