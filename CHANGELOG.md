@@ -1,6 +1,14 @@
 # Changelog
 
-## 4.4.41 - Unreleased
+## 4.4.41 - 2026-01-28
+
+### Added
+- Tests: add regression coverage for futures calendar spreads (same root symbol, different expirations) to prevent margin/PnL ledger collisions.
+- Docs: add investigation notes for ThetaData stale-loop behavior and futures “ghost PnL” equity spikes.
+
+### Changed
+- Backtesting helpers: cache trading calendar schedules by year and slice to the requested window to reduce repeated schedule computations.
+- ThetaData: avoid eager debug string building in hot paths unless debug logging is enabled.
 
 ### Fixed
 - ThetaData backtesting: normalize legacy/externally-warmed `prefetch_complete` metadata before cache validation to prevent per-bar STALE/REFRESH thrash.
