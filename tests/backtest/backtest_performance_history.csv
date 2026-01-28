@@ -7183,3 +7183,14 @@ timestamp,test_name,data_source,trading_days,execution_time_seconds,git_commit,l
 2026-01-27T16:00:32.018833,test_ibkr_stale_end_marks_missing_window_to_avoid_repeated_history_fetches,unknown,,0.543,a5342aef,4.4.39,,,,,Auto-tracked from test_ibkr_helper_stale_end_negative_cache
 2026-01-27T16:50:26.177524,test_acceptance_ibkr_crypto_btc_usd,unknown,,11.985,cf71ae62,4.4.39,,,,,Auto-tracked from test_acceptance_backtests_ci
 2026-01-27T17:50:30.875367,test_yahoo_last_price,Yahoo,,5.575,41a47c5c,4.4.39,,,,,Auto-tracked from test_yahoo
+2026-01-27T18:46:57.120917,test_acceptance_backdoor_smartlimit,unknown,,202.361,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:50:24.745023,test_acceptance_spx_short_straddle,unknown,,205.777,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:50:57.673975,test_acceptance_aapl_deep_dip_calls,unknown,,13.918,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:51:09.937269,test_acceptance_leaps_alpha_picks,unknown,,10.531,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:51:23.381476,test_acceptance_tqqq_sma200,unknown,,13.347,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:54:34.385494,test_acceptance_backdoor_butterfly,unknown,,190.911,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:55:29.732594,test_acceptance_meli_deep_drawdown,unknown,,55.254,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T18:58:34.156973,test_acceptance_backdoor_smartlimit,unknown,,184.333,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T19:01:58.789342,test_acceptance_spx_short_straddle,unknown,,204.545,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T19:02:03.597810,test_acceptance_ibkr_crypto_btc_usd,unknown,,4.734,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-01-27T19:02:10.083698,test_acceptance_ibkr_mes_futures_acceptance,unknown,,6.407,340ed4e7,4.4.41,,,,,Auto-tracked from test_acceptance_backtests_ci
