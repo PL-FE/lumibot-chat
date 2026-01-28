@@ -21,8 +21,9 @@
 
 - Active work happens on a shared version branch: `version/X.Y.Z` (example: `version/4.4.31`).
 - **Do not create extra branches** off a version branch unless explicitly instructed.
-- **Do not bump** `setup.py` version just because work started.
-  - Version bump happens at deployment time only.
+- `setup.py` **must** match the version branch name (`X.Y.Z`).
+  - When you start a new version branch, bump immediately and commit: `chore: start X.Y.Z`.
+  - **Never downgrade** versions. If a bump was wrong, bump forward (and document why).
 - After a version branch is merged to `dev`, **immediately start the next version branch** (see Step 7).
 
 ---
@@ -42,6 +43,7 @@ When you are “the person deploying”, you own the release notes even if you d
 
 Every release PR should include:
 
+- **Title:** `vX.Y.Z - <short summary>` (example: `v4.4.40 - Router backtesting speed fixes`)
 - **What / Why:** one paragraph each.
 - **Risk:** what could break; how to detect it quickly.
 - **Tests run:** local commands + GitHub CI.
@@ -77,10 +79,12 @@ Every release PR should include:
        - `git log --oneline <previous-bump-commit>..<deploy-marker-commit>`
    - If you merged before the changelog is complete, fix it immediately as a follow-up PR to `dev`.
 
-3) **Bump version (deploy-marker commit)**
-   - Update `setup.py` `version="X.Y.Z"`.
+3) **Deploy-marker commit (no version downgrades)**
+   - Confirm `setup.py` is already `version="X.Y.Z"` (it should match the `version/X.Y.Z` branch).
+     - If it’s wrong, fix it by bumping forward (never downgrade).
+   - Ensure `CHANGELOG.md` has `## X.Y.Z - YYYY-MM-DD` and includes the full range of changes.
    - Commit with message: `deploy X.Y.Z` (this is the deploy marker).
-   - This is the commit the release tag should point at.
+   - The release tag must point at this commit.
 
 4) **Tag + publish (preferred path)**
    - Create an annotated tag `vX.Y.Z` pointing at the deploy-marker commit.
@@ -134,12 +138,16 @@ Every release PR should include:
 
 7) **Start the next version branch**
    - Create `version/X.Y.(Z+1)` from `dev` (or from the just-deployed commit once it’s on `dev`).
-   - Do not bump `setup.py` again until the next deployment.
+   - Immediately bump `setup.py` to `X.Y.(Z+1)` and commit: `chore: start X.Y.(Z+1)`.
+   - Add a new `CHANGELOG.md` section: `## X.Y.(Z+1) - Unreleased`.
 
 ---
 
 ## Common pitfalls (learned during 4.4.32)
 
+- **Version drift (`setup.py` doesn’t match the branch name)** breaks traceability and confuses deployments.
+  - Fix: enforce “`setup.py` == `version/X.Y.Z`” as a hard invariant.
+  - Never downgrade versions; always bump forward if something went wrong.
 - **Publishing to PyPI without pushing the `vX.Y.Z` tag first** breaks traceability.
   - The repo’s release workflow is tag-driven. If the version is already on PyPI, pushing the tag later will
     cause the publish step to fail (PyPI rejects re-uploading the same version), and the GitHub Release step

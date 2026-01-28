@@ -1297,6 +1297,27 @@ class ThetaDataBacktestingPandas(PandasData):
                 if existing_end is None:
                     existing_end = self._normalize_default_timezone(existing_data.df.index[-1])
 
+            # CORRECTNESS: Some older sidecar metadata (or externally-warmed caches) can carry an
+            # incorrect `prefetch_complete=True` even when `existing_end` no longer meets the
+            # current `end_requirement` (e.g., cache is slightly behind the requested backtest end).
+            # Normalize it here so we don't emit thousands of per-bar STALE logs.
+            try:
+                existing_meta["prefetch_complete"] = self._compute_prefetch_complete(
+                    existing_meta,
+                    requested_start=requested_start,
+                    effective_start_buffer=effective_start_buffer,
+                    end_requirement=end_requirement,
+                    ts_unit=ts_unit,
+                    requested_length=requested_length,
+                )
+                self._dataset_metadata[canonical_key] = existing_meta
+                legacy_meta = self._dataset_metadata.get(legacy_key)
+                if legacy_meta is not None:
+                    legacy_meta.update(existing_meta)
+                    self._dataset_metadata[legacy_key] = legacy_meta
+            except Exception:
+                logger.debug("[THETA][DEBUG][PREFETCH_COMPLETE] failed to normalize before validation", exc_info=True)
+
             # DEBUG-LOG: Cache validation entry
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1339,6 +1360,7 @@ class ThetaDataBacktestingPandas(PandasData):
                 )
 
             tail_placeholder = existing_meta.get("tail_placeholder", False)
+            tail_missing_permanent = bool(existing_meta.get("tail_missing_permanent")) if existing_meta else False
             end_ok = True
 
             # DEBUG-LOG: End validation entry
@@ -1419,6 +1441,18 @@ class ThetaDataBacktestingPandas(PandasData):
                                 end_requirement,
                                 ts_unit,
                             )
+
+            # PERF: If the cache metadata says the tail is permanently missing (placeholder coverage through
+            # the requested end), treat the end check as satisfied. Without this, backtests can thrash on
+            # every bar (STALE → REFRESH loops) trying to heal placeholder trading days that are expected
+            # to remain unavailable for this run.
+            if not end_ok and tail_missing_permanent:
+                end_ok = True
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[THETA][DEBUG][END_VALIDATION] asset=%s | end_ok forced TRUE due to tail_missing_permanent",
+                        asset_separated.symbol if hasattr(asset_separated, "symbol") else str(asset_separated),
+                    )
 
             if (
                 require_quote_data

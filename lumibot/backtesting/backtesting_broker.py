@@ -1485,7 +1485,13 @@ class BacktestingBroker(Broker):
         strategy_name = getattr(strategy, "_name", None) or getattr(strategy, "name", "unknown_strategy")
         asset_symbol = getattr(asset, "symbol", "unknown_asset")
         asset_type = getattr(asset, "asset_type", "unknown_type")
-        return (strategy_name, asset_symbol, asset_type)
+        # Futures contract identity must include expiration.
+        #
+        # Strategies commonly construct futures as Asset(symbol="CL", expiration=YYYYMM or date),
+        # which means the root symbol alone is not unique. Calendar spreads (front/next month)
+        # would otherwise collide in the ledger and incorrectly net margin + realized PnL.
+        asset_expiration = getattr(asset, "expiration", None)
+        return (strategy_name, asset_symbol, asset_type, asset_expiration)
 
     def _realize_futures_pnl(self, ledger, closing_qty, exit_price, multiplier):
         remaining = closing_qty
