@@ -44,12 +44,19 @@ def _is_ci() -> bool:
     return (os.environ.get("GITHUB_ACTIONS", "").lower() == "true") or bool(os.environ.get("CI"))
 
 
+def _is_release_workflow() -> bool:
+    # The tag-driven PyPI/GitHub release workflow does not currently run with the same
+    # ThetaData + S3 warm-cache secrets as CI acceptance backtests. In that workflow,
+    # skip acceptance backtests rather than failing the entire release build.
+    return os.environ.get("GITHUB_WORKFLOW", "") == "Release (PyPI + GitHub)"
+
+
 def _require_env(keys: list[str]) -> None:
     missing = [k for k in keys if not os.environ.get(k)]
     if not missing:
         return
     message = f"Missing required env vars for acceptance backtests: {missing}"
-    if _is_ci():
+    if _is_ci() and not _is_release_workflow():
         pytest.fail(message)
     pytest.skip(message)
 
