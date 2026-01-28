@@ -1,8 +1,8 @@
 # This file contains helper functions for getting data from Polygon.io
 import functools
 import hashlib
-import logging
 import json
+import logging
 import os
 import random
 import re
