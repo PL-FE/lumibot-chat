@@ -5,11 +5,23 @@ This document describes LumiBot’s Interactive Brokers **Client Portal (REST)**
 ## Scope (Phase 3)
 
 - **Supported:** US futures across major venues (CME/CBOT/COMEX/NYMEX) via IBKR REST historical bars (1-minute+).
-- **Not in scope:** tick/second history guarantees, and “very old expired contract” recovery without a one-time backfill.
+- **Not in scope (current):** tick/second history guarantees, and “very old expired contract” recovery without a one-time backfill.
 - **Backtesting + live:** exchange routing and conid resolution logic is shared between:
   - backtesting (`lumibot/tools/ibkr_helper.py`)
   - live IBKR REST (`lumibot/data_sources/interactive_brokers_rest_data.py`)
   so backtests behave as close to live as practical.
+
+### Seconds-level roadmap (futures-first)
+
+This doc describes the **current** IBKR REST futures backtesting path (minute+).
+
+Seconds-level futures backtesting is an active roadmap item, but it is a separate set of problems:
+- seconds for fills only (bar magnifier), vs
+- true seconds strategy loops (strategy runs on seconds).
+
+When seconds-mode work starts (or if you’re reading this while implementing it), use:
+- `docs/BACKTESTING_SECOND_LEVEL_ROADMAP.md`
+- `docs/investigations/bot_manager.md` (current implementation plan; futures-first; router-mode and warm-cache invariants)
 
 ## Data Path (where the bars come from)
 

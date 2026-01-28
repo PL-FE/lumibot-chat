@@ -11,6 +11,8 @@ This doc standardizes how we run **production-faithful** backtests locally witho
 - **Never run from `Strategy Library/` directly** (it often contains nested `.env` files).
 - Prefer **short windows** (days/weeks/months) for diagnosis; only run full windows once request volume looks sane.
 - Do not delete shared caches. Use `LUMIBOT_CACHE_S3_VERSION=...` to isolate “cold namespace” simulations.
+- For repeated runs, prevent browser/UI spam (while still writing artifacts) by setting:
+  - `LUMIBOT_DISABLE_UI=1`
 
 ## Canonical runner
 

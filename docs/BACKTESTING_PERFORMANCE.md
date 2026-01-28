@@ -225,6 +225,28 @@ Speed work without evidence becomes cargo cult. Every investigation should captu
 
 ---
 
+## 3.1a) Seconds-mode performance notes (futures-first)
+
+Seconds-level backtesting can mean either:
+- seconds for fills only (strategy cadence stays on minutes), or
+- true seconds strategy loops (strategy runs each second timestamp).
+
+True seconds loops change the economics:
+- the iteration count can increase by ~60× (or more) vs minute,
+- any per-iteration overhead that was “fine” at minute scale becomes catastrophic,
+- one stray per-tick downloader request can turn a run from minutes into hours.
+
+Recommended posture:
+- Use an **event-driven clock** (advance on timestamps that exist in the dataset), not “every integer second”.
+- Treat “prefetch once → slice forever” as a hard invariant.
+- Avoid per-tick pandas churn (`pd.to_datetime`, `DataFrame.copy`, merges).
+
+If you are implementing seconds-mode, read:
+- `docs/BACKTESTING_SECOND_LEVEL_ROADMAP.md`
+- `docs/investigations/bot_manager.md` (current implementation plan; futures-first)
+
+---
+
 ## 3.1) Investigation report template (date-first, shareable, sanitized)
 
 When a performance issue takes more than ~30 minutes to diagnose, write it up as an investigation.

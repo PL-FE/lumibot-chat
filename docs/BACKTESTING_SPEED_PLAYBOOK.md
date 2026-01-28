@@ -219,6 +219,35 @@ When you have a real-world slow backtest, add it as a Tier C benchmark:
 - use router-mode and prod-like flags
 - record a minimal sanitized repro in `docs/investigations/YYYY-MM-DD_<TOPIC>.md`
 
+### 4.4 Seconds-mode benchmarks (futures-first)
+
+Seconds-level backtesting has two meanings:
+- seconds for fills only (bar magnifier), and
+- true seconds strategy loops (strategy runs on seconds).
+
+When working on true seconds-mode (futures-first), treat it as a separate benchmark family because:
+- iteration counts can increase by ~60× vs minute,
+- naïve implementations can become unusable quickly, and
+- the “warm-cache must be queue-free” invariant becomes even more important (one stray per-tick download kills everything).
+
+Required reading before starting seconds perf work:
+- `docs/BACKTESTING_SECOND_LEVEL_ROADMAP.md`
+- `docs/investigations/bot_manager.md` (implementation plan; futures-first)
+
+Minimum benchmark suite for seconds work:
+- a no-op/low-compute seconds strategy (measures engine overhead)
+- a deterministic “order heavy” seconds strategy (validates fill semantics and hot-loop overhead)
+- at least one real futures strategy (customer reproduction)
+
+Windows:
+- 1 day (iteration)
+- 1 week (gate)
+
+Evidence requirements are unchanged:
+- cold vs warm (prove warm is queue-free)
+- median-of-3 timings
+- YAPPI attribution when slow
+
 ---
 
 ## 5) Measurement protocol (required for every performance change)
