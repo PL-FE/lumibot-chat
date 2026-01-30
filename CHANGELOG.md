@@ -1,12 +1,40 @@
 # Changelog
 
-## 4.4.39 - Unreleased
+## 4.4.41 - 2026-01-28
+
+### Added
+- Tests: add regression coverage for futures calendar spreads (same root symbol, different expirations) to prevent margin/PnL ledger collisions.
+- Docs: add investigation notes for ThetaData stale-loop behavior and futures “ghost PnL” equity spikes.
+
+### Changed
+- Backtesting helpers: cache trading calendar schedules by year and slice to the requested window to reduce repeated schedule computations.
+- ThetaData: avoid eager debug string building in hot paths unless debug logging is enabled.
+
+### Fixed
+- ThetaData backtesting: normalize legacy/externally-warmed `prefetch_complete` metadata before cache validation to prevent per-bar STALE/REFRESH thrash.
+- ThetaData backtesting (day): treat `tail_missing_permanent=True` as satisfying end-coverage validation to prevent per-bar STALE→REFRESH loops on warm caches.
+- Backtesting futures: include expiration in futures margin/PnL ledger keys so calendar spreads (same root, different expiries) don't incorrectly net margin/realized PnL, preventing “ghost PnL” equity spikes.
+
+## 4.4.40 - 2026-01-27
+
+### Added
+- ThetaData backtesting: coverage-based `prefetch_complete` computation + tests to prevent per-bar STALE/REFRESH thrash when cached datasets are incomplete.
+
+### Changed
+- Yahoo helper: when S3 backtest cache is enabled, hydrate cached pickles before falling back to live Yahoo fetches; upload pickles to the cache on write.
+
+### Fixed
+- ThetaData EOD: enforce the provider's 365-day window limit per request and keep progress tracking consistent with chunked downloads.
+
+## 4.4.39 - 2026-01-27
 
 ### Added
 
 ### Changed
 
 ### Fixed
+- Backtesting router (IBKR futures/cont_future/crypto): prefetch full backtest window once per series and slice from memory to avoid per-iteration history fetches (major warm-cache speedup).
+- Indicators: prevent `plot_indicators()` hovertext generation from crashing when `detail_text` is missing/NaN/NA (e.g., mixed indicator points with and without `detail_text`).
 
 ## 4.4.38 - 2026-01-26
 

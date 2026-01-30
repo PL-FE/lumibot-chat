@@ -2,6 +2,7 @@
 import functools
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -2202,19 +2203,23 @@ def get_price_data(
     """
     import pytz  # Import at function level to avoid scope issues in nested calls
 
-    # DEBUG-LOG: Entry point for ThetaData request
-    logger.debug(
-        "[THETA][DEBUG][REQUEST][ENTRY] asset=%s quote=%s start=%s end=%s dt=%s timespan=%s datastyle=%s include_after_hours=%s return_polars=%s",
-        asset,
-        quote_asset,
-        start.isoformat() if hasattr(start, 'isoformat') else start,
-        end.isoformat() if hasattr(end, 'isoformat') else end,
-        dt.isoformat() if dt and hasattr(dt, 'isoformat') else dt,
-        timespan,
-        datastyle,
-        include_after_hours,
-        return_polars
-    )
+    # DEBUG-LOG: Entry point for ThetaData request.
+    #
+    # PERF: `get_price_data()` can be called tens of thousands of times in option-heavy backtests.
+    # Avoid eager `.isoformat()` / string building unless debug logging is actually enabled.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "[THETA][DEBUG][REQUEST][ENTRY] asset=%s quote=%s start=%s end=%s dt=%s timespan=%s datastyle=%s include_after_hours=%s return_polars=%s",
+            asset,
+            quote_asset,
+            start,
+            end,
+            dt,
+            timespan,
+            datastyle,
+            include_after_hours,
+            return_polars,
+        )
 
     if return_polars:
         raise ValueError("ThetaData polars output is not available; pass return_polars=False.")
@@ -4129,21 +4134,26 @@ def load_cache(cache_file, *, start=None, end=None, preserve_full_history: bool 
     When `start`/`end` are provided and `preserve_full_history=False`, we use PyArrow's dataset
     filtering to load only the requested datetime slice.
     """
-    # DEBUG-LOG: Start loading cache
-    logger.debug(
-        "[THETA][DEBUG][CACHE][LOAD_START] cache_file=%s | "
-        "exists=%s size_bytes=%d",
-        cache_file.name,
-        cache_file.exists(),
-        cache_file.stat().st_size if cache_file.exists() else 0
-    )
+    debug_enabled = logger.isEnabledFor(logging.DEBUG)
 
     if not cache_file.exists():
-        logger.debug(
-            "[THETA][DEBUG][CACHE][LOAD_MISSING] cache_file=%s | returning=None",
-            cache_file.name,
-        )
+        if debug_enabled:
+            logger.debug(
+                "[THETA][DEBUG][CACHE][LOAD_MISSING] cache_file=%s | returning=None",
+                cache_file.name,
+            )
         return None
+
+    if debug_enabled:
+        try:
+            size_bytes = cache_file.stat().st_size
+        except Exception:
+            size_bytes = 0
+        logger.debug(
+            "[THETA][DEBUG][CACHE][LOAD_START] cache_file=%s | size_bytes=%d",
+            cache_file.name,
+            size_bytes,
+        )
 
     df = None
     use_arrow_filter = False
@@ -5538,6 +5548,8 @@ def get_historical_eod_data(
     # Convert to date objects for chunking
     start_day = datetime.strptime(start_date, "%Y%m%d").date()
     end_day = datetime.strptime(end_date, "%Y%m%d").date()
+    # Provider constraint: Theta's EOD history endpoints enforce a hard 365-day limit per request.
+    # Keep windows <= 365 days (inclusive) and use recursive splitting only for transient failures.
     max_span = timedelta(days=364)
 
     def _chunk_windows():
@@ -5559,60 +5571,68 @@ def get_historical_eod_data(
             querystring["end_date"],
         )
 
-        return get_request(
-            url=url,
-            headers=headers,
-            querystring=querystring,
-        )
+        try:
+            return get_request(
+                url=url,
+                headers=headers,
+                querystring=querystring,
+            )
+        except ThetaRequestError:
+            raise
+        except Exception as exc:
+            # The downloader queue client historically raises a generic Exception on permanent
+            # failures (instead of a typed HTTP error). Translate "window too large" errors into
+            # ThetaRequestError so our recursive splitter can reduce the range and retry.
+            msg = str(exc)
+            if "Too many days between start and end date" in msg or "max 365 days" in msg:
+                raise ThetaRequestError(msg, status_code=500, body=msg) from exc
+            raise
 
-    def _collect_chunk_payloads(chunk_start: date, chunk_end: date, *, allow_split: bool = True) -> List[Optional[Dict[str, Any]]]:
+    def _collect_chunk_payloads(
+        chunk_start: date,
+        chunk_end: date,
+        *,
+        depth: int = 0,
+        max_depth: int = 16,
+    ) -> List[Optional[Dict[str, Any]]]:
         try:
             response = _execute_chunk_request(chunk_start, chunk_end)
             return [response]
         except ThetaRequestError as exc:
             span_days = (chunk_end - chunk_start).days + 1
-            if not allow_split or span_days <= 1:
+            if span_days <= 1 or depth >= max_depth:
                 raise
-            midpoint = chunk_start + timedelta(days=(span_days // 2) - 1)
-            right_start = midpoint + timedelta(days=1)
             logger.warning(
-                "[THETA][WARN][EOD][CHUNK] asset=%s start=%s end=%s status=%s retrying with split windows",
+                "[THETA][WARN][EOD][CHUNK] asset=%s start=%s end=%s status=%s retrying with split windows (depth=%d)",
                 asset,
                 chunk_start,
                 chunk_end,
                 exc.status_code,
+                depth,
             )
+            midpoint = chunk_start + timedelta(days=(span_days // 2) - 1)
+            left_end = min(midpoint, chunk_end)
+            right_start = min(midpoint + timedelta(days=1), chunk_end)
+
             split_payloads: List[Optional[Dict[str, Any]]] = []
-            splits = (
-                (chunk_start, min(midpoint, chunk_end)),
-                (min(right_start, chunk_end), chunk_end),
-            )
-            for split_idx, (split_start, split_end) in enumerate(splits, start=1):
-                if split_start > split_end:
-                    continue
-                logger.debug(
-                    "[THETA][DEBUG][EOD][REQUEST][CHUNK][SPLIT] asset=%s parent=%s-%s split=%d start=%s end=%s",
-                    asset,
-                    chunk_start,
-                    chunk_end,
-                    split_idx,
-                    split_start,
-                    split_end,
-                )
-                try:
-                    split_payloads.extend(
-                        _collect_chunk_payloads(split_start, split_end, allow_split=False)
-                    )
-                except ThetaRequestError as sub_exc:
-                    logger.error(
-                        "[THETA][ERROR][EOD][CHUNK][SPLIT] asset=%s parent=%s-%s split=%d failed status=%s",
-                        asset,
+            if chunk_start <= left_end:
+                split_payloads.extend(
+                    _collect_chunk_payloads(
                         chunk_start,
-                        chunk_end,
-                        split_idx,
-                        sub_exc.status_code,
+                        left_end,
+                        depth=depth + 1,
+                        max_depth=max_depth,
                     )
-                    raise
+                )
+            if right_start <= chunk_end:
+                split_payloads.extend(
+                    _collect_chunk_payloads(
+                        right_start,
+                        chunk_end,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                    )
+                )
             return split_payloads
 
     aggregated_rows: List[List[Any]] = []

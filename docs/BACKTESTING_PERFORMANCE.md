@@ -2,7 +2,7 @@
 
 > A practical, evidence-driven guide to **measuring**, **debugging**, and **improving** backtesting performance end‑to‑end (strategy → data → cache → artifacts → UI), while preserving broker‑like correctness.
 
-**Last Updated:** 2026-01-07  
+**Last Updated:** 2026-01-26  
 **Status:** Active  
 **Audience:** Developers, AI Agents (engineering docs)  
 
@@ -19,6 +19,11 @@
 - **Tier 3 (gold):** **live replay baseline** — replay an interval that was traded live and reproduce broker fills + realized PnL within tolerances.
 
 **Speed:** warm-cache runs are queue-free and complete in bounded wall time, with evidence (request counts, cache hit rate, iterations/sec, and wall-time split: data wait vs compute vs artifacts).
+
+**Resilience:** backtests should not “fail” solely because post-processing (stats/tearsheets/plots) crashed. When post-processing fails, the run should still:
+- preserve the trade stream (`trades.csv`) and portfolio stats (`stats.csv`) when available,
+- classify the failure (simulation vs postprocess vs upload),
+- and emit actionable diagnostics rather than silently omitting artifacts.
 
 ## Overview
 
@@ -403,6 +408,23 @@ If warm run #2 still submits a lot of the same request types:
 **First action**
 - confirm effective env vars (settings.json / logs)
 - identify which request types are missing from S3
+
+### Pattern B2 — IBKR historical futures “conid registry missing” thrash (cont_future)
+
+**Symptoms**
+- backtest window is historical (contract months are now expired)
+- repeated errors like “IBKR cont_future requires conids for explicit contract months …”
+- frequent submits to `ibkr/trsrv/futures` even though the backtest never makes progress on data
+- wall time explodes (minutes → hours) and logs become extremely repetitive
+
+**Likely cause**
+- `ibkr/conids.json` is missing in the active S3 cache namespace (fresh cache version/prefix), but
+  IBKR Client Portal cannot discover conids for expired contracts.
+
+**First action**
+- check that the conid registry exists in S3 for the active cache namespace/version
+- if running a fresh cache version, ensure the registry is seeded (see
+  `docs/investigations/2026-01-27_ROUTER_IBKR_SPEED.md`)
 
 ### Pattern C — Low submits but still slow
 

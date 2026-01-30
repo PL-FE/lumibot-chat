@@ -2426,16 +2426,13 @@ def test_get_historical_eod_data_splits_chunk_on_transient_error(monkeypatch):
 
 
 def test_get_historical_eod_data_split_failure_bubbles(monkeypatch):
-    """If a split sub-chunk fails, propagate the ThetaRequestError."""
-    failure_ranges = {
-        ("2024-01-01", "2024-01-04"),
-        ("2024-01-01", "2024-01-02"),
-    }
+    """If recursive split still fails at day granularity, propagate the ThetaRequestError."""
 
     def fake_get_request(url, headers, querystring):
         start = querystring["start_date"]
         end = querystring["end_date"]
-        if (start, end) in failure_ranges:
+        # Fail any window that starts on 2024-01-01 so even recursive splitting cannot recover.
+        if start == "2024-01-01":
             raise thetadata_helper.ThetaRequestError("still failing", status_code=503)
         rows = [
             [100.0, 101.0, f"{start}T17:15:00Z"],
@@ -4311,6 +4308,11 @@ def test_tail_placeholder_at_end_marks_permanent_not_refetched(monkeypatch):
     assert meta.get("tail_placeholder") is True
     assert meta.get("tail_missing_permanent") is True
     assert meta.get("tail_missing_date") == datetime.date(2024, 1, 5)
+
+    # Regression: once we mark the tail permanently missing, day-mode backtests must not thrash on
+    # every bar by re-invoking the downloader for the same missing end date.
+    ds._update_pandas_data(asset, quote, length=3, timestep="day", start_dt=end)
+    assert calls == ["day"]
 
 
 def test_daily_data_check_uses_utc_date_comparison():
