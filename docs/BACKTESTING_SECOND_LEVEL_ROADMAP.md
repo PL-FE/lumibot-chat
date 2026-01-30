@@ -2,7 +2,7 @@
 
 > Roadmap for “seconds-level” backtesting support without making backtests 60× slower.
 
-**Last Updated:** 2026-01-22
+**Last Updated:** 2026-01-28
 **Status:** Active
 **Audience:** Developers, AI Agents
 
@@ -21,6 +21,7 @@ See also:
 - `docs/BACKTESTING_ACCURACY_VALIDATION.md` (Tier 3 “live replay baseline” is the gold standard)
 - `docs/BACKTESTING_PERFORMANCE.md` (profiling + speed methodology)
 - `docs/BACKTESTING_SESSION_GAPS_AND_DATA_GAPS.md` (no synthetic bars; gaps are “no data”)
+- `docs/investigations/bot_manager.md` (current implementation plan for true seconds-mode, futures-first)
 
 ---
 
@@ -107,3 +108,37 @@ Required reporting:
 - write measurements into an investigations report (append-only), similar to:
   - `docs/investigations/2026-01-22_IBKR_MINUTE_SPEED_BURNER_REPORT.md`
 
+---
+
+## Phase 7e — True seconds strategy loops (production-capable)
+
+Goal:
+- Support **true** second-by-second strategy logic for meaningful windows (days/weeks), not just “small research windows”.
+- Preserve correctness: no synthetic bars, deterministic fills, full artifacts.
+
+Key insight:
+- A naïve “run the full strategy every integer second between start/end” is both slow and often incorrect (it iterates
+  through closed-session gaps that have no data).
+
+Required design pillars:
+
+1) **Event-driven seconds clock**
+   - The simulation advances on actual seconds timestamps present in the dataset (“clock series”), not on every integer second.
+   - This naturally skips maintenance windows and missing time without fabricating bars.
+
+2) **Prefetch once → slice forever**
+   - For each `(asset, timeframe=second, quote/source key)`, fetch the full window once (start-warmup → end).
+   - Subsequent `get_historical_prices` calls must be in-memory slices, not downloads or parquet reloads.
+
+3) **Avoid per-tick pandas churn**
+   - Seconds-mode cannot afford repeated `DataFrame.copy()`, `pd.to_datetime(...)`, or merges per tick.
+   - Normalize timestamps once at prefetch time; slice by integer offset.
+
+4) **Explicit multi-asset clock semantics**
+   - Define whether time advances on:
+     - a primary clock series (recommended first), or
+     - union of timestamps across series (later, if needed).
+
+This phase is the “real product” when customers ask for second-level strategies.
+For implementation details and the current project plan, see:
+- `docs/investigations/bot_manager.md`

@@ -158,6 +158,16 @@ Every release PR should include:
 - **Perf claims without evidence** cause churn.
   - If a PR claims speedups, it must include: the exact benchmark command(s), measured before/after numbers, and
     profiler artifacts (e.g., YAPPI CSV path) or it doesn’t ship as “performance work”.
+- **Release workflow environment drift** can break releases unexpectedly.
+  - The release workflow runs a subset of tests (`pytest -m "not apitest and not downloader"`).
+  - If a “unit” test actually requires external credentials (e.g., vendor logins, remote cache), the release workflow
+    may not have those secrets available and will fail even when normal CI is green.
+  - Fix direction: keep unit tests pure; use markers/skips for tests that require external services; document any
+    required secrets and ensure the workflow environment is configured intentionally.
+- **Workflow file edits can be permission-gated**.
+  - Some auth setups cannot push changes under `.github/workflows/` without a token that has the `workflow` scope.
+  - If you hit this, don’t thrash: either use an appropriately-scoped token, or make a safe repo-side change that
+    doesn’t require workflow edits (and document the limitation).
 - **Use `python3`**, not `python` (macOS environments often don’t have `python`).
 - **Wrap long commands** with `/Users/robertgrzesik/bin/safe-timeout …` to avoid hanging sessions.
 - **Broker apitests are opt-in**:

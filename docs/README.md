@@ -39,7 +39,7 @@ If you’re coordinating IBKR speed + crash hardening work, start with:
 | `BACKTESTING_ACCURACY_VALIDATION.md` | Accuracy validation ladder (Tier 1/2/3) + how to build live replay baselines | When defining “accuracy” for a project |
 | `BACKTESTING_PERFORMANCE.md` | How to measure and improve backtest speed (startup, downloader, caching, parity, cost) | When investigating slowness or production/local parity |
 | `BACKTESTING_SPEED_PLAYBOOK.md` | Step-by-step SOP for performance work (router-mode, evidence, tests, ledgers) | When doing speed improvements (Theta/IBKR/etc.) |
-| `BACKTESTING_SECOND_LEVEL_ROADMAP.md` | Roadmap for “seconds-level” backtesting (fills magnifier, event-driven clock) | When planning second-level support |
+| `BACKTESTING_SECOND_LEVEL_ROADMAP.md` | Roadmap for “seconds-level” backtesting (fills magnifier, event-driven clock); implementation notes in `investigations/bot_manager.md` | When planning second-level support |
 | `ENV_VARS.md` | Complete environment variable reference with defaults and examples | When adding/changing env vars or debugging config issues |
 | `ACCEPTANCE_BACKTESTS.md` | Release gate criteria - what must pass before deployment | Before any release or version bump |
 | `BROKER_ORDER_SEMANTICS.md` | What live brokers allow/reject (extended hours, order types, etc.) | When matching live broker behavior |
@@ -113,6 +113,11 @@ Brief 2-3 sentence summary of the document's purpose and key points.
 ### File Naming Convention (MANDATORY)
 
 **All documentation files MUST use UPPERCASE names.**
+
+Exceptions:
+- Some local/private coordination notes or legacy files may not follow this (e.g., `docs/investigations/bot_manager.md`).
+- When promoting an investigation into long-lived documentation, prefer the standard date-first investigation format:
+  `docs/investigations/YYYY-MM-DD_TOPIC.md`.
 
 | Location | Pattern | Example |
 |----------|---------|---------|
