@@ -445,3 +445,43 @@ def test_date_n_trading_days_from_date_no_tz_mismatch_nyse():
 
     assert isinstance(result_back, dt.date)
     assert isinstance(result_fwd, dt.date)
+
+
+def test_get_trading_days_on_tz_mismatch_then_fix(monkeypatch):
+    """
+    Construct a calendar whose schedule has a tz-aware DatetimeIndex (UTC),
+    while get_trading_days currently builds tz-naive slice bounds.
+    """
+    import pandas as pd
+    import pytz
+
+    class FakeCalendar:
+        def schedule(self, start_date, end_date, tz=None):
+            # Build a tz-aware DatetimeIndex to trigger the mismatch
+            idx = pd.date_range(
+                start=pd.Timestamp('2025-01-01', tz=pytz.UTC),
+                end=pd.Timestamp('2025-01-05', tz=pytz.UTC),
+                freq='D'
+            )
+            # Market open/close columns can be naive datetimes; they aren't
+            # used for the slicing that triggers the error.
+            opens = pd.date_range('2025-01-01 00:00:00', periods=len(idx), freq='D')
+            closes = pd.date_range('2025-01-01 23:59:00', periods=len(idx), freq='D')
+            df = pd.DataFrame({
+                'market_open': opens,
+                'market_close': closes,
+            }, index=idx)
+            return df
+
+    # Monkeypatch pandas_market_calendars.get_calendar used inside helpers
+    monkeypatch.setattr(helpers_module.mcal, 'get_calendar', lambda market: FakeCalendar())
+
+    tz = pytz.UTC
+    start = tz.localize(dt.datetime(2025, 1, 1, 12, 0, 0))
+    end = tz.localize(dt.datetime(2025, 1, 4, 12, 0, 0))
+
+    sched = get_trading_days(market="FAKE", start_date=start, end_date=end, tzinfo=tz)
+
+    assert isinstance(sched, pd.DataFrame)
+    assert not sched.empty
+    assert getattr(sched.index, 'tz', None) is not None
