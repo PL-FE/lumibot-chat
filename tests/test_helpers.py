@@ -4,6 +4,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 import pytz
 import pytest
+import pandas as pd
 
 from lumibot import LUMIBOT_DEFAULT_TIMEZONE
 from lumibot.tools.helpers import (
@@ -372,3 +373,75 @@ def test_is_market_open_invalid_market():
     tz = pytz.timezone("US/Eastern")
     dtm = tz.localize(dt.datetime.combine(dt.date(2024, 1, 5), dt.time(10, 30)))
     assert is_market_open(dtm, "INVALID") is False
+
+
+@pytest.mark.parametrize(
+    "market, tzname",
+    [
+        ("NYSE", "America/New_York"),
+        # Using UTC also exhibits the same mismatch prior to the fix
+        ("NYSE", "UTC"),
+    ],
+)
+def test_get_trading_days_handles_tzaware_index_nyse(market, tzname):
+    """
+    Regression test for tz-aware index vs tz-naive slice bounds in get_trading_days.
+
+    Before the fix, this raises:
+        TypeError: Cannot compare tz-naive and tz-aware datetime-like objects
+
+    After the fix, it should return a non-empty schedule for the requested window.
+    """
+    tz = pytz.timezone(tzname)
+
+    # Intentionally pass timezone-aware datetimes with times that are not midnight
+    # so code paths normalize to date-only and then slice the tz-aware index.
+    start = tz.localize(dt.datetime(2025, 4, 14, 12, 0, 0))
+    end = tz.localize(dt.datetime(2025, 4, 20, 12, 0, 0))
+
+    sched = get_trading_days(market=market, start_date=start, end_date=end, tzinfo=tz)
+
+    # After fix: we should get a non-empty DataFrame with DatetimeIndex
+    assert isinstance(sched, pd.DataFrame)
+    assert not sched.empty
+    assert getattr(sched.index, "tz", None) is not None  # index should be tz-aware
+
+
+def test_get_trading_days_handles_tzaware_index_247():
+    """
+    Same regression test for the built-in "24/7" calendar.
+
+    Prior to the fix, this also triggers the tz-aware/naive slicing error.
+    After the fix, it should return daily sessions for the range.
+    """
+    tz = pytz.UTC
+    start = tz.localize(dt.datetime(2025, 1, 1, 8, 30, 0))
+    end = tz.localize(dt.datetime(2025, 1, 5, 17, 45, 0))
+
+    sched = get_trading_days(market="24/7", start_date=start, end_date=end, tzinfo=tz)
+
+    assert isinstance(sched, pd.DataFrame)
+    assert not sched.empty
+    # Expect 4 sessions: Jan 1, 2, 3, 4 (inclusive of start day; end is exclusive)
+    assert len(sched) == 4
+    assert getattr(sched.index, "tz", None) is not None
+
+
+def test_date_n_trading_days_from_date_no_tz_mismatch_nyse():
+    """
+    `date_n_trading_days_from_date` delegates to `get_trading_days`. Before the fix,
+    this call raises a tz-aware/naive mismatch TypeError. After the fix, it should
+    simply return a `datetime.date`.
+    """
+    tz = pytz.UTC
+    start_dt = tz.localize(dt.datetime(2025, 7, 1, 12, 0, 0))
+
+    result_back = date_n_trading_days_from_date(
+        n_days=5, start_datetime=start_dt, market="NYSE"
+    )
+    result_fwd = date_n_trading_days_from_date(
+        n_days=-5, start_datetime=start_dt, market="NYSE"
+    )
+
+    assert isinstance(result_back, dt.date)
+    assert isinstance(result_fwd, dt.date)

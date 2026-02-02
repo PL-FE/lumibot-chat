@@ -232,6 +232,15 @@ def get_trading_days(
     # Slice to the requested window (inclusive of schedule_end_day).
     days = full_schedule.loc[start_day:schedule_end_day].copy()
 
+    # Ensure the index is tz-aware and aligned with requested tz
+    # pandas_market_calendars typically returns a date-only, tz-naive index
+    if not isinstance(days.index, pd.DatetimeIndex):
+        days.index = pd.DatetimeIndex(days.index)
+    if getattr(days.index, "tz", None) is None:
+        days.index = days.index.tz_localize(tzinfo)
+    else:
+        days.index = days.index.tz_convert(tzinfo)
+
     # Cache the result
     _TRADING_CALENDAR_CACHE[cache_key] = days.copy()
 
