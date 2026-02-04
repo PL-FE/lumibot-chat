@@ -1952,7 +1952,30 @@ class StrategyExecutor(Thread):
             if is_pure_pandas_data_source:
                 self.broker.initialize_market_calendars(data_source.get_trading_days_pandas())
             else:
-                self.broker.initialize_market_calendars(get_trading_days(market))
+                # PERF: `get_trading_days()` is expensive when called with the default `start_date`
+                # (1950-01-01), because it builds the schedule for every year until `end_date`.
+                # In backtesting we always know the simulation window, so bound the calendar query
+                # to the backtest date range to avoid building decades of unused schedules.
+                if self.strategy.is_backtesting:
+                    datetime_start = getattr(self.broker, "datetime_start", None) or getattr(
+                        data_source, "datetime_start", None
+                    )
+                    datetime_end = getattr(self.broker, "datetime_end", None) or getattr(
+                        data_source, "datetime_end", None
+                    )
+                else:
+                    datetime_start = None
+                    datetime_end = None
+
+                if datetime_start is not None and datetime_end is not None:
+                    start_date = datetime_start - timedelta(days=7)
+                    # `get_trading_days` treats end_date as exclusive; include the final day.
+                    end_date = datetime_end + timedelta(days=1)
+                    self.broker.initialize_market_calendars(
+                        get_trading_days(market=market, start_date=start_date, end_date=end_date)
+                    )
+                else:
+                    self.broker.initialize_market_calendars(get_trading_days(market))
 
             #####
             # Main strategy execution loop

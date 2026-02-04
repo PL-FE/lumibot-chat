@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.4.46 - 2026-02-04
+
+### Fixed
+- Backtesting routing: when `futures`/`future` is configured, default `cont_future` to the same provider so `AssetType.CONT_FUTURE` does not fall back to `default`.
+- Backtesting performance: default per-asset fetch throttling (`sleep_time`) to 0 for backtesting data sources (keeps live default throttling unchanged).
+- Backtesting performance: bound `get_trading_days()` calendar initialization to the backtest date window to avoid building decades of unused schedules.
+
 ## 4.4.43 - 2026-01-30
 
 ### Added

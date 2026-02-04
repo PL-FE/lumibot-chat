@@ -4367,7 +4367,7 @@ class Strategy(_Strategy):
         max_workers: int = 200,
         exchange: str = None,
         include_after_hours: bool = True,
-        sleep_time: float = 0.1
+        sleep_time: float | None = None,
     ):
         """Get historical pricing data for the list of assets.
 
@@ -4399,6 +4399,11 @@ class Strategy(_Strategy):
         include_after_hours : bool
             ``True`` by default. If ``False``, only return bars that are during
             regular trading hours. If ``True``, return all bars. Currently only works for Interactive Brokers.
+        sleep_time : float, optional
+            Sleep between per-asset fetches to reduce the likelihood of upstream rate limiting.
+            When omitted (``None``), LumiBot defaults to:
+            - ``0`` for backtesting data sources
+            - ``0.1`` seconds for live data sources
 
         Returns
         -------
@@ -4434,6 +4439,11 @@ class Strategy(_Strategy):
             self._logged_get_historical_prices_assets.add(assets_key)
 
         assets = [self._sanitize_user_asset(asset) for asset in assets]
+
+        effective_sleep_time = sleep_time
+        if effective_sleep_time is None:
+            data_source = getattr(getattr(self, "broker", None), "data_source", None)
+            effective_sleep_time = 0.0 if getattr(data_source, "IS_BACKTESTING_DATA_SOURCE", False) else 0.1
         return self.broker.data_source.get_bars(
             assets,
             length,
@@ -4442,7 +4452,7 @@ class Strategy(_Strategy):
             chunk_size=chunk_size,
             max_workers=max_workers,
             exchange=exchange,
-            sleep_time=sleep_time
+            sleep_time=effective_sleep_time
         )
 
     def get_bars(
@@ -4454,7 +4464,7 @@ class Strategy(_Strategy):
         chunk_size: int = 100,
         max_workers: int = 200,
         exchange: str = None,
-        sleep_time: float = 0.1
+        sleep_time: float | None = None,
     ):
         """
         This method is deprecated and will be removed in a future version.

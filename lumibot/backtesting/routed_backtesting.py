@@ -832,6 +832,12 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
         if "cont_futures" in normalized and "cont_future" not in normalized:
             normalized["cont_future"] = normalized["cont_futures"]
 
+        # If a futures provider is configured but continuous futures is not, route cont_future to the
+        # same provider. This matches user expectations that "futures" covers both FUTURE and CONT_FUTURE.
+        future_provider = normalized.get("future")
+        if future_provider and "cont_future" not in normalized:
+            normalized["cont_future"] = future_provider
+
         normalized.setdefault("default", "thetadata")
         return normalized
 

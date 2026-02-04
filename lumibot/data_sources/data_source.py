@@ -388,11 +388,15 @@ class DataSource(ABC):
         quote=None,
         exchange=None,
         include_after_hours=True,
-        sleep_time=0.1,
+        sleep_time: float | None = None,
     ):
         """Get bars for the list of assets"""
         if not isinstance(assets, list):
             assets = [assets]
+
+        effective_sleep_time = sleep_time
+        if effective_sleep_time is None:
+            effective_sleep_time = 0.0 if getattr(self, "IS_BACKTESTING_DATA_SOURCE", False) else 0.1
 
         def process_chunk(chunk):
             chunk_result = {}
@@ -415,7 +419,8 @@ class DataSource(ABC):
                     )
 
                     # Sleep to prevent rate limiting
-                    time.sleep(sleep_time)
+                    if effective_sleep_time:
+                        time.sleep(effective_sleep_time)
                 except Exception as e:
                     # Log once per asset to avoid spamming with a huge traceback
                     logger.warning(f"Error retrieving data for {base_asset.symbol}: {e}")
