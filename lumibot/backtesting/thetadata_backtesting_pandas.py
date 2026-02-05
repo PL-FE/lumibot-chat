@@ -161,7 +161,7 @@ class ThetaDataBacktestingPandas(PandasData):
         strategy_name = kwargs.get('name', 'Backtest')
         client_id = f"{strategy_name}_{unique_id}"
         set_queue_client_id(client_id)
-        logger.info(f"[THETA][QUEUE] Set unique client_id for queue fairness: {client_id}")
+        logger.info(f"[DOWNLOADER][QUEUE] Set unique client_id for queue fairness: {client_id}")
 
         # When a Data Downloader is configured, LumiBot must never touch local ThetaTerminal
         # processes. Starting/killing a local ThetaTerminal can steal the single licensed Theta
