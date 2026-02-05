@@ -160,10 +160,23 @@ def get_trading_days(
 
     # More robust datetime conversion with explicit timezone handling
     def format_datetime(dtm):
+        """
+        Convert dtm to a timezone-aware Python datetime in tzinfo.
+
+        Handles inputs that may be:
+        - tz-naive (localize to tzinfo)
+        - tz-aware (convert to tzinfo)
+        - pandas Timestamp or Python datetime
+        - NaT/None (returned as-is)
+        """
         if pd.isna(dtm):
             return dtm
-        # Convert to Python datetime and ensure proper timezone conversion
-        return pd.Timestamp(dtm).tz_convert(tzinfo).to_pydatetime()
+        ts = pd.Timestamp(dtm)
+        if ts.tz is None:
+            ts = ts.tz_localize(tzinfo)
+        else:
+            ts = ts.tz_convert(tzinfo)
+        return ts.to_pydatetime()
 
     def ensure_tz_aware(dtm, tzinfo):
         dtm = pd.to_datetime(dtm)
@@ -175,15 +188,15 @@ def get_trading_days(
     else:
         end_date = ensure_tz_aware(get_lumibot_datetime(), tzinfo)
 
-    # Normalize to date-only boundaries (pandas_market_calendars schedules use a tz-naive date index).
+    # Normalize to date-only boundaries, but ensure tz-awareness to match schedule index
     try:
-        start_day = pd.Timestamp(start_date.date())
+        start_day = pd.Timestamp(start_date.date(), tz=tzinfo)
     except Exception:
-        start_day = pd.Timestamp(pd.to_datetime(start_date).date())
+        start_day = pd.Timestamp(pd.to_datetime(start_date).date(), tz=tzinfo)
     try:
-        end_day_exclusive = pd.Timestamp(end_date.date())
+        end_day_exclusive = pd.Timestamp(end_date.date(), tz=tzinfo)
     except Exception:
-        end_day_exclusive = pd.Timestamp(pd.to_datetime(end_date).date())
+        end_day_exclusive = pd.Timestamp(pd.to_datetime(end_date).date(), tz=tzinfo)
 
     # Make end_date exclusive by moving it one day earlier.
     schedule_end_day = end_day_exclusive - pd.Timedelta(days=1)
@@ -228,6 +241,25 @@ def get_trading_days(
         year_schedules.append(_get_year_schedule(year))
 
     full_schedule = year_schedules[0] if len(year_schedules) == 1 else pd.concat(year_schedules, axis=0)
+
+    # Ensure the index is tz-aware and aligned with requested tz BEFORE slicing
+    # Calendars may return:
+    # - DatetimeIndex (tz-naive or tz-aware)
+    # - Index of Python datetimes (tz-naive or tz-aware)
+    idx = full_schedule.index
+    if isinstance(idx, pd.DatetimeIndex):
+        full_schedule.index = idx.tz_localize(tzinfo) if idx.tz is None else idx.tz_convert(tzinfo)
+    else:
+        # Likely an Index of Python datetime/date objects; can be mixed naive/aware
+        # Prefer parsing as naive and localizing (preserves calendar days)
+        # but fall back to utc=True if any tz-aware elements are present.
+        try:
+            tmp = pd.to_datetime(idx, errors="raise")
+            full_schedule.index = pd.DatetimeIndex(tmp).tz_localize(tzinfo)
+        except ValueError:
+            # Pandas requires utc=True when any tz-aware python datetimes are present
+            tmp = pd.to_datetime(idx, utc=True)
+            full_schedule.index = tmp.tz_convert(tzinfo)
 
     # Slice to the requested window (inclusive of schedule_end_day).
     days = full_schedule.loc[start_day:schedule_end_day].copy()
