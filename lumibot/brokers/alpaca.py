@@ -1361,9 +1361,9 @@ class Alpaca(Broker):
                     or "status code: 429" in error_message
                 )
                 if is_rate_limited:
-                    logger.info(f"OAuth Polling error (rate-limited): {e}", exc_info=True)
+                    logger.warning(f"OAuth Polling error (rate-limited): {e}", exc_info=True)
                 else:
-                    logger.info(f"OAuth Polling error: {e}", exc_info=True)
+                    logger.error(f"OAuth Polling error: {e}", exc_info=True)
         # No need to schedule next poll - PollingStream handles this automatically via timeout
 
     def _run_stream(self):
