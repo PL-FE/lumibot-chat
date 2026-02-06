@@ -451,6 +451,8 @@ Handle cases where desired expiration might not be available:
 Options Strategies with OptionsHelper
 -------------------------------------
 
+For strike/expiry/delta selection helpers, see :doc:`options_helper`.
+
 Calendar Spread
 ~~~~~~~~~~~~~~~
 

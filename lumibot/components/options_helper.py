@@ -37,13 +37,14 @@ class OptionsHelper:
     """
     OptionsHelper is a utility component for constructing and managing various options strategies.
     It provides functions for:
-      - Finding valid options (e.g. handling expiries on holidays/weekends)
-      - Calculating option deltas and finding strikes that best match target deltas
-      - Calculating a multi-leg limit price for orders
-      - Building orders for various spread strategies (vertical, calendar, butterfly, straddle, strangle, diagonal, ratio)
-      - Executing (submitting) the constructed orders separately from building them
-      - Advanced risk management functions such as aggregating portfolio Greeks and checking spread profit
-      - Additional utility functions for liquidity checking and order detail summaries
+
+    - Finding valid options (e.g. handling expiries on holidays/weekends)
+    - Calculating option deltas and finding strikes that best match target deltas
+    - Calculating a multi-leg limit price for orders
+    - Building orders for various spread strategies (vertical, calendar, butterfly, straddle, strangle, diagonal, ratio)
+    - Executing (submitting) the constructed orders separately from building them
+    - Advanced risk management functions such as aggregating portfolio Greeks and checking spread profit
+    - Additional utility functions for liquidity checking and order detail summaries
     """
 
     def __init__(self, strategy) -> None:
