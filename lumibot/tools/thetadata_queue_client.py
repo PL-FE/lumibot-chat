@@ -284,7 +284,7 @@ class QueueClient:
             self._session_generation += 1
         now = time.time()
         if now - self._last_session_reset_log > 30:
-            logger.info("[THETA][QUEUE] Reset HTTP sessions (reason=%s)", reason)
+            logger.info("[DOWNLOADER][QUEUE] Reset HTTP sessions (reason=%s)", reason)
             self._last_session_reset_log = now
 
     def _build_correlation_id(
@@ -528,7 +528,7 @@ class QueueClient:
                     jitter_pct=QUEUE_SUBMIT_BACKOFF_JITTER_PCT,
                 )
                 logger.info(
-                    "[THETA][QUEUE] Submit network timeout; retrying in %.2fs (attempt=%d): %s",
+                    "[DOWNLOADER][QUEUE] Submit network timeout; retrying in %.2fs (attempt=%d): %s",
                     delay,
                     attempt,
                     exc,
@@ -554,7 +554,7 @@ class QueueClient:
                     retry_after=data.get("retry_after") or resp.headers.get("Retry-After"),
                 )
                 logger.info(
-                    "[THETA][QUEUE] Downloader queue full; retrying submit in %.2fs (attempt=%d)",
+                    "[DOWNLOADER][QUEUE] Downloader queue full; retrying submit in %.2fs (attempt=%d)",
                     delay,
                     attempt,
                 )
@@ -580,7 +580,7 @@ class QueueClient:
                     retry_after=resp.headers.get("Retry-After"),
                 )
                 logger.info(
-                    "[THETA][QUEUE] Submit transient HTTP %s; retrying in %.2fs (attempt=%d)",
+                    "[DOWNLOADER][QUEUE] Submit transient HTTP %s; retrying in %.2fs (attempt=%d)",
                     status_code,
                     delay,
                     attempt,
@@ -790,7 +790,7 @@ class QueueClient:
                 # Emit a low-rate heartbeat at INFO so "no logs for an hour" is diagnosable in prod.
                 if elapsed >= 10 and time.time() - last_info_time > 30:
                     logger.info(
-                        "[THETA][QUEUE] Still waiting: request_id=%s status=%s position=%s attempts=%s est_wait=%.1fs elapsed=%.1fs",
+                        "[DOWNLOADER][QUEUE] Still waiting: request_id=%s status=%s position=%s attempts=%s est_wait=%.1fs elapsed=%.1fs",
                         request_id,
                         status,
                         position,
@@ -832,7 +832,7 @@ class QueueClient:
                         elapsed = time.time() - start_time
                         result_size = len(result) if isinstance(result, (list, dict)) else 0
                         logger.info(
-                            "[THETA][QUEUE] Received result: request_id=%s status=%s elapsed=%.1fs status_code=%d size=%d",
+                            "[DOWNLOADER][QUEUE] Received result: request_id=%s status=%s elapsed=%.1fs status_code=%d size=%d",
                             request_id,
                             status,
                             elapsed,
@@ -858,7 +858,7 @@ class QueueClient:
                 missing_info_streak += 1
                 if elapsed >= 10 and time.time() - last_info_time > 30:
                     logger.info(
-                        "[THETA][QUEUE] Still waiting: request_id=%s (status refresh failing, streak=%d, last_error=%s) elapsed=%.1fs",
+                        "[DOWNLOADER][QUEUE] Still waiting: request_id=%s (status refresh failing, streak=%d, last_error=%s) elapsed=%.1fs",
                         request_id,
                         missing_info_streak,
                         self._last_status_refresh_error,
@@ -911,7 +911,7 @@ class QueueClient:
                 with self._in_flight_lock:
                     current = self._in_flight_count
                 logger.info(
-                    "[THETA][QUEUE] Waiting for request slot (in_flight=%d/%d) waited=%.1fs path=%s",
+                    "[DOWNLOADER][QUEUE] Waiting for request slot (in_flight=%d/%d) waited=%.1fs path=%s",
                     current,
                     self.max_concurrent,
                     waited,
@@ -983,7 +983,7 @@ class QueueClient:
                             f"{base_correlation_id}-retry-{timeout_count}-{int(time.time())}"
                         )
                         logger.warning(
-                            "[THETA][QUEUE] Request %s timed out repeatedly; forcing resubmit (attempt=%d)",
+                            "[DOWNLOADER][QUEUE] Request %s timed out repeatedly; forcing resubmit (attempt=%d)",
                             request_id,
                             timeout_count,
                         )

@@ -6,6 +6,7 @@ import os
 import re
 import time
 import uuid
+import warnings
 from decimal import Decimal
 from typing import Callable, List, Type, Union, Optional
 
@@ -4043,7 +4044,8 @@ class Strategy(_Strategy):
         quote: Asset = None,
         exchange: str = None,
         include_after_hours: bool = True,
-        return_polars: bool = False,
+        *args,
+        **kwargs
     ):
         """Get historical pricing data for a given symbol or asset.
 
@@ -4087,16 +4089,17 @@ class Strategy(_Strategy):
             The exchange to pull the historical data from. Default is None (decided based on the broker)
         include_after_hours : bool
             Whether to include after hours data. Default is True. Currently only works with Interactive Brokers.
-        return_polars : bool
-            If True, return Bars with Polars DataFrame for better performance. Default is False (returns pandas).
-            When False and data is in Polars format, a warning will be issued about the conversion.
+        return_polars : bool (deprecated)
+            Deprecated. Do not use in strategy code. This keyword will be removed in a future release.
+            Strategy logic should use pandas operations on ``bars.pandas_df`` and should not depend on
+            the underlying DataFrame backend.
 
         Returns
         -------
         Bars
             The bars object with all the historical pricing data. Please check the ``Entities.Bars``
             object documentation for more details on how to use Bars objects. To get a ``DataFrame``
-            from the Bars object, use ``bars.df``.
+            from the Bars object, use ``bars.pandas_df``.
 
         Example
         -------
@@ -4106,10 +4109,10 @@ class Strategy(_Strategy):
         >>> # Get the data for SPY for the last 2 days
         >>> bars =  self.get_historical_prices("SPY", 2, "day")
         >>> # To get the DataFrame of SPY data
-        >>> df = bars.df
+        >>> df = bars.pandas_df
         >>>
         >>> # Then, to get the DataFrame of SPY data
-        >>> df = bars.df
+        >>> df = bars.pandas_df
         >>> last_ohlc = df.iloc[-1] # Get the last row of the DataFrame (the most recent pricing data we have)
         >>> self.log_message(f"Last price of BTC in USD: {last_ohlc['close']}, and the open price was {last_ohlc['open']}")
 
@@ -4117,13 +4120,13 @@ class Strategy(_Strategy):
         >>> bars =  self.get_historical_prices("AAPL", 30, "minute")
         >>>
         >>> # Then, to get the DataFrame of SPY data
-        >>> df = bars.df
+        >>> df = bars.pandas_df
         >>> last_ohlc = df.iloc[-1] # Get the last row of the DataFrame (the most recent pricing data we have)
         >>> self.log_message(f"Last price of AAPL: {last_ohlc['close']}, and the open price was {last_ohlc['open']}")
 
         >>> # Get 5-minute bars for the last 10 5-minute periods (using new multi-timeframe support)
         >>> bars = self.get_historical_prices("SPY", 10, "5min")
-        >>> df = bars.df  # DataFrame with 10 rows of 5-minute OHLCV data
+        >>> df = bars.pandas_df  # DataFrame with 10 rows of 5-minute OHLCV data
         >>>
         >>> # Get hourly bars for the last 24 hours
         >>> bars = self.get_historical_prices("AAPL", 24, "1h")
@@ -4138,7 +4141,7 @@ class Strategy(_Strategy):
         >>> bars =  self.get_historical_prices(asset, 30, "minute")
         >>>
         >>> # Then, to get the DataFrame of SPY data
-        >>> df = bars.df
+        >>> df = bars.pandas_df
         >>> last_ohlc = df.iloc[-1] # Get the last row of the DataFrame (the most recent pricing data we have)
         >>> self.log_message(f"Last price of BTC in USD: {last_ohlc['close']}, and the open price was {last_ohlc['open']}")
 
@@ -4150,10 +4153,29 @@ class Strategy(_Strategy):
         >>> bars =  self.get_historical_prices(asset_base, 2, "day", quote=asset_quote)
         >>>
         >>> # Then, to get the DataFrame of SPY data
-        >>> df = bars.df
+        >>> df = bars.pandas_df
         >>> last_ohlc = df.iloc[-1] # Get the last row of the DataFrame (the most recent pricing data we have)
         >>> self.log_message(f"Last price of BTC in USD: {last_ohlc['close']}, and the open price was {last_ohlc['open']}")
         """
+        if args:
+            if len(args) != 1:
+                raise TypeError("get_historical_prices() accepts at most 1 extra positional argument (deprecated `return_polars`)")
+            if "return_polars" in kwargs:
+                raise TypeError("get_historical_prices() got multiple values for keyword argument 'return_polars'")
+            kwargs["return_polars"] = args[0]
+
+        return_polars_provided = "return_polars" in kwargs
+        return_polars = kwargs.pop("return_polars", False)
+        if return_polars_provided:
+            warnings.warn(
+                "`return_polars` is deprecated and will be removed. "
+                "Do not depend on the DataFrame backend; use `bars.pandas_df` for pandas.",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"get_historical_prices() got unexpected keyword argument(s): {unexpected}")
 
         # Get that length is type int and if not try to cast it
         if not isinstance(length, int):
@@ -4367,7 +4389,7 @@ class Strategy(_Strategy):
         max_workers: int = 200,
         exchange: str = None,
         include_after_hours: bool = True,
-        sleep_time: float = 0.1
+        sleep_time: float | None = None,
     ):
         """Get historical pricing data for the list of assets.
 
@@ -4399,6 +4421,11 @@ class Strategy(_Strategy):
         include_after_hours : bool
             ``True`` by default. If ``False``, only return bars that are during
             regular trading hours. If ``True``, return all bars. Currently only works for Interactive Brokers.
+        sleep_time : float, optional
+            Sleep between per-asset fetches to reduce the likelihood of upstream rate limiting.
+            When omitted (``None``), LumiBot defaults to:
+            - ``0`` for backtesting data sources
+            - ``0.1`` seconds for live data sources
 
         Returns
         -------
@@ -4434,6 +4461,11 @@ class Strategy(_Strategy):
             self._logged_get_historical_prices_assets.add(assets_key)
 
         assets = [self._sanitize_user_asset(asset) for asset in assets]
+
+        effective_sleep_time = sleep_time
+        if effective_sleep_time is None:
+            data_source = getattr(getattr(self, "broker", None), "data_source", None)
+            effective_sleep_time = 0.0 if getattr(data_source, "IS_BACKTESTING_DATA_SOURCE", False) else 0.1
         return self.broker.data_source.get_bars(
             assets,
             length,
@@ -4442,7 +4474,7 @@ class Strategy(_Strategy):
             chunk_size=chunk_size,
             max_workers=max_workers,
             exchange=exchange,
-            sleep_time=sleep_time
+            sleep_time=effective_sleep_time
         )
 
     def get_bars(
@@ -4454,7 +4486,7 @@ class Strategy(_Strategy):
         chunk_size: int = 100,
         max_workers: int = 200,
         exchange: str = None,
-        sleep_time: float = 0.1
+        sleep_time: float | None = None,
     ):
         """
         This method is deprecated and will be removed in a future version.

@@ -683,7 +683,7 @@ class _Strategy:
             try:
                 broker_balances = self.broker._get_balances_at_broker(self._quote_asset, self)
             except Exception as e:
-                self.logger.error(f"Error getting broker balances: {e}")
+                self.logger.info(f"Error getting broker balances: {e}", exc_info=True)
                 return False
 
             if broker_balances is not None:
@@ -698,7 +698,7 @@ class _Strategy:
                 return True
 
             else:
-                self.logger.error(
+                self.logger.warning(
                     "Unable to get balances (cash, portfolio value, etc) from broker. "
                     "Please check your broker and your broker configuration."
                 )
@@ -751,7 +751,7 @@ class _Strategy:
                     else (position.asset, self._quote_asset)
                 )
                 quantity = position.quantity
-                price = prices.get(asset, 0)
+                price = prices.get(asset)
 
                 # If the asset is the quote asset, then we already have included it from cash
                 # Eg. if we have a position of USDT and USDT is the quote_asset then we already consider it as cash
@@ -760,9 +760,22 @@ class _Strategy:
                         self._quote_asset,
                         self._quote_asset,
                     ):
-                        price = 0
+                        continue
                     elif isinstance(asset, Asset) and asset == self._quote_asset:
-                        price = 0
+                        continue
+
+                # Normalize "missing" prices to None so forward-fill fallback can apply.
+                # Some data sources return 0 or NaN for "no price" (common on non-trading timestamps).
+                if price is not None:
+                    try:
+                        price_float = float(price)
+                    except (TypeError, ValueError):
+                        price = None
+                    else:
+                        if (not math.isfinite(price_float)) or price_float == 0:
+                            price = None
+                        else:
+                            price = price_float
 
                 # Track valid prices for forward-fill fallback
                 if price is not None:
@@ -2474,16 +2487,13 @@ class _Strategy:
             self.logger.debug(f"Cloud response: Status={response.status_code}, Headers={dict(response.headers)}")
 
         except requests.exceptions.ConnectionError as e:
-            self.logger.warning(f"Connection error when sending to cloud: {e}")
-            self.logger.debug(traceback.format_exc())
+            self.logger.info(f"Connection error when sending to cloud: {e}", exc_info=True)
             return False
         except requests.exceptions.Timeout as e:
-            self.logger.warning(f"Timeout error when sending to cloud: {e}")
-            self.logger.debug(traceback.format_exc())
+            self.logger.info(f"Timeout error when sending to cloud: {e}", exc_info=True)
             return False
         except requests.exceptions.RequestException as e:
-            self.logger.warning(f"Request error when sending to cloud: {e}")
-            self.logger.debug(traceback.format_exc())
+            self.logger.info(f"Request error when sending to cloud: {e}", exc_info=True)
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error when sending to cloud: {e}")

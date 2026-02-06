@@ -1078,8 +1078,17 @@ See:
 
 ### 17.3 “OptionsHelper delta selection explodes request volume”
 
-- Problem: naive delta-to-strike selection can probe many strikes and flood the downloader.
-- Fix direction: bounded search + fast-paths + memoization; avoid per-strike quote probes.
+- Problem: naive delta-to-strike selection can probe many strikes and flood the downloader (for example: building a large candidate strike list and calling `get_greeks()` per strike to “hunt” a 20Δ contract).
+- Fix direction:
+  - Prefer `OptionsHelper.find_strike_for_delta(...)` for delta-based strike selection (bounded probing + caching; avoids scanning many strikes).
+  - Cache selected expiry/strikes in `self.vars` for the trading day so intraday retries don’t recompute unless the underlying has moved materially.
+- Observed impact (cold-cache example, 1 day window; numbers vary by symbol/interval):
+  - `get_greeks()` calls: ~94 → ~13
+  - downloader queue submissions: ~560 → ~212
+  - wall time: ~75s → ~32s
+
+See:
+- `docs/investigations/2026-01-09_PRODLIKE_LOCAL_BENCHMARK_RUNS_WEEK_WINDOW.md`
 
 ### 17.4 “Corporate actions fetch storms”
 

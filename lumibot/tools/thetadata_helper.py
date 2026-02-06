@@ -393,16 +393,16 @@ REMOTE_DOWNLOADER_ENABLED = DOWNLOADER_MODE or _coerce_skip_flag(os.environ.get(
 if DOWNLOADER_MODE:
     # Avoid leaking private infrastructure hostnames in logs. Loopback URLs are safe to print.
     if _is_loopback_url(BASE_URL):
-        logger.info("[THETA][CONFIG] Data Downloader enabled at %s", BASE_URL)
+        logger.info("[DOWNLOADER][CONFIG] Data Downloader enabled at %s", BASE_URL)
     else:
-        logger.info("[THETA][CONFIG] Data Downloader enabled (remote URL redacted)")
+        logger.info("[DOWNLOADER][CONFIG] Data Downloader enabled (remote URL redacted)")
     if DOWNLOADER_API_KEY:
         # Confirm presence without leaking any part of the key.
-        logger.info("[THETA][CONFIG] Downloader API key detected (len=%d)", len(DOWNLOADER_API_KEY))
+        logger.info("[DOWNLOADER][CONFIG] Downloader API key detected (len=%d)", len(DOWNLOADER_API_KEY))
     else:
         # Use DEBUG level - this fires at module import time before ECS secrets injection.
         # The key is typically available at runtime; a WARNING here creates noise in logs.
-        logger.debug("[THETA][CONFIG] Downloader API key not set at import time (DATADOWNLOADER_API_KEY)")
+        logger.debug("[DOWNLOADER][CONFIG] Downloader API key not set at import time (DATADOWNLOADER_API_KEY)")
 HEALTHCHECK_SYMBOL = os.environ.get("THETADATA_HEALTHCHECK_SYMBOL", "SPY")
 READINESS_ENDPOINT = "/v3/terminal/mdds/status"
 READINESS_PROBES: Tuple[Tuple[str, Dict[str, str]], ...] = (
@@ -5019,7 +5019,7 @@ def _convert_columnar_to_row_format(columnar_data: dict) -> dict:
     for col in columns:
         if not isinstance(columnar_data[col], list) or len(columnar_data[col]) != num_rows:
             logger.warning(
-                "[THETA][QUEUE] Column %s has inconsistent length: expected %d, got %s",
+                "[DOWNLOADER][QUEUE] Column %s has inconsistent length: expected %d, got %s",
                 col,
                 num_rows,
                 len(columnar_data[col]) if isinstance(columnar_data[col], list) else "not a list",
@@ -5034,7 +5034,7 @@ def _convert_columnar_to_row_format(columnar_data: dict) -> dict:
         rows.append(row)
 
     logger.debug(
-        "[THETA][QUEUE] Converted columnar format: %d columns x %d rows",
+        "[DOWNLOADER][QUEUE] Converted columnar format: %d columns x %d rows",
         len(columns),
         num_rows,
     )
@@ -5071,7 +5071,7 @@ def get_request(
 
         from lumibot.tools.thetadata_queue_client import queue_request
 
-        logger.debug("[THETA][QUEUE] Making request via queue: %s params=%s", url, querystring)
+        logger.debug("[DOWNLOADER][QUEUE] Making request via queue: %s params=%s", url, querystring)
 
         # -------------------------------------------------------------------------------------
         # BOUNDED WAITS (2025-12-26)
@@ -5116,7 +5116,7 @@ def get_request(
 
             if result is None:
                 if page_count == 0:
-                    logger.debug("[THETA][QUEUE] No data returned for request: %s", url)
+                    logger.debug("[DOWNLOADER][QUEUE] No data returned for request: %s", url)
                     return None
                 break
 

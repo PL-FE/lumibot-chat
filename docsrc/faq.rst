@@ -127,6 +127,13 @@ Greeks may be unavailable for illiquid options. Always check for None but **don'
 
     # Strategy continues regardless
 
+Why is my options backtest so slow?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The most common cause is **brute-force delta/ATM selection**: scanning many strikes and calling ``get_greeks()`` (or fetching quotes) per strike can flood your data source/downloader.
+
+Prefer :doc:`options_helper` methods (especially ``OptionsHelper.find_strike_for_delta(...)``) which use bounded probing + caching instead of scanning large strike lists.
+
 Why do my option calculations seem off by 100x?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
