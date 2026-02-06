@@ -2,11 +2,20 @@
 
 > Release/deployment workflow for LumiBot (version branches, changelog, tags, and GitHub releases).
 
-**Last Updated:** 2026-01-27  
+**Last Updated:** 2026-02-06  
 **Status:** Active  
 **Audience:** Developers + AI Agents
 
 ---
+
+## TL;DR (do this in order)
+
+1) Get the `version/X.Y.Z` PR **green** (and ensure everyone has pushed their commits).  
+2) Merge latest `dev` into `version/X.Y.Z` and re-check CI (prevents drift / missing commits).  
+3) Merge the PR into `dev` (no direct pushes to `dev`).  
+4) Tag the **merge commit on `dev`** as `vX.Y.Z` (this triggers GitHub Actions to publish to PyPI + create a GitHub Release).  
+5) Verify `pip install lumibot==X.Y.Z` works.  
+6) Immediately cut `version/X.Y.(Z+1)` from updated `dev`.
 
 ## Goals
 
@@ -21,6 +30,7 @@
 
 - Active work happens on a shared version branch: `version/X.Y.Z` (example: `version/4.4.31`).
 - **Do not create extra branches** off a version branch unless explicitly instructed.
+- **Do not push directly to `dev`.** All changes land in `dev` via PR merge.
 - `setup.py` **must** match the version branch name (`X.Y.Z`).
   - When you start a new version branch, bump immediately and commit: `chore: start X.Y.Z`.
   - **Never downgrade** versions. If a bump was wrong, bump forward (and document why).
@@ -53,6 +63,15 @@ Every release PR should include:
 ---
 
 ## Deployment Checklist (Recommended, end-to-end)
+
+### Prereqs (GitHub release publishing)
+
+Publishing is **tag-driven** via `.github/workflows/release.yml`.
+
+- Required secret: `PYPI_API_TOKEN`
+  - Must exist as a **repository secret** or as an **environment secret** for the GitHub environment named `pypi`.
+  - If it’s missing, the “Publish to PyPI” step will fail.
+- Optional: configure the GitHub environment `pypi` to require approvals (human gate).
 
 0) **Sync your local repo**
    - `git switch dev && git pull --ff-only`
@@ -93,6 +112,8 @@ Every release PR should include:
    - Merge the version PR into `dev` (this makes `dev` the source of truth for everything that shipped).
 
 4) **Tag + publish (preferred path)**
+   - Why we merge to `dev` *before* tagging: tagging the `dev` merge commit guarantees `dev` includes exactly what shipped,
+     and the next `version/*` branch cut from `dev` cannot “miss” released commits.
    - Create an annotated tag `vX.Y.Z` pointing at the *merge commit on `dev`* (or the deploy-marker commit if it was fast-forwarded).
    - Push the tag to GitHub.
    - Let `.github/workflows/release.yml` run:
@@ -125,6 +146,19 @@ Every release PR should include:
      - `python3 -m pip install --upgrade --force-reinstall --no-deps "lumibot==X.Y.Z"`
    - Confirm the GitHub tag exists and points at the intended commit:
      - `git show -s vX.Y.Z`
+
+5.5) **If the release workflow fails (fast triage)**
+   - Wrong commit tagged:
+     - Symptom: “Validate tag version matches setup.py” fails.
+     - Fix: tag the correct `dev` merge commit (and if you already published to PyPI, bump forward).
+   - Missing `PYPI_API_TOKEN`:
+     - Symptom: “Publish to PyPI” fails with auth/permission errors.
+     - Fix: add `PYPI_API_TOKEN` (repo secret or `pypi` environment secret).
+   - Version already exists on PyPI:
+     - Symptom: PyPI rejects upload (file/version already exists).
+     - Fix: bump to a new version (never reuse a version number).
+   - Find failing run quickly:
+     - `gh run list -R Lumiwealth/lumibot -w "Release (PyPI + GitHub)" -L 10`
 
 6) **Downstream rollout (BotManager)**
    - Confirm BotManager is pinned to the new version and deploy workflows ran:
