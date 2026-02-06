@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.47 - Unreleased
+
+- TBD
+
 ## 4.4.46 - 2026-02-04
 
 ### Fixed

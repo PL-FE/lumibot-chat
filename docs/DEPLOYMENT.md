@@ -15,7 +15,7 @@
 3) Merge the PR into `dev` (no direct pushes to `dev`).  
 4) Tag the **merge commit on `dev`** as `vX.Y.Z` (this triggers GitHub Actions to publish to PyPI + create a GitHub Release).  
 5) Verify `pip install lumibot==X.Y.Z` works.  
-6) Immediately cut `version/X.Y.(Z+1)` from updated `dev`.
+6) Immediately cut `version/X.Y.(Z+1)` from updated `dev`, bump `setup.py`, and push the branch so everyone’s local clones move forward.
 
 ## Goals
 
@@ -180,6 +180,15 @@ Publishing is **tag-driven** via `.github/workflows/release.yml`.
    - Create `version/X.Y.(Z+1)` from `dev` (or from the just-deployed commit once it’s on `dev`).
    - Immediately bump `setup.py` to `X.Y.(Z+1)` and commit: `chore: start X.Y.(Z+1)`.
    - Add a new `CHANGELOG.md` section: `## X.Y.(Z+1) - Unreleased`.
+   - Push the new branch to GitHub (so other agents don’t keep working on the old version branch):
+
+     ```bash
+     git switch dev
+     git pull --ff-only
+     git switch -c version/X.Y.(Z+1)
+     # bump setup.py + CHANGELOG.md, then:
+     git push -u origin version/X.Y.(Z+1)
+     ```
 
 ---
 
