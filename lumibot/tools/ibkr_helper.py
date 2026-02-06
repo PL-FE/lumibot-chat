@@ -20,7 +20,7 @@ from lumibot.tools.ibkr_secdef import (
     select_futures_exchange_from_secdef_search_payload,
 )
 from lumibot.tools.parquet_series_cache import ParquetSeriesCache
-from lumibot.tools.thetadata_queue_client import queue_request
+from lumibot.tools.data_downloader_queue_client import queue_request
 
 logger = logging.getLogger(__name__)
 
