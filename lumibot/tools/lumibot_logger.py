@@ -51,7 +51,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Tuple, Optional
-from functools import lru_cache
 from enum import Enum
 
 # Import LUMIWEALTH_API_KEY from credentials
@@ -742,7 +741,6 @@ def _ensure_handlers_configured():
         _handlers_configured = True
 
 
-@lru_cache(maxsize=128)
 def get_logger(name: str) -> logging.Logger:
     """
     Get a logger instance for the given name with consistent Lumibot formatting.

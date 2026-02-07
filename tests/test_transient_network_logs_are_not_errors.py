@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from lumibot.brokers.tradier import Tradier
 from lumibot.strategies._strategy import _Strategy
+from lumibot.tools.lumibot_logger import get_logger
 
 
 def test_update_broker_balances_exception_logs_info(monkeypatch, caplog):
@@ -35,6 +36,15 @@ def test_update_broker_balances_exception_logs_info(monkeypatch, caplog):
 
 
 def test_tradier_pull_orders_exception_logs_info(monkeypatch, caplog):
+    # This test asserts INFO-level logging from the Lumibot logger hierarchy.
+    # Other tests may toggle backtesting env vars (notably `IS_BACKTESTING` and `BACKTESTING_QUIET_LOGS`) which can
+    # raise the effective logger level to ERROR and suppress INFO logs. Make this test deterministic by forcing a
+    # non-quiet configuration and re-applying logger levels.
+    monkeypatch.delenv("IS_BACKTESTING", raising=False)
+    monkeypatch.setenv("BACKTESTING_QUIET_LOGS", "false")
+    monkeypatch.setenv("LUMIBOT_LOG_LEVEL", "DEBUG")
+    get_logger(__name__)  # re-apply env-driven levels to the `lumibot` root logger
+
     def raise_orders_error():
         raise ConnectionError("Max retries exceeded")
 
