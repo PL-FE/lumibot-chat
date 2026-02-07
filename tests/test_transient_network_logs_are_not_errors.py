@@ -45,11 +45,11 @@ def test_tradier_pull_orders_exception_logs_info(monkeypatch, caplog):
     monkeypatch.setenv("LUMIBOT_LOG_LEVEL", "DEBUG")
     get_logger(__name__)  # re-apply env-driven levels to the `lumibot` root logger
 
-    # Lumibot uses a dedicated logger hierarchy rooted at `logging.getLogger("lumibot")`. Some environments (and
-    # some tests) mutate propagation/handlers, which can make pytest's caplog miss records. Attach caplog's handler
-    # directly to the `lumibot` root logger for this assertion, then remove it to avoid cross-test leakage.
-    lumibot_root_logger = logging.getLogger("lumibot")
-    lumibot_root_logger.addHandler(caplog.handler)
+    # Lumibot uses a dedicated logger hierarchy. Some environments (and some tests) mutate propagation/handlers,
+    # which can make pytest's caplog miss records. Attach caplog's handler directly to the specific logger used by
+    # the code under test, then remove it to avoid cross-test leakage.
+    tradier_logger = logging.getLogger("lumibot.brokers.tradier")
+    tradier_logger.addHandler(caplog.handler)
 
     def raise_orders_error():
         raise ConnectionError("Max retries exceeded")
@@ -64,7 +64,7 @@ def test_tradier_pull_orders_exception_logs_info(monkeypatch, caplog):
     try:
         result = Tradier._pull_broker_all_orders(dummy)
     finally:
-        lumibot_root_logger.removeHandler(caplog.handler)
+        tradier_logger.removeHandler(caplog.handler)
 
     assert result == []
     assert any(
