@@ -759,6 +759,8 @@ def _contract_expiration_date(root_symbol: str, *, year: int, month: int):
 
         if anchor == "third_last_business_day":
             expiry = futures_roll._third_last_business_day(year, month)
+        elif anchor == "last_friday":
+            expiry = futures_roll._last_friday_trading_day(year, month)
         elif anchor == "cl_last_trade":
             expiry = futures_roll._cl_last_trade_date(year, month)
         elif anchor == "mcl_last_trade":
