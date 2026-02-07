@@ -673,6 +673,9 @@ def _ensure_handlers_configured():
     def _apply_levels(root_logger: logging.Logger):
         """Ensure root level and console handler levels reflect the desired state."""
         root_logger.setLevel(effective_log_level)
+        # Some environments/tests toggle `propagate` to avoid duplicate output. For Lumibot's unified logger we want
+        # records to remain capturable by upstream handlers (pytest caplog, app-level root handlers, etc.).
+        root_logger.propagate = True
 
         console_handlers = [
             handler
