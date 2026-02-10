@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.49 - Unreleased
+
+- TBD
+
 ## 4.4.48 - 2026-02-10
 
 ### Added
