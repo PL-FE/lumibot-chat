@@ -2368,6 +2368,8 @@ class Broker(ABC):
         return self.data_source.get_quote(asset, quote, exchange)
 
     def export_trade_events_to_csv(self, filename):
+        safe_logger = getattr(self, "logger", None) or logger
+
         df = self._trade_event_log_df
         if df is None:
             df = pd.DataFrame()
@@ -2389,7 +2391,7 @@ class Broker(ABC):
             df=df,
             path=parquet_filename,
             artifact="trade_events",
-            logger=self.logger,
+            logger=safe_logger,
             index=False,
             required=required,
             compression="zstd",
