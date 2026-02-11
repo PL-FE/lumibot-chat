@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.50 - Unreleased
+
+- TBD
+
 ## 4.4.49 - 2026-02-10
 ### Added
 - Backtesting artifacts: add `LUMIBOT_BACKTEST_PARQUET_MODE` with `required` contract mode (fail-fast on parquet export failures) and structured parquet export logs (rows/cols/bytes/duration, coerced columns).
