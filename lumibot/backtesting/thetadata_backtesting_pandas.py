@@ -743,6 +743,7 @@ class ThetaDataBacktestingPandas(PandasData):
 
         asset_type_value = str(getattr(asset_separated, "asset_type", "")).lower()
         symbol_upper = str(getattr(asset_separated, "symbol", "") or "").upper()
+        is_acceptance = os.environ.get("LUMIBOT_ACCEPTANCE_BACKTEST", "").strip().lower() == "true"
         index_symbols = {
             "SPX", "SPXW",
             "RUT", "RUTW",
@@ -806,7 +807,12 @@ class ThetaDataBacktestingPandas(PandasData):
         window_start = self._normalize_default_timezone(self.datetime_start - START_BUFFER)
         if requested_start is None:
             requested_start = window_start
-        elif asset_separated.asset_type != "option" and window_start is not None and window_start < requested_start:
+        elif (
+            not is_acceptance
+            and asset_separated.asset_type != "option"
+            and window_start is not None
+            and window_start < requested_start
+        ):
             # For non-options, prefetch the full backtest window once for performance.
             requested_start = window_start
         start_threshold = requested_start + effective_start_buffer if requested_start is not None else None
@@ -833,6 +839,7 @@ class ThetaDataBacktestingPandas(PandasData):
             and asset_type_value == "index"
             and asset_separated.asset_type != "option"
             and self.datetime_end is not None
+            and not is_acceptance
         ):
             try:
                 normalized_end = self._normalize_default_timezone(self.datetime_end)
@@ -2486,16 +2493,13 @@ class ThetaDataBacktestingPandas(PandasData):
                         meta.get("prefetch_complete"),
                     )
                 else:
-                    is_ci_env = (os.environ.get("GITHUB_ACTIONS", "").lower() == "true") or bool(os.environ.get("CI"))
-                    if is_ci_env:
-                        # In CI/acceptance runs, the ThetaData helper bounds missing-date validation
-                        # to `dt` (the current simulation timestamp) to keep runs queue-free. During
-                        # early iterations this can make full-window "coverage gap" checks appear
-                        # huge even though the cache is being filled incrementally. Do not crash the
-                        # backtest in this mode.
+                    if is_acceptance:
+                        # Acceptance backtests intentionally run in "incremental prefetch" mode:
+                        # the ThetaData helper bounds missing-date validation to `dt` (the current
+                        # simulation timestamp) to keep runs queue-free and deterministic.
                         logger.warning(
                             "[THETA][COVERAGE][GAP] asset=%s/%s (%s) coverage_end=%s target_end=%s rows=%s placeholders=%s days_behind=%s; "
-                            "continuing with available data (CI incremental prefetch)",
+                            "continuing with available data (acceptance incremental prefetch)",
                             asset_separated,
                             quote_asset,
                             ts_unit,

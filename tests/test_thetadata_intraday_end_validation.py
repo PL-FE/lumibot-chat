@@ -225,13 +225,11 @@ def test_intraday_index_minute_clamps_end_requirement_to_last_trading_session_cl
     assert "[THETA][CACHE][STALE]" not in caplog.text
 
 
-def test_index_coverage_gap_does_not_raise_during_prefetch(monkeypatch, caplog):
-    """Regression: do not raise a coverage-gap error for index OHLC while prefetch is still in progress.
+def test_index_coverage_gap_does_not_raise_during_prefetch(monkeypatch):
+    """Regression: acceptance mode must not crash on early-run index OHLC coverage gaps.
 
-    In CI acceptance runs, the ThetaData helper intentionally bounds missing-date validation to the
-    current simulation timestamp (`dt`) to keep the run queue-free and avoid fetching future days.
-    The backtesting datasource may still *target* full backtest coverage for index OHLC, so a large
-    apparent "gap" is expected early in the run and must not crash the backtest.
+    Acceptance backtests use an incremental prefetch mode (bounded to the current simulation
+    timestamp) and must not treat "full window not yet loaded" as a fatal error.
     """
 
     tz = pytz.timezone("America/New_York")
@@ -245,12 +243,15 @@ def test_index_coverage_gap_does_not_raise_during_prefetch(monkeypatch, caplog):
         tzinfo=tz,
     )
     monkeypatch.setattr(source, "get_datetime", lambda: dt)
-    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("LUMIBOT_ACCEPTANCE_BACKTEST", "true")
 
     asset = Asset("SPX", asset_type=Asset.AssetType.INDEX)
     quote_asset = Asset("USD", asset_type="forex")
 
+    calls = []
+
     def _fake_get_price_data(_fetch_asset, _start, _end, **_kwargs):
+        calls.append({"start": _start, "end": _end})
         idx = pd.DatetimeIndex([dt])
         df = pd.DataFrame(
             {"open": [6000.0], "high": [6000.0], "low": [6000.0], "close": [6000.0], "volume": [0.0]},
@@ -260,7 +261,8 @@ def test_index_coverage_gap_does_not_raise_during_prefetch(monkeypatch, caplog):
 
     monkeypatch.setattr(thetadata_helper, "get_price_data", _fake_get_price_data)
 
-    with caplog.at_level("WARNING"):
-        source._update_pandas_data(asset, quote_asset, 60, "minute", dt, require_quote_data=False, require_ohlc_data=True)
+    source._update_pandas_data(asset, quote_asset, 60, "minute", dt, require_quote_data=False, require_ohlc_data=True)
 
-    assert "[THETA][COVERAGE][GAP]" in caplog.text
+    assert calls, "Expected _update_pandas_data() to fetch OHLC via thetadata_helper.get_price_data()"
+    assert calls[0]["end"] == dt
+    assert calls[0]["end"] != source.datetime_end
