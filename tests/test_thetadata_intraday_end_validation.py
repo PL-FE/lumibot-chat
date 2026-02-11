@@ -223,3 +223,52 @@ def test_intraday_index_minute_clamps_end_requirement_to_last_trading_session_cl
         source._update_pandas_data(asset, quote_asset, 5, "minute", dt, require_quote_data=False, require_ohlc_data=True)
 
     assert "[THETA][CACHE][STALE]" not in caplog.text
+
+
+def test_ci_does_not_prefetch_index_to_backtest_end(monkeypatch):
+    """CI regression: acceptance runs clamp coverage to `dt`, so don't prefetch index OHLC to datetime_end.
+
+    Acceptance backtests run with `CI=true` and enforce a strict "no downloader queue submissions" invariant.
+    In that mode the ThetaData helper bounds missing-date validation to the current simulation timestamp (`dt`),
+    so passing a far-future `end` (the backtest end) can cause spurious coverage-gap failures.
+
+    This test asserts `_update_pandas_data()` calls `thetadata_helper.get_price_data()` with `end` equal to the
+    current simulation timestamp, not the full backtest end.
+    """
+
+    tz = pytz.timezone("America/New_York")
+    dt = tz.localize(datetime(2025, 1, 2, 10, 15))
+
+    source = ThetaDataBacktestingPandas(
+        datetime_start=tz.localize(datetime(2025, 1, 1, 0, 0)),
+        datetime_end=tz.localize(datetime(2025, 12, 1, 0, 0)),
+        username="test",
+        password="test",
+        tzinfo=tz,
+    )
+    monkeypatch.setattr(source, "get_datetime", lambda: dt)
+    monkeypatch.setenv("CI", "true")
+
+    asset = Asset("SPX", asset_type=Asset.AssetType.INDEX)
+    quote_asset = Asset("USD", asset_type="forex")
+
+    calls = []
+
+    def _fake_get_price_data(fetch_asset, start, end, **_kwargs):
+        calls.append({"asset": fetch_asset, "start": start, "end": end})
+        idx = pd.DatetimeIndex([end])
+        if idx.tz is None:
+            idx = idx.tz_localize(tz)
+        df = pd.DataFrame(
+            {"open": [6000.0], "high": [6000.0], "low": [6000.0], "close": [6000.0], "volume": [0.0]},
+            index=idx,
+        )
+        return df
+
+    monkeypatch.setattr(thetadata_helper, "get_price_data", _fake_get_price_data)
+
+    source._update_pandas_data(asset, quote_asset, 60, "minute", dt, require_quote_data=False, require_ohlc_data=True)
+
+    assert calls, "Expected _update_pandas_data() to fetch OHLC via thetadata_helper.get_price_data()"
+    assert calls[0]["end"] == dt
+    assert calls[0]["end"] != source.datetime_end

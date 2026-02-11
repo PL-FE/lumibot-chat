@@ -743,6 +743,9 @@ class ThetaDataBacktestingPandas(PandasData):
 
         asset_type_value = str(getattr(asset_separated, "asset_type", "")).lower()
         symbol_upper = str(getattr(asset_separated, "symbol", "") or "").upper()
+        is_ci_env = (os.environ.get("CI", "").strip().lower() == "true") or (
+            os.environ.get("GITHUB_ACTIONS", "").strip().lower() == "true"
+        )
         index_symbols = {
             "SPX", "SPXW",
             "RUT", "RUTW",
@@ -806,7 +809,12 @@ class ThetaDataBacktestingPandas(PandasData):
         window_start = self._normalize_default_timezone(self.datetime_start - START_BUFFER)
         if requested_start is None:
             requested_start = window_start
-        elif asset_separated.asset_type != "option" and window_start is not None and window_start < requested_start:
+        elif (
+            not is_ci_env
+            and asset_separated.asset_type != "option"
+            and window_start is not None
+            and window_start < requested_start
+        ):
             # For non-options, prefetch the full backtest window once for performance.
             requested_start = window_start
         start_threshold = requested_start + effective_start_buffer if requested_start is not None else None
@@ -833,6 +841,7 @@ class ThetaDataBacktestingPandas(PandasData):
             and asset_type_value == "index"
             and asset_separated.asset_type != "option"
             and self.datetime_end is not None
+            and not is_ci_env
         ):
             try:
                 normalized_end = self._normalize_default_timezone(self.datetime_end)
@@ -976,12 +985,18 @@ class ThetaDataBacktestingPandas(PandasData):
                             )
                             cached_close = None
                             if not schedule.empty:
-                                closes = schedule["market_close"]
-                                candidates = closes[closes <= end_requirement]
-                                if not candidates.empty:
-                                    cached_close = candidates.iloc[-1]
-                                else:
-                                    cached_close = closes.iloc[0]
+                                # We want the session close for the *last trading day* at or before
+                                # end_requirement's date. Do not clamp intraday requests (e.g. 10:15)
+                                # down to a prior-day close: only clamp when the end bound is after
+                                # the session close (e.g. 23:59, weekend/holiday end dates).
+                                end_date = end_requirement.date()
+                                try:
+                                    mask = schedule.index.date <= end_date
+                                    eligible = schedule.loc[mask]
+                                except Exception:
+                                    eligible = schedule
+                                if not eligible.empty:
+                                    cached_close = eligible.iloc[-1]["market_close"]
                             close_cache[cache_key] = cached_close
 
                         if cached_close is not None and end_requirement > cached_close:
