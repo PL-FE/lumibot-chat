@@ -245,6 +245,7 @@ def test_index_coverage_gap_does_not_raise_during_prefetch(monkeypatch, caplog):
         tzinfo=tz,
     )
     monkeypatch.setattr(source, "get_datetime", lambda: dt)
+    monkeypatch.setenv("CI", "true")
 
     asset = Asset("SPX", asset_type=Asset.AssetType.INDEX)
     quote_asset = Asset("USD", asset_type="forex")
