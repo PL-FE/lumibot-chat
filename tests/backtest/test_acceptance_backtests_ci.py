@@ -42,7 +42,11 @@ _METRIC_TOLERANCE_CENTIPERCENT = 15
 # Warm-cache invariant remains strict for all canonical runs except SPX short straddle, where the
 # backing cache namespace currently requires a handful of downloader fills in CI.
 _QUEUE_SUBMISSION_LIMIT_BY_SLUG = {
-    "spx_short_straddle_repro": 12,
+    # These long SPX acceptance windows still require some downloader fills in CI when the shared
+    # S3 namespace does not contain all minute slices yet.
+    "backdoor_butterfly_full_year": 300,
+    "backdoor_smartlimit": 300,
+    "spx_short_straddle_repro": 20,
 }
 
 
