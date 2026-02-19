@@ -1,6 +1,10 @@
 # Changelog
 
-## 4.4.50 - Unreleased
+## 4.4.51 - Unreleased
+
+- TBD
+
+## 4.4.50 - 2026-02-19
 
 ### Changed
 - Indicators HTML: improve subplot scaling so indicator panels render with sane proportions across mixed plots.
