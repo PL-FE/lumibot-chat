@@ -327,7 +327,7 @@ class TestBacktestingBroker:
         assert broker.get_tracked_position(strategy.name, underlying).quantity == 100.0
         assert broker.get_tracked_position(strategy.name, option) is None
 
-    def test_option_expiry_long_call_itm_with_insufficient_cash_expires(self):
+    def test_option_expiry_long_call_itm_with_insufficient_cash_cash_settles(self):
         start = dt(2023, 8, 1)
         end = dt(2023, 8, 2)
         data_source = PandasData(datetime_start=start, datetime_end=end, pandas_data={})
@@ -356,10 +356,11 @@ class TestBacktestingBroker:
         option_events = events[(events["symbol"] == "NVDA") & (events["asset.asset_type"] == "option")]
         stock_events = events[(events["symbol"] == "NVDA") & (events["asset.asset_type"] == "stock")]
 
-        assert "expired" in option_events["status"].tolist()
-        assert "expired" in option_events["type"].tolist()
+        assert "cash_settled" in option_events["status"].tolist()
+        assert "cash_settled" in option_events["type"].tolist()
         assert stock_events.empty
         assert broker.get_tracked_position(strategy.name, underlying) is None
+        assert strategy.cash == 5_100.0
 
     def test_option_expiry_index_option_itm_cash_settles(self):
         start = dt(2023, 8, 1)

@@ -7402,3 +7402,11 @@ timestamp,test_name,data_source,trading_days,execution_time_seconds,git_commit,l
 2026-02-25T13:22:38.583578,test_acceptance_leaps_alpha_picks,unknown,,13.15,75386b99,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
 2026-02-25T13:39:52.643145,test_acceptance_aapl_deep_dip_calls,unknown,,65.999,6fb3484f,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
 2026-02-25T13:40:09.087307,test_acceptance_leaps_alpha_picks,unknown,,13.765,6fb3484f,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-02-25T15:21:11.317648,test_acceptance_meli_deep_drawdown,unknown,,278.737,60296881,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-02-25T15:22:43.648451,test_acceptance_aapl_deep_dip_calls,unknown,,54.689,60296881,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-02-25T15:27:20.643983,test_acceptance_meli_deep_drawdown,unknown,,276.894,60296881,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-02-25T15:27:27.949656,test_acceptance_ibkr_mes_futures_acceptance,unknown,,7.202,60296881,4.4.51,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-02-25T15:27:28.901975,test_crypto_cash_regression_no_fees[price_map0],unknown,,0.1,60296881,4.4.51,,,,,Auto-tracked from test_crypto_cash_regressions
+2026-02-25T15:27:29.206787,test_yahoo_finance_dividends,unknown,,0.208,60296881,4.4.51,,,,,Auto-tracked from test_dividends
+2026-02-25T15:27:29.479293,test_stock_oco,unknown,,0.176,60296881,4.4.51,,,,,Auto-tracked from test_example_strategies
+2026-02-25T15:27:31.252728,test_bracket_positions_remain_bounded,unknown,,0.816,60296881,4.4.51,,,,,Auto-tracked from test_pandas_backtest

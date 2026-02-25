@@ -1534,10 +1534,10 @@ class BacktestingBroker(Broker):
         if position.quantity > 0:
             if not self._can_support_long_exercise(strategy, underlying_asset, position.asset, contracts):
                 logger.warning(
-                    "[OPTION_EXPIRY][DNE] Long ITM option %s could not be exercised due to account constraints; expiring without exercise.",
+                    "[OPTION_EXPIRY][AUTO_LIQUIDATE] Long ITM option %s could not be exercised due to account constraints; cash-settling intrinsic value instead of expiring worthless.",
                     position.asset,
                 )
-                self._dispatch_option_expiration_event(position, strategy, self.EXPIRED_OPTION, price=0.0)
+                self.cash_settle_options_contract(position, strategy)
                 return
             option_event_type = self.EXERCISED
         else:
