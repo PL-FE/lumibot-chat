@@ -1,13 +1,31 @@
 # Changelog
 
-## 4.4.50 - Unreleased
+## 4.4.51 - Unreleased
+
+### Added
+- Option lifecycle event support in backtesting for option expiration outcomes: `assigned`, `exercised`, and `expired` (in addition to `cash_settled`).
+- Regression coverage for equity/ETF physical settlement and index cash settlement paths at expiration.
+- Opt-in early-assignment heuristic model for short ITM, physically-settled options (`strategy.parameters`: `option_early_assignment_enabled`, `option_early_assignment_max_dte_days`, `option_early_assignment_max_extrinsic`).
+
+### Changed
+- Options expiration behavior now follows broker-style settlement defaults:
+  - Equity/ETF options settle physically at expiration (short ITM -> assignment, long ITM -> exercise when account constraints allow).
+  - Index options settle to cash at intrinsic value.
+- Trade artifacts now preserve option-expiration lifecycle statuses in `trades.csv` / `trades.parquet` and `trade_events` exports so downstream consumers can render assignment/exercise/cash-settlement explicitly.
+
+### Fixed
+- ThetaData daily options MTM: prefer snapshot quote marks over stale day marks, and allow forward-fill when snapshot data is unavailable.
+- ThetaData backtesting: keep intraday index minute/hour fetch bounds aligned to the simulation timestamp instead of forcing full-window end coverage.
+- Long ITM equity option expirations now avoid unrealistic forced delivery when account constraints are not met; these contracts expire unexercised in backtests.
+- Acceptance baselines: refresh `aapl_deep_dip_calls` and `leaps_alpha_picks_short` metrics to match current option settlement behavior.
+
+## 4.4.50 - 2026-02-19
 
 ### Changed
 - Indicators HTML: improve subplot scaling so indicator panels render with sane proportions across mixed plots.
 - Indicators export: make HTML export non-fatal so backtests still complete if HTML rendering fails.
 
 ### Fixed
-- ThetaData backtesting: keep intraday index minute/hour fetch bounds aligned to the simulation timestamp instead of forcing full-window end coverage.
 - Acceptance baselines: refresh 0DTE backdoor baseline metrics and timing metadata to match current provider data revisions.
 - Acceptance CI: allow a bounded queue-fill threshold for `spx_short_straddle_repro` while keeping strict queue-free checks for other ThetaData acceptance cases.
 
