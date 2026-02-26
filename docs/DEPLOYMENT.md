@@ -155,6 +155,7 @@ Publishing is **tag-driven** via `.github/workflows/release.yml`.
      - `python3 -m pip index versions lumibot | head`
    - Confirm the version is actually installable (retry for a few minutes):
      - `python3 -m pip install --no-deps "lumibot==X.Y.Z"`
+     - `python3 -m pip show lumibot` (verify `Version: X.Y.Z`)
      - If it fails, retry with a short loop:
 
        ```bash

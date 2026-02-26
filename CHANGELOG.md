@@ -1,6 +1,11 @@
 # Changelog
 
-## 4.4.51 - Unreleased
+## 4.4.52 - Unreleased
+
+### Notes
+- _No changes yet._
+
+## 4.4.51 - 2026-02-26
 
 ### Added
 - Option lifecycle event support in backtesting for option expiration outcomes: `assigned`, `exercised`, and `expired` (in addition to `cash_settled`).
