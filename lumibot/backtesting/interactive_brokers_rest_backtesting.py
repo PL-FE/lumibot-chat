@@ -444,6 +444,33 @@ class InteractiveBrokersRESTBacktesting(PandasData):
                     include_after_hours=True,
                 )
                 self._fully_loaded_series.add(key)
+        elif asset_type in {"stock", "index"} and ts_unit == "day":
+            # Equity/index daily strategies repeatedly request overlapping windows.
+            # Prefetch the full backtest range once and reuse in-memory slices.
+            key = (asset_separated, quote_asset if quote_asset is not None else _USD_FOREX, dataset_key, exchange_key)
+            if key not in self._fully_loaded_series:
+                try:
+                    lookback_days = max(7, int(length) + 5)
+                except Exception:
+                    lookback_days = 7
+                req_start = pd.Timestamp(start_dt)
+                base_start = pd.Timestamp(self.datetime_start - timedelta(days=lookback_days))
+                if req_start.tzinfo is None and base_start.tzinfo is not None:
+                    req_start = req_start.tz_localize(base_start.tzinfo)
+                elif req_start.tzinfo is not None and base_start.tzinfo is None:
+                    base_start = base_start.tz_localize(req_start.tzinfo)
+                prefetch_start = min(req_start, base_start).to_pydatetime()
+                prefetch_end = self.datetime_end
+                self._update_pandas_data(
+                    asset_separated,
+                    quote_asset,
+                    dataset_key,
+                    start_dt=prefetch_start,
+                    end_dt=prefetch_end,
+                    exchange=effective_exchange,
+                    include_after_hours=include_after_hours,
+                )
+                self._fully_loaded_series.add(key)
         elif asset_type == "crypto" and ts_unit == "day":
             # Prefetch daily series for the full backtest window on first access so we do not
             # hammer the downloader once per simulated day.

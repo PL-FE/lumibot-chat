@@ -73,6 +73,19 @@ def _infer_default_ccxt_exchange_id() -> str:
     return "binance"
 
 
+def _align_timestamp_to_index_tz(ts_value: datetime, ref_index_ts: pd.Timestamp) -> pd.Timestamp:
+    """Return a comparable timestamp aligned to the timezone mode of `ref_index_ts`."""
+    ts = pd.Timestamp(ts_value)
+    ref = pd.Timestamp(ref_index_ts)
+    if ref.tzinfo is not None and ts.tzinfo is None:
+        ts = ts.tz_localize(ref.tzinfo)
+    elif ref.tzinfo is None and ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    elif ref.tzinfo is not None and ts.tzinfo is not None and ts.tzinfo != ref.tzinfo:
+        ts = ts.tz_convert(ref.tzinfo)
+    return ts
+
+
 class _RoutingAdapter:
     provider_key: str
 
@@ -195,7 +208,9 @@ class _DataFrameRoutingAdapter(_RoutingAdapter):
                 existing_start = existing_df.index.min()
                 existing_end = existing_df.index.max()
                 if existing_start is not None and existing_end is not None:
-                    if start_datetime >= existing_start and end_dt <= existing_end:
+                    start_cmp = _align_timestamp_to_index_tz(start_datetime, existing_start)
+                    end_cmp = _align_timestamp_to_index_tz(end_dt, existing_end)
+                    if start_cmp >= existing_start and end_cmp <= existing_end:
                         return None
             except Exception:
                 pass
@@ -299,6 +314,8 @@ class _IbkrRoutingAdapter(_DataFrameRoutingAdapter):
         unit = str(unit)
 
         canonical_key, legacy_key = self._router._build_dataset_keys(asset, quote_asset, dataset_key)
+        if canonical_key in self._fully_loaded_series and canonical_key in self._router._data_store:
+            return None
         existing = self._router._data_store.get(canonical_key)
         existing_df = getattr(existing, "df", None) if existing is not None else None
 
@@ -307,7 +324,9 @@ class _IbkrRoutingAdapter(_DataFrameRoutingAdapter):
                 existing_start = existing_df.index.min()
                 existing_end = existing_df.index.max()
                 if existing_start is not None and existing_end is not None:
-                    if start_datetime >= existing_start and end_dt <= existing_end:
+                    start_cmp = _align_timestamp_to_index_tz(start_datetime, existing_start)
+                    end_cmp = _align_timestamp_to_index_tz(end_dt, existing_end)
+                    if start_cmp >= existing_start and end_cmp <= existing_end:
                         return None
             except Exception:
                 pass
@@ -353,6 +372,31 @@ class _IbkrRoutingAdapter(_DataFrameRoutingAdapter):
                 prefetch_start = min(start_datetime, self._router.datetime_start)
             except Exception:
                 prefetch_start = start_datetime
+            prefetch_end = self._router.datetime_end or end_dt
+            df = ibkr_helper.get_price_data(
+                asset=asset,
+                quote=quote_asset,
+                timestep=dataset_key,
+                start_dt=prefetch_start,
+                end_dt=prefetch_end,
+                exchange=None,
+                include_after_hours=True,
+            )
+            if df is None or df.empty:
+                return None
+            self._fully_loaded_series.add(canonical_key)
+        elif asset_type in {"stock", "index"} and unit == "day" and canonical_key not in self._fully_loaded_series:
+            try:
+                lookback_days = max(7, int(length) + 5)
+            except Exception:
+                lookback_days = 7
+            req_start = pd.Timestamp(start_datetime)
+            base_start = pd.Timestamp(self._router.datetime_start - timedelta(days=lookback_days))
+            if req_start.tzinfo is None and base_start.tzinfo is not None:
+                req_start = req_start.tz_localize(base_start.tzinfo)
+            elif req_start.tzinfo is not None and base_start.tzinfo is None:
+                base_start = base_start.tz_localize(req_start.tzinfo)
+            prefetch_start = min(req_start, base_start).to_pydatetime()
             prefetch_end = self._router.datetime_end or end_dt
             df = ibkr_helper.get_price_data(
                 asset=asset,
@@ -904,3 +948,29 @@ class RoutedBacktestingPandas(ThetaDataBacktestingPandas):
                 timestep = "day"
 
         return super().get_last_price(asset, timestep=timestep, quote=quote, exchange=exchange, **kwargs)
+
+    def get_quote(self, asset, quote=None, exchange=None, timestep="minute", **kwargs):
+        """Align routed quote lookups away from minute bars in daily non-Theta runs.
+
+        In daily stock/index backtests routed to IBKR, market-order fills can call get_quote()
+        and trigger expensive minute history downloads. When we have day-cadence evidence and
+        no intraday cadence observed, align quote requests to day bars for non-Theta providers.
+        """
+        try:
+            dt = self.get_datetime()
+            self._update_cadence_from_dt(dt)
+        except Exception:
+            pass
+
+        try:
+            spec = self._provider_spec_for_asset(asset if not isinstance(asset, tuple) else asset[0])
+        except Exception:
+            spec = ProviderSpec(provider="thetadata")
+
+        if spec.provider != "thetadata" and timestep == "minute":
+            if not bool(getattr(self, "_observed_intraday_cadence", False)) and bool(
+                getattr(self, "_effective_day_mode", False)
+            ):
+                timestep = "day"
+
+        return super().get_quote(asset, quote=quote, exchange=exchange, timestep=timestep, **kwargs)

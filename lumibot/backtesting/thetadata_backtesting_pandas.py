@@ -3268,6 +3268,13 @@ class ThetaDataBacktestingPandas(PandasData):
         if dt is None:
             return
 
+        # Daily-cadence strategies can legitimately invoke multiple lifecycle callbacks per session
+        # (for example 08:30, 09:30, and 16:00). Treat those as daily, not intraday.
+        if str(getattr(self, "_timestep", "") or "").lower() == "day":
+            self._effective_day_mode = True
+            self._cadence_last_dt = dt
+            return
+
         try:
             if isinstance(dt, pd.Timestamp):
                 dt = dt.to_pydatetime()
@@ -3279,6 +3286,24 @@ class ThetaDataBacktestingPandas(PandasData):
             try:
                 if isinstance(last_dt, pd.Timestamp):
                     last_dt = last_dt.to_pydatetime()
+            except Exception:
+                pass
+
+            try:
+                # Daily lifecycle cadence in backtests typically advances through:
+                # 08:30 -> 09:30 -> 16:00 (same day), then 16:00 -> 08:30 (next trading day).
+                # Treat these transitions as daily cadence even if timestamps are < 6h apart.
+                last_pair = (int(last_dt.hour), int(last_dt.minute))
+                cur_pair = (int(dt.hour), int(dt.minute))
+                same_day = dt.date() == last_dt.date()
+                is_daily_lifecycle_step = (
+                    (same_day and (last_pair, cur_pair) in {((8, 30), (9, 30)), ((9, 30), (16, 0))})
+                    or ((not same_day) and last_pair == (16, 0) and cur_pair == (8, 30))
+                )
+                if is_daily_lifecycle_step:
+                    self._effective_day_mode = True
+                    self._cadence_last_dt = dt
+                    return
             except Exception:
                 pass
 
