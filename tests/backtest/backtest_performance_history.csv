@@ -7424,3 +7424,10 @@ timestamp,test_name,data_source,trading_days,execution_time_seconds,git_commit,l
 2026-03-03T00:37:19.231441,test_acceptance_meli_deep_drawdown,unknown,,266.693,47f73693,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
 2026-03-03T00:40:43.524049,test_ibkr_stale_end_marks_missing_window_to_avoid_repeated_history_fetches,unknown,,0.539,47f73693,4.4.52,,,,,Auto-tracked from test_ibkr_helper_stale_end_negative_cache
 2026-03-03T00:42:23.698972,test_ibkr_stale_end_marks_missing_window_to_avoid_repeated_history_fetches,unknown,,0.497,79aaf941,4.4.52,,,,,Auto-tracked from test_ibkr_helper_stale_end_negative_cache
+2026-03-03T00:43:27.831587,test_acceptance_aapl_deep_dip_calls,unknown,,55.548,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-03-03T00:43:45.153152,test_acceptance_leaps_alpha_picks,unknown,,17.217,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-03-03T00:44:06.411443,test_acceptance_tqqq_sma200,unknown,,21.16,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-03-03T00:49:45.955028,test_acceptance_backdoor_butterfly,unknown,,339.44,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-03-03T00:54:00.157695,test_acceptance_meli_deep_drawdown,unknown,,254.087,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-03-03T00:59:17.066589,test_acceptance_backdoor_smartlimit,unknown,,316.805,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
+2026-03-03T01:03:29.285602,test_acceptance_ibkr_crypto_btc_usd,unknown,,6.083,d59a5bc5,4.4.52,,,,,Auto-tracked from test_acceptance_backtests_ci
