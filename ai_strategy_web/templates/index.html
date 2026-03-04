@@ -398,6 +398,14 @@
     </style>
   </head>
   <body>
+    <!-- 提示框 -->
+    <div id="custom-toast" class="position-fixed top-0 start-50 translate-middle-x p-3" style="z-index: 1055; display: none; transition: opacity 0.3s; opacity: 0;">
+      <div id="custom-toast-content" class="alert shadow-lg d-flex align-items-start justify-content-between mb-0" style="min-width: 300px; max-width: 600px;">
+        <div id="custom-toast-msg" style="white-space: pre-wrap; word-break: break-all;"></div>
+        <button type="button" class="btn-close ms-3" onclick="hideToast()"></button>
+      </div>
+    </div>
+
     <!-- 导航栏 -->
     <nav class="navbar">
       <div class="navbar-brand">
@@ -410,15 +418,48 @@
           class="form-select form-select-sm"
           style="width: 200px"
         >
-          <option value="qwen-plus">Qwen Plus (推荐)</option>
-          <option value="qwen3.5-flash-2026-02-23">Qwen3.5 Flash</option>
-          <option value="qwen-max">Qwen Max</option>
+          <!-- 动态加载 -->
         </select>
+        <button class="btn btn-sm btn-outline-secondary" onclick="openSettingsModal()" title="AI 配置">
+          <i class="fa-solid fa-gear"></i>
+        </button>
         <span class="text-muted"
           ><i class="fa-solid fa-circle-check text-success"></i> 已连接</span
         >
       </div>
     </nav>
+
+    <!-- 设置 Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered text-dark">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="settingsModalLabel">AI 模型配置</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="customBaseUrl" class="form-label">API Base URL</label>
+              <input type="text" class="form-control" id="customBaseUrl" placeholder="例如: https://dashscope.aliyuncs.com/compatible-mode/v1" />
+              <div class="form-text">默认使用服务端配置，留空则使用默认配置。</div>
+            </div>
+            <div class="mb-3">
+              <label for="customApiKey" class="form-label">API Key</label>
+              <input type="password" class="form-control" id="customApiKey" placeholder="sk-..." />
+              <div class="form-text">密钥仅保存在您的浏览器本地 (localStorage) 中。留空则使用服务端的默认密钥。</div>
+            </div>
+            <div class="mb-3">
+              <label for="customModel" class="form-label">自定义模型名称</label>
+              <input type="text" class="form-control" id="customModel" placeholder="输入你想调用的模型 ID，如不存在于下拉列表中" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" onclick="saveSettings()">保存配置</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 工作区 -->
     <div class="workspace">
@@ -621,6 +662,7 @@
     </div>
 
     <!-- 脚本 -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/python.min.js"></script>
@@ -650,6 +692,31 @@
       // UI 辅助与交互
       // ==========================================
 
+      let toastTimeout;
+      function showToast(message, type = 'success', duration = 3000) {
+        const toast = document.getElementById('custom-toast');
+        const content = document.getElementById('custom-toast-content');
+        const msg = document.getElementById('custom-toast-msg');
+        
+        msg.textContent = message;
+        content.className = `alert alert-${type} shadow-lg d-flex align-items-start justify-content-between mb-0`;
+        
+        toast.style.display = 'block';
+        toast.getBoundingClientRect(); // 触发重绘
+        toast.style.opacity = '1';
+        
+        clearTimeout(toastTimeout);
+        if (duration > 0) {
+          toastTimeout = setTimeout(hideToast, duration);
+        }
+      }
+
+      function hideToast() {
+        const toast = document.getElementById('custom-toast');
+        toast.style.opacity = '0';
+        setTimeout(() => toast.style.display = 'none', 300);
+      }
+
       async function loadConfig() {
         try {
           const res = await fetch(`${API_BASE}/api/config`)
@@ -667,15 +734,62 @@
           select.value = data.ai.model
 
           select.addEventListener('change', async (e) => {
-            await fetch(`${API_BASE}/api/config/model`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: e.target.value }),
-            })
+            // 不再通知后端，只在使用时带入 payload
           })
+          
+          // 初始化同步前端配置
+          const localModel = localStorage.getItem('ai_custom_model');
+          if (localModel && !Array.from(select.options).some(o => o.value === localModel)) {
+            const opt = document.createElement('option');
+            opt.value = localModel;
+            opt.textContent = localModel + ' (自定义)';
+            select.appendChild(opt);
+          }
+          if (localModel) {
+             select.value = localModel;
+          }
         } catch (e) {
           console.error('加载配置失败', e)
         }
+      }
+
+      function openSettingsModal() {
+        document.getElementById('customBaseUrl').value = localStorage.getItem('ai_base_url') || '';
+        document.getElementById('customApiKey').value = localStorage.getItem('ai_api_key') || '';
+        document.getElementById('customModel').value = localStorage.getItem('ai_custom_model') || '';
+        const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
+        modal.show();
+      }
+
+      function saveSettings() {
+        const baseUrl = document.getElementById('customBaseUrl').value.trim();
+        const apiKey = document.getElementById('customApiKey').value.trim();
+        const model = document.getElementById('customModel').value.trim();
+        
+        if (baseUrl) localStorage.setItem('ai_base_url', baseUrl);
+        else localStorage.removeItem('ai_base_url');
+        
+        if (apiKey) localStorage.setItem('ai_api_key', apiKey);
+        else localStorage.removeItem('ai_api_key');
+        
+        if (model) {
+            localStorage.setItem('ai_custom_model', model);
+            // 将模型添加到下拉列表并选中
+            const select = document.getElementById('ai-model-select');
+            if (!Array.from(select.options).some(o => o.value === model)) {
+               const opt = document.createElement('option');
+               opt.value = model;
+               opt.textContent = model + ' (自定义)';
+               select.appendChild(opt);
+            }
+            select.value = model;
+        } else {
+            localStorage.removeItem('ai_custom_model');
+        }
+        
+        const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
+        modal.hide();
+        showToast('✅ 配置已保存到浏览器本地。', 'success');
       }
 
       async function loadExamples() {
@@ -704,25 +818,48 @@
       // AI 聊天逻辑
       // ==========================================
 
-      function appendMessage(role, text) {
+      function appendMessage(role, text, isTyping = false) {
         const container = document.getElementById('chat-history')
         const msgDiv = document.createElement('div')
 
         if (role === 'user') {
           msgDiv.className = 'chat-msg msg-user'
           msgDiv.textContent = text
+          container.appendChild(msgDiv)
+          container.scrollTop = container.scrollHeight
         } else {
           msgDiv.className = 'chat-msg msg-ai'
-          // 解析 Markdown
-          msgDiv.innerHTML = marked.parse(text)
-          // 应用代码高亮
-          msgDiv.querySelectorAll('pre code').forEach((block) => {
-            hljs.highlightElement(block)
-          })
+          container.appendChild(msgDiv)
+          
+          if (isTyping) {
+            let index = 0;
+            const speed = 20; // ms
+            let charsPerFrame = Math.max(2, Math.floor(text.length / 100));
+            charsPerFrame = Math.min(20, charsPerFrame);
+            
+            const typeInterval = setInterval(() => {
+              index += charsPerFrame;
+              if (index >= text.length) {
+                index = text.length;
+                clearInterval(typeInterval);
+                msgDiv.innerHTML = marked.parse(text);
+                msgDiv.querySelectorAll('pre code').forEach((block) => {
+                  hljs.highlightElement(block);
+                });
+              } else {
+                msgDiv.innerHTML = marked.parse(text.substring(0, index));
+              }
+              container.scrollTop = container.scrollHeight;
+            }, speed);
+          } else {
+            msgDiv.innerHTML = marked.parse(text)
+            msgDiv.querySelectorAll('pre code').forEach((block) => {
+              hljs.highlightElement(block)
+            })
+            container.scrollTop = container.scrollHeight
+          }
         }
 
-        container.appendChild(msgDiv)
-        container.scrollTop = container.scrollHeight
         return msgDiv
       }
 
@@ -767,12 +904,26 @@
 
         try {
           // 2. 发送请求
+          const aiConfig = {};
+          const customModel = localStorage.getItem('ai_custom_model');
+          const customBaseUrl = localStorage.getItem('ai_base_url');
+          const customApiKey = localStorage.getItem('ai_api_key');
+          
+          if (customModel) aiConfig.model = customModel;
+          else {
+              const sel = document.getElementById('ai-model-select');
+              if (sel) aiConfig.model = sel.value;
+          }
+          if (customBaseUrl) aiConfig.base_url = customBaseUrl;
+          if (customApiKey) aiConfig.api_key = customApiKey;
+
           const res = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               message: message,
               history: chatHistory,
+              ai_config: aiConfig
             }),
           })
 
@@ -785,7 +936,7 @@
           }
 
           // 3. UI 更新: 追加 AI 消息
-          appendMessage('ai', data.reply)
+          appendMessage('ai', data.reply, true)
 
           // 记录历史
           chatHistory.push({ role: 'user', content: message })
@@ -885,15 +1036,15 @@
           const data = await res.json()
 
           if (data.is_valid) {
-            alert('✅ 代码验证成功！安全且符合规范。')
+            showToast('✅ 代码验证成功！安全且符合规范。', 'success', 3000)
             if (data.strategy_info) {
               renderParams(data.strategy_info.parameters)
             }
           } else {
-            alert('❌ 代码验证失败:\n' + data.error)
+            showToast('❌ 代码验证失败:\n' + data.error, 'danger', 0)
           }
         } catch (e) {
-          alert('网络错误')
+          showToast('网络错误', 'danger', 3000)
         }
       }
 
@@ -917,7 +1068,7 @@
       async function runBacktest() {
         const code = document.getElementById('code-editor').value
         if (!code.trim()) {
-          alert('请先生成策略代码！')
+          showToast('请先生成策略代码！', 'warning', 3000)
           return
         }
 
@@ -1008,7 +1159,7 @@
           const data = await res.json()
 
           if (data.error) {
-            alert('获取结果失败: ' + data.error)
+            showToast('获取结果失败: ' + data.error, 'danger', 5000)
             return
           }
 
@@ -1033,6 +1184,20 @@
             chartCt.innerHTML = `<img src="data:image/png;base64,${data.chart_b64}" class="chart-img">`
           } else {
             chartCt.innerHTML = `<div class="text-muted">图表生成失败</div>`
+          }
+          
+          // 如果生成了高级分析报告 (Tearsheet)
+          const oldBtn = document.getElementById('tearsheet-btn');
+          if (oldBtn) oldBtn.remove();
+          
+          if (data.has_tearsheet) {
+            const tsBtn = document.createElement('a');
+            tsBtn.id = 'tearsheet-btn';
+            tsBtn.href = `${API_BASE}/api/backtest/tearsheet/${taskId}`;
+            tsBtn.target = '_blank';
+            tsBtn.className = 'btn btn-outline-info w-100 mt-2 py-2';
+            tsBtn.innerHTML = '<i class="fa-solid fa-file-invoice-dollar me-2"></i>打开详细高级分析报告 (HTML)';
+            chartCt.parentElement.appendChild(tsBtn);
           }
 
           resContainer.classList.remove('d-none')

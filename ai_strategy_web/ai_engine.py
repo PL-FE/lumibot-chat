@@ -124,19 +124,37 @@ class AIEngine:
         )
         self.model = MODEL_NAME
     
-    def chat(self, user_message: str, history: list = None) -> dict:
+    def chat(self, user_message: str, history: list = None, ai_config: dict = None) -> dict:
         """
         与 AI 进行对话，返回策略分析和代码
         
         Args:
             user_message: 用户输入的策略描述
             history: 对话历史 [{"role": "user/assistant", "content": "..."}]
+            ai_config: (可选) 用户自定义的配置信息，包含模型、API Key 和 Base URL
         
         Returns:
             dict: {"reply": str, "code": str | None, "error": str | None}
         """
         if history is None:
             history = []
+        if ai_config is None:
+            ai_config = {}
+        
+        # 决定使用哪个客户端和模型
+        model_to_use = ai_config.get("model") or self.model
+        
+        custom_key = ai_config.get("api_key")
+        custom_base_url = ai_config.get("base_url")
+        
+        if custom_key or custom_base_url:
+            # 如果提供了自定义配置，创建一个临时的 client
+            client = OpenAI(
+                api_key=custom_key or DASHSCOPE_API_KEY,
+                base_url=custom_base_url or DASHSCOPE_BASE_URL,
+            )
+        else:
+            client = self.client
         
         # 构建消息列表
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -144,8 +162,8 @@ class AIEngine:
         messages.append({"role": "user", "content": user_message})
         
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = client.chat.completions.create(
+                model=model_to_use,
                 messages=messages,
                 temperature=0.7,
                 max_tokens=3000,

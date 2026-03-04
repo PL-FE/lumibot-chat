@@ -17,6 +17,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+# 配置 matplotlib 支持中文
+plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams['figure.max_open_warning'] = 0
+
 # 抑制回测期间的 matplotlib 图形显示
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
@@ -36,6 +41,7 @@ class BacktestTask:
         self.progress_msg = "等待中..."
         self.result = None         # 回测成功后的指标字典
         self.chart_b64 = None      # 资产曲线图的 base64 PNG
+        self.tearsheet_path = None # html 报告保存路径
         self.error = None          # 错误信息
         self.created_at = datetime.datetime.now()
 
@@ -112,6 +118,7 @@ class BacktestRunner:
             "task_id": task.task_id,
             "result": task.result,
             "chart_b64": task.chart_b64,
+            "has_tearsheet": bool(task.tearsheet_path)
         }
     
     # ── 内部实现 ────────────────────────────────────────────────────────────
@@ -166,13 +173,27 @@ class BacktestRunner:
                 benchmark_asset=benchmark,
                 show_plot=False,
                 show_tearsheet=False,
-                save_tearsheet=False,
+                save_tearsheet=True,
                 show_indicators=False,
                 save_logfile=False,
                 analyze_backtest=True,
                 parameters=run_params if run_params else None,
                 quiet_logs=True,
             )
+            
+            # 由于开启了 save_tearsheet=True，会在 logs 留下 html
+            # 这里获取最新的那个 html 作为此任务的详细报告：
+            import glob
+            import os
+            try:
+                tearsheets = glob.glob(os.path.join("logs", "*_tearsheet.html"))
+                if tearsheets:
+                    latest_html = max(tearsheets, key=os.path.getmtime)
+                    task.tearsheet_path = latest_html
+            except Exception as e:
+                logging.error(f"寻找 tearsheet html 失败: {e}")
+            
+            self._cleanup_logs()
             
             task.progress = 85
             task.progress_msg = "正在生成分析图表..."
@@ -239,8 +260,10 @@ class BacktestRunner:
     def _generate_chart(self, strategy, benchmark: str) -> str:
         """生成资产价值曲线的 base64 PNG 图"""
         try:
-            # 尝试从 strategy._stats 获取时间序列
-            stats = getattr(strategy, "_stats", None) or getattr(strategy, "stats", None)
+            # 安全地获取 stats 时间序列
+            stats = getattr(strategy, "_stats", None)
+            if stats is None:
+                stats = getattr(strategy, "stats", None)
             
             if stats is None or not hasattr(stats, "__len__") or len(stats) == 0:
                 return self._generate_placeholder_chart()
@@ -259,12 +282,12 @@ class BacktestRunner:
             fig.patch.set_facecolor("#1a1a2e")
             ax.set_facecolor("#16213e")
             
-            ax.plot(df.index, df["portfolio_value"], color="#00d4ff", linewidth=2, label="策略净值")
+            ax.plot(df.index, df["portfolio_value"], color="#00d4ff", linewidth=2, label="Strategy Value")
             ax.fill_between(df.index, df["portfolio_value"], alpha=0.1, color="#00d4ff")
             
-            ax.set_xlabel("日期", color="#aaaacc")
-            ax.set_ylabel("资产价值 ($)", color="#aaaacc")
-            ax.set_title("策略资产价值曲线", color="#ffffff", fontsize=14, fontweight="bold")
+            ax.set_xlabel("Date", color="#aaaacc")
+            ax.set_ylabel("Portfolio Value ($)", color="#aaaacc")
+            ax.set_title("Strategy Portfolio Value Curve", color="#ffffff", fontsize=14, fontweight="bold")
             ax.tick_params(colors="#aaaacc")
             ax.spines["bottom"].set_color("#333355")
             ax.spines["left"].set_color("#333355")
@@ -281,7 +304,9 @@ class BacktestRunner:
             buf.seek(0)
             return base64.b64encode(buf.read()).decode("utf-8")
         
-        except Exception:
+        except Exception as e:
+            import traceback
+            logging.error(f"图表生成失败: {e}\n{traceback.format_exc()}")
             return self._generate_placeholder_chart()
     
     def _generate_placeholder_chart(self) -> str:
@@ -289,7 +314,7 @@ class BacktestRunner:
         fig, ax = plt.subplots(figsize=(10, 5))
         fig.patch.set_facecolor("#1a1a2e")
         ax.set_facecolor("#16213e")
-        ax.text(0.5, 0.5, "图表数据暂不可用", transform=ax.transAxes,
+        ax.text(0.5, 0.5, "No Chart Data Available", transform=ax.transAxes,
                 ha="center", va="center", color="#aaaacc", fontsize=16)
         ax.set_axis_off()
         buf = io.BytesIO()
@@ -297,6 +322,27 @@ class BacktestRunner:
         plt.close(fig)
         buf.seek(0)
         return base64.b64encode(buf.read()).decode("utf-8")
+    def _cleanup_logs(self, max_files=10):
+        """定期清理旧的 logs 文件，防止累积过多"""
+        import os
+        import glob
+        import shutil
+        try:
+            if not os.path.exists("logs"):
+                return
+            # 获取所有的 tearsheet 文件，倒序（最新的在前）
+            tearsheets = sorted(glob.glob(os.path.join("logs", "*_tearsheet.html")), key=os.path.getmtime, reverse=True)
+            if len(tearsheets) > max_files:
+                for old_html in tearsheets[max_files:]:
+                    prefix = old_html.replace("_tearsheet.html", "")
+                    # 删除所有同前缀的 csv, parquet 等
+                    for f in glob.glob(f"{prefix}*"):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
+        except Exception as e:
+            logging.error(f"清理 logs 失败: {e}")
 
 
 # 全局单例

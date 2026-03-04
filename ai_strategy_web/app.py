@@ -6,7 +6,7 @@ Flask 主服务
 import os
 import sys
 import json
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 from flask_cors import CORS
 
 # 将当前目录加入 Python 路径
@@ -84,7 +84,7 @@ def api_chat():
         ai_engine.client.timeout = 60  # 确保超时合理
     
     # 调用 AI 对话
-    result = ai_engine.chat(user_message, history)
+    result = ai_engine.chat(user_message, history, ai_config=ai_config)
     
     # 如果生成了代码，解析策略信息
     strategy_info = None
@@ -221,6 +221,22 @@ def api_backtest_result(task_id: str):
     result = backtest_runner.get_result(task_id)
     return jsonify(result)
 
+@app.route("/api/backtest/tearsheet/<task_id>")
+def api_backtest_tearsheet(task_id: str):
+    """展示由 Lumibot Quantstats 生成的高级详细 HTML 报告"""
+    task = backtest_runner.get_task(task_id)
+    if not task:
+        return "Task not found", 404
+    if not task.tearsheet_path or not os.path.exists(task.tearsheet_path):
+        return "Tearsheet not generated for this task", 404
+        
+    try:
+        with open(task.tearsheet_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        return Response(html, mimetype="text/html")
+    except Exception as e:
+        return f"Error loading tearsheet: {str(e)}", 500
+
 
 # ════════════════════════════════════════════════════════════
 #   示例策略接口
@@ -256,10 +272,7 @@ def api_get_config():
             "model": ai_engine.model,
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "available_models": [
-                {"id": "qwen-plus",      "name": "Qwen Plus（推荐）"},
-                {"id": "qwen-turbo",     "name": "Qwen Turbo（快速）"},
-                {"id": "qwen-max",       "name": "Qwen Max（最强）"},
-                {"id": "qwen3.5-flash-2026-02-23", "name": "Qwen3.5 Flash"},
+                {"id": "qwen-plus",      "name": "Qwen Plus (推荐)"},
             ],
         },
         "backtest": {
