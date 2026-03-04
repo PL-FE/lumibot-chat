@@ -588,6 +588,30 @@
               />
             </div>
           </div>
+
+          <!-- 数据源选择 -->
+          <div class="mt-2">
+            <label class="form-label d-flex align-items-center gap-2">
+              数据源
+              <span id="ds-free-badge" class="badge bg-success" style="font-size:0.7rem;">免费</span>
+            </label>
+            <select class="form-select" id="bt-datasource" onchange="onDatasourceChange()">
+              <!-- 由 JS 动态填充 -->
+            </select>
+            <div id="ds-description" class="form-text mt-1" style="font-size:0.78rem;"></div>
+          </div>
+
+          <!-- 数据源 API Key 配置区（需要时显示） -->
+          <div id="ds-key-area" class="mt-2 p-2 rounded" style="background:rgba(0,0,0,.25); display:none;">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <small class="text-muted">数据源凭证（存于本地浏览器）</small>
+              <a id="ds-signup-link" href="#" target="_blank" class="badge bg-primary text-decoration-none" style="font-size:0.7rem;">免费注册 →</a>
+            </div>
+            <div id="ds-key-fields"><!-- 动态生成 --></div>
+            <button class="btn btn-sm btn-outline-secondary mt-2 w-100" onclick="saveDatasourceKeys()">
+              <i class="fa-solid fa-floppy-disk me-1"></i>保存凭证
+            </button>
+          </div>
         </div>
 
         <!-- 动态策略参数 -->
@@ -677,6 +701,7 @@
       document.addEventListener('DOMContentLoaded', () => {
         loadConfig()
         loadExamples()
+        initBacktestSettings()
 
         // 文本框快捷键
         const input = document.getElementById('chat-input')
@@ -717,6 +742,25 @@
         setTimeout(() => toast.style.display = 'none', 300);
       }
 
+      function initBacktestSettings() {
+        const fields = ['bt-start', 'bt-end', 'bt-budget', 'bt-benchmark'];
+        fields.forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            const saved = localStorage.getItem(id);
+            if (saved !== null && saved !== "") {
+              el.value = saved;
+            }
+            el.addEventListener('change', (e) => {
+              localStorage.setItem(id, e.target.value);
+            });
+            el.addEventListener('input', (e) => {
+              localStorage.setItem(id, e.target.value);
+            });
+          }
+        });
+      }
+
       async function loadConfig() {
         try {
           const res = await fetch(`${API_BASE}/api/config`)
@@ -748,9 +792,116 @@
           if (localModel) {
              select.value = localModel;
           }
+
+          // 初始化数据源选择器
+          if (data.backtest && data.backtest.available_data_sources) {
+            window._availableDataSources = data.backtest.available_data_sources;
+            const dsSelect = document.getElementById('bt-datasource');
+            dsSelect.innerHTML = '';
+            data.backtest.available_data_sources.forEach(ds => {
+              const opt = document.createElement('option');
+              opt.value = ds.id;
+              opt.textContent = ds.name;
+              dsSelect.appendChild(opt);
+            });
+            // 从 localStorage 恢复上次选择
+            const savedDs = localStorage.getItem('bt_data_source');
+            if (savedDs && data.backtest.available_data_sources.some(d => d.id === savedDs)) {
+              dsSelect.value = savedDs;
+            } else {
+              dsSelect.value = data.backtest.default_data_source || 'yahoo';
+            }
+            onDatasourceChange();
+          }
         } catch (e) {
           console.error('加载配置失败', e)
         }
+      }
+
+      // ==========================================
+      // 数据源切换逻辑
+      // ==========================================
+
+      function onDatasourceChange() {
+        const dsId = document.getElementById('bt-datasource').value;
+        const sources = window._availableDataSources || [];
+        const ds = sources.find(d => d.id === dsId);
+        if (!ds) return;
+
+        // 更新描述和特性标签
+        const descEl = document.getElementById('ds-description');
+        let descHtml = '';
+        if (ds.features && ds.features.length) {
+          descHtml += `<div class="d-flex flex-wrap gap-1 mb-1">${
+            ds.features.map(f => `<span style="font-size:0.72rem;background:rgba(255,255,255,.07);padding:1px 7px;border-radius:999px;color:#94a3b8;">${f}</span>`).join('')
+          }</div>`;
+        }
+        if (ds.description) {
+          descHtml += `<div style="font-size:0.75rem;color:#64748b;line-height:1.5;">${ds.description}</div>`;
+        }
+        descEl.innerHTML = descHtml;
+        const badge = document.getElementById('ds-free-badge');
+        badge.textContent = ds.requires_key ? '需要 Key' : '免费';
+        badge.className = 'badge ' + (ds.requires_key ? 'bg-warning text-dark' : 'bg-success');
+
+        const keyArea = document.getElementById('ds-key-area');
+        if (ds.requires_key && ds.key_fields) {
+          // 动态生成 key 输入字段
+          const keyFields = document.getElementById('ds-key-fields');
+          keyFields.innerHTML = '';
+          ds.key_fields.forEach(field => {
+            const storageKey = `ds_${dsId}_${field.id}`;
+            const val = localStorage.getItem(storageKey) || '';
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mb-2';
+            wrapper.innerHTML = `
+              <label class="form-label" style="font-size:0.8rem;color:#94a3b8;">${field.label}</label>
+              <input type="${field.type}" class="form-control form-control-sm"
+                id="ds-field-${field.id}" value="${val}"
+                placeholder="输入 ${field.label}..." autocomplete="off" />`;
+            keyFields.appendChild(wrapper);
+          });
+
+          if (ds.signup_url) {
+            document.getElementById('ds-signup-link').href = ds.signup_url;
+            document.getElementById('ds-signup-link').style.display = '';
+          } else {
+            document.getElementById('ds-signup-link').style.display = 'none';
+          }
+          keyArea.style.display = '';
+        } else {
+          keyArea.style.display = 'none';
+        }
+        // 保存选择
+        localStorage.setItem('bt_data_source', dsId);
+      }
+
+      function saveDatasourceKeys() {
+        const dsId = document.getElementById('bt-datasource').value;
+        const sources = window._availableDataSources || [];
+        const ds = sources.find(d => d.id === dsId);
+        if (!ds || !ds.key_fields) return;
+        ds.key_fields.forEach(field => {
+          const val = document.getElementById(`ds-field-${field.id}`)?.value?.trim() || '';
+          const storageKey = `ds_${dsId}_${field.id}`;
+          if (val) localStorage.setItem(storageKey, val);
+          else localStorage.removeItem(storageKey);
+        });
+        showToast('✅ 凭证已保存到浏览器本地。', 'success');
+      }
+
+      function getDatasourcePayload() {
+        const dsId = document.getElementById('bt-datasource')?.value || 'yahoo';
+        const sources = window._availableDataSources || [];
+        const ds = sources.find(d => d.id === dsId);
+        const config = {};
+        if (ds && ds.requires_key && ds.key_fields) {
+          ds.key_fields.forEach(field => {
+            const storageKey = `ds_${dsId}_${field.id}`;
+            config[field.id] = localStorage.getItem(storageKey) || '';
+          });
+        }
+        return { data_source: dsId, data_source_config: config };
       }
 
       function openSettingsModal() {
@@ -1086,6 +1237,7 @@
         clearInterval(statusPollInterval)
 
         // 获取参数
+        const dsPayload = getDatasourcePayload();
         const payload = {
           code: code,
           start_date: document.getElementById('bt-start').value,
@@ -1093,6 +1245,7 @@
           budget: document.getElementById('bt-budget').value,
           benchmark: document.getElementById('bt-benchmark').value,
           strategy_params: currentStrategyParams,
+          ...dsPayload,
         }
 
         try {

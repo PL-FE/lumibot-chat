@@ -1,0 +1,21 @@
+version: "3.8"
+services:
+  lumibot-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lumibot/ai-strategy-web:latest
+    container_name: lumibot_web
+    ports:
+      - "9999:5001"
+    environment:
+      - PORT=5001
+      - DEBUG=false
+      #- OPENAI_API_KEY=your_openai_api_key_here
+      #- ALPACA_API_KEY=your_alpaca_api_key_here
+      #- ALPACA_API_SECRET=your_alpaca_api_secret_here
+      #- POLYGON_API_KEY=your_polygon_api_key_here
+    volumes:
+      # 为了方便读取回测日志或持久化数据，可以挂载指定目录
+      - ./ai_strategy_web/logs:/app/ai_strategy_web/logs
+    restart: unless-stopped

@@ -63,17 +63,21 @@ class BacktestRunner:
         budget: float = 100_000,
         benchmark: str = "SPY",
         strategy_params: dict = None,
+        data_source: str = "yahoo",
+        data_source_config: dict = None,
     ) -> str:
         """
         提交回测任务，返回 task_id
         
         Args:
-            strategy_code:   策略 Python 代码（含 import）
-            start_date:      "2022-01-01"
-            end_date:        "2024-01-01"
-            budget:          初始资金（美元）
-            benchmark:       基准标的代码
-            strategy_params: 覆盖策略 parameters 字典（可选）
+            strategy_code:     策略 Python 代码（含 import）
+            start_date:        "2022-01-01"
+            end_date:          "2024-01-01"
+            budget:            初始资金（美元）
+            benchmark:         基准标的代码
+            strategy_params:   覆盖策略 parameters 字典（可选）
+            data_source:       数据源标识，支持 "yahoo" / "alpaca"（默认 yahoo）
+            data_source_config: 数据源配置字典（alpaca 需传入 API_KEY / API_SECRET）
         """
         task_id = str(uuid.uuid4())[:8]
         task = BacktestTask(task_id)
@@ -83,7 +87,8 @@ class BacktestRunner:
         
         thread = threading.Thread(
             target=self._run,
-            args=(task, strategy_code, start_date, end_date, budget, benchmark, strategy_params),
+            args=(task, strategy_code, start_date, end_date, budget, benchmark,
+                  strategy_params, data_source, data_source_config),
             daemon=True,
         )
         thread.start()
@@ -132,6 +137,8 @@ class BacktestRunner:
         budget: float,
         benchmark: str,
         strategy_params: dict,
+        data_source: str = "yahoo",
+        data_source_config: dict = None,
     ):
         """在后台线程中执行回测"""
         task.status = BacktestTask.STATUS_RUNNING
@@ -159,14 +166,22 @@ class BacktestRunner:
             if strategy_params:
                 run_params.update(strategy_params)
             
-            # 4. 执行回测（使用 Yahoo 免费数据源）
-            task.progress = 30
-            task.progress_msg = "正在执行回测（Yahoo Finance 数据）..."
+            # 4. 根据数据源选择对应的回测类
+            data_source = (data_source or "yahoo").lower()
+            datasource_class, extra_kwargs = self._resolve_datasource(
+                data_source, data_source_config or {}
+            )
             
-            from lumibot.backtesting import YahooDataBacktesting
+            source_label = {
+                "yahoo": "Yahoo Finance",
+                "alpaca": "Alpaca Markets",
+                "polygon": "Polygon.io",
+            }.get(data_source, data_source)
+            task.progress = 30
+            task.progress_msg = f"正在执行回测（{source_label} 数据）..."
             
             results, strategy = strategy_class.run_backtest(
-                datasource_class=YahooDataBacktesting,
+                datasource_class=datasource_class,
                 backtesting_start=bt_start,
                 backtesting_end=bt_end,
                 budget=budget,
@@ -179,6 +194,7 @@ class BacktestRunner:
                 analyze_backtest=True,
                 parameters=run_params if run_params else None,
                 quiet_logs=True,
+                **extra_kwargs,
             )
             
             # 由于开启了 save_tearsheet=True，会在 logs 留下 html
@@ -322,6 +338,50 @@ class BacktestRunner:
         plt.close(fig)
         buf.seek(0)
         return base64.b64encode(buf.read()).decode("utf-8")
+    def _resolve_datasource(self, data_source: str, config: dict) -> tuple:
+        """
+        根据数据源标识返回 (datasource_class, extra_kwargs)
+
+        支持的数据源：
+            "yahoo"  - YahooDataBacktesting，无需 API Key
+            "alpaca" - AlpacaBacktesting，需 API_KEY + API_SECRET
+        """
+        if data_source == "alpaca":
+            from lumibot.backtesting import AlpacaBacktesting
+            api_key = config.get("API_KEY", "")
+            api_secret = config.get("API_SECRET", "")
+            if not api_key or not api_secret:
+                raise ValueError(
+                    "使用 Alpaca 数据源需要提供 API_KEY 和 API_SECRET。\n"
+                    "请在前端设置面板中填写 Alpaca API 凭证。\n"
+                    "免费注册地址：https://alpaca.markets"
+                )
+            alpaca_config = {
+                "API_KEY": api_key,
+                "API_SECRET": api_secret,
+                "PAPER": True,  # 回测须使用 Paper 账户
+            }
+            return AlpacaBacktesting, {"config": alpaca_config}
+
+        elif data_source == "polygon":
+            from lumibot.backtesting import PolygonDataBacktesting
+            import os
+            api_key = config.get("API_KEY", "")
+            if not api_key:
+                raise ValueError(
+                    "使用 Polygon.io 数据源需要提供 API_KEY。\n"
+                    "请在前端设置面板中填写 Polygon API Key。\n"
+                    "免费注册地址：https://polygon.io"
+                )
+            # Polygon 需要通过 run_backtest 的 polygon_api_key 参数传入 Key
+            os.environ["POLYGON_API_KEY"] = api_key  # 双保险
+            return PolygonDataBacktesting, {"polygon_api_key": api_key}
+
+        else:
+            # 默认 Yahoo Finance（免费，无需 Key）
+            from lumibot.backtesting import YahooDataBacktesting
+            return YahooDataBacktesting, {}
+
     def _cleanup_logs(self, max_files=10):
         """定期清理旧的 logs 文件，防止累积过多"""
         import os

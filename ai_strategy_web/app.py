@@ -195,6 +195,8 @@ def api_backtest():
     budget     = float(data.get("budget", 100_000))
     benchmark  = data.get("benchmark", "SPY")
     strategy_params = data.get("strategy_params", {})
+    data_source = data.get("data_source", "yahoo")
+    data_source_config = data.get("data_source_config", {})
     
     task_id = backtest_runner.submit(
         strategy_code=code,
@@ -203,6 +205,8 @@ def api_backtest():
         budget=budget,
         benchmark=benchmark,
         strategy_params=strategy_params or {},
+        data_source=data_source,
+        data_source_config=data_source_config or {},
     )
     
     return jsonify({"task_id": task_id})
@@ -281,7 +285,39 @@ def api_get_config():
             "default_budget": 100_000,
             "default_benchmark": "SPY",
             "benchmarks": ["SPY", "QQQ", "IWM", "BTC-USD", "GLD"],
-            "data_source": "Yahoo Finance（免费）",
+            "default_data_source": "yahoo",
+            "available_data_sources": [
+                {
+                    "id": "yahoo",
+                    "name": "Yahoo Finance（免费）",
+                    "description": "无需注册，开箱即用，数据覆盖全球主要市场，历史日线可追溯15年以上，适合入门和快速验证策略。",
+                    "features": ["✅ 完全免费", "📅 日线数据", "🌍 全球市场", "🔓 无需注册"],
+                    "requires_key": False,
+                },
+                {
+                    "id": "alpaca",
+                    "name": "Alpaca Markets",
+                    "description": "免费Paper Account，美股/加密货币数据，支持日线+分钟线，数据质量优于Yahoo，适合中高频策略验证。",
+                    "features": ["✅ 免费注册", "⏱️ 分钟级数据", "📈 更高数据质量", "🔑 需要 API Key"],
+                    "requires_key": True,
+                    "key_fields": [
+                        {"id": "API_KEY",    "label": "API Key",    "type": "text"},
+                        {"id": "API_SECRET", "label": "API Secret", "type": "password"},
+                    ],
+                    "signup_url": "https://alpaca.markets",
+                },
+                {
+                    "id": "polygon",
+                    "name": "Polygon.io",
+                    "description": "专业数据供应商，支持股票、期权、外汇，免费计划15分钟延迟但历史日线完整齐全，数据质量最佳。",
+                    "features": ["✅ 免费注册", "📊 支持期权数据", "⭐ 数据质量最佳", "🔑 需要 API Key"],
+                    "requires_key": True,
+                    "key_fields": [
+                        {"id": "API_KEY", "label": "API Key", "type": "text"},
+                    ],
+                    "signup_url": "https://polygon.io",
+                },
+            ],
         },
         "version": "1.0.0",
     })

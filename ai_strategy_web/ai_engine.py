@@ -101,6 +101,7 @@ def on_trading_iteration(self):
 4. 代码必须用中文注释解释关键逻辑
 5. 不要包含 `if __name__ == "__main__":` 部分（由系统处理回测）
 6. 禁止使用 `os`, `subprocess`, `sys`, `open` 等系统操作
+7. 警告：`Bars` 对象没有 `get_barset()` 方法。获取历史数据后，必须通过 `bars.df` 获取 pandas DataFrame。绝不能调用 `bars.get_barset()`。
 
 ## 回复格式
 当用户描述策略时，请按以下格式回复：
