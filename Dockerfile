@@ -11,8 +11,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=5001
 
 # 安装系统依赖
+# 尝试将 apt 源替换为国内阿里云源，并使用 --fix-missing 解决可能出现的网络拉取失败问题
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list 2>/dev/null || true
+
 # 包括构建可能需要的 gcc 库、以及网络代理和其他依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     curl \
