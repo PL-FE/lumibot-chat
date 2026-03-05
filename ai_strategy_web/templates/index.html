@@ -777,6 +777,14 @@
           })
           select.value = data.ai.model
 
+          // 如果还没选过时间，则使用后端的默认时间
+          if (!localStorage.getItem('bt-start') && data.backtest.default_start) {
+            document.getElementById('bt-start').value = data.backtest.default_start;
+          }
+          if (!localStorage.getItem('bt-end') && data.backtest.default_end) {
+            document.getElementById('bt-end').value = data.backtest.default_end;
+          }
+
           select.addEventListener('change', async (e) => {
             // 不再通知后端，只在使用时带入 payload
           })
@@ -851,7 +859,7 @@
           keyFields.innerHTML = '';
           ds.key_fields.forEach(field => {
             const storageKey = `ds_${dsId}_${field.id}`;
-            const val = localStorage.getItem(storageKey) || '';
+            const val = localStorage.getItem(storageKey) || field.default || '';
             const wrapper = document.createElement('div');
             wrapper.className = 'mb-2';
             wrapper.innerHTML = `
@@ -898,7 +906,7 @@
         if (ds && ds.requires_key && ds.key_fields) {
           ds.key_fields.forEach(field => {
             const storageKey = `ds_${dsId}_${field.id}`;
-            config[field.id] = localStorage.getItem(storageKey) || '';
+            config[field.id] = localStorage.getItem(storageKey) || field.default || '';
           });
         }
         return { data_source: dsId, data_source_config: config };

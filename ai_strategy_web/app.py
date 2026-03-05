@@ -271,6 +271,10 @@ def api_examples():
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
     """获取当前服务配置（前端可读取默认值）"""
+    import datetime
+    end_date = datetime.datetime.now()
+    start_date = end_date - datetime.timedelta(days=730)
+
     return jsonify({
         "ai": {
             "model": ai_engine.model,
@@ -280,8 +284,8 @@ def api_get_config():
             ],
         },
         "backtest": {
-            "default_start": "2022-01-01",
-            "default_end":   "2024-12-31",
+            "default_start": start_date.strftime("%Y-%m-%d"),
+            "default_end":   end_date.strftime("%Y-%m-%d"),
             "default_budget": 100_000,
             "default_benchmark": "SPY",
             "benchmarks": ["SPY", "QQQ", "IWM", "BTC-USD", "GLD"],
@@ -301,8 +305,8 @@ def api_get_config():
                     "features": ["✅ 免费注册", "⏱️ 分钟级数据", "📈 更高数据质量", "🔑 需要 API Key"],
                     "requires_key": True,
                     "key_fields": [
-                        {"id": "API_KEY",    "label": "API Key",    "type": "text"},
-                        {"id": "API_SECRET", "label": "API Secret", "type": "password"},
+                        {"id": "API_KEY",    "label": "API Key",    "type": "text", "default": "PKTCB6JCFMC24FCY2LDKRQ5GAK"},
+                        {"id": "API_SECRET", "label": "API Secret", "type": "password", "default": "2MXW2A3aA7Cxz2yXHctCXYRaXqgWqeTqX3XpgpqR1UUN"},
                     ],
                     "signup_url": "https://alpaca.markets",
                 },
@@ -313,7 +317,7 @@ def api_get_config():
                     "features": ["✅ 免费注册", "📊 支持期权数据", "⭐ 数据质量最佳", "🔑 需要 API Key"],
                     "requires_key": True,
                     "key_fields": [
-                        {"id": "API_KEY", "label": "API Key", "type": "text"},
+                        {"id": "API_KEY", "label": "API Key", "type": "text", "default": "O_XNvY3VOvwGZ5Impa6qKaszL0W3XLg2"},
                     ],
                     "signup_url": "https://polygon.io",
                 },
