@@ -11,9 +11,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=5001
 
 # 为了解决国内网络访问 deb.debian.org 慢或者超时的问题，配置清华源。
-# debian 12+ (bookworm) 采用 debian.sources 格式，需要直接替换其中的 url 以保留公钥配置
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
-    sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
+# 使用 for 循环自适应判断源文件位置（旧版 sources.list 或新版 debian.sources），避免文件不存在的问题
+RUN for file in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$file" ]; then \
+            sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' "$file"; \
+            sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' "$file"; \
+        fi; \
+    done
 
 # 更新包列表并安装所需系统依赖
 RUN apt-get clean && apt-get update -y && apt-get install -y --no-install-recommends \
